@@ -1,18 +1,19 @@
-# HANDOFF — state as of 2026-10-24 (v0.4.0)
+# HANDOFF — state as of 2026-10-25 (v0.4.1)
 
 **Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
 `ai-guide.md` (pin-language/docs) complete and correct for every release: it is what agents read. Error messages should
 say what to write instead; `pin check --json` is the agent loop.
 
-The language is **Pin** (was "Pina"), extension `.pn`. Entry point for users: `./pin` (run/build/check);
-the compiler itself is still `pinac.py`. **v0.1.0 is prepared for outside testers** (README.md in English,
-README.th.md, docs (now github.com/pin-language/docs), examples/, LICENSE MIT, CHANGELOG.md, CI workflow) and
-tag `v0.1.0`. **Not published yet**: creating the public repository was blocked by Claude Code's
-permission check. Plan (owner, 2026-10-24: use an organisation, not the personal account): the owner
-creates the GitHub organisation `pin-language` (free plan, web UI only); then the repo `pin` is created
-in it and pushed. The READMEs already point at https://github.com/pin-language/pin
-(clone URL, issues, CI badge). Planned push: branch `release/v0.1.0` + tag `v0.1.0` (the owner's rule is
-never to push to `main` without saying so), then check that the first CI run is green.
+The language is **Pin** (was "Pina"), extension `.pn`. Entry point for users: `pin` (run/build/check/get);
+the compiler itself is `pinac.py`. **Public** since 2026-10-25 in the GitHub organisation `pin-language`:
+`pin` (this repo), `docs`, `benchmarks`, `.github` (the organisation page). Default branch of each is
+`release/v0.1.0` (the owner's rule: never push to `main` without being told; the owner may rename it).
+Install: `curl -fsSL https://raw.githubusercontent.com/pin-language/pin/HEAD/install.sh | sh` — checked on a
+clean Debian container. Every release: bump `VERSION` in pinac.py, CHANGELOG, tag in `pin` and `docs`.
+
+Outside reviews (Gemini, GPT, 2026-10-25): stale "v0.1" wording made a reviewer think modules and request
+reading were missing — keep version wording out of messages ("not in Pin yet") and keep README, llms.txt and
+the organisation page's Status section current with every release.
 
 Owner's rule for every design decision, in order: **memory safety > speed > clarity > looking like PHP.**
 The owner has said "decide for me, just go": make design calls by that rule, write them down, and only
@@ -76,7 +77,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 
 | # | problem | where | severity |
 |---|---|---|---|
-| B5 | No request headers, query string, timeouts (slowloris), per-connection limits | server | security |
+| B5 | No request headers, timeouts (slowloris), per-connection limits (query strings are read since 0.2) | server | security |
 | B6 | `maplit` key type comes from a heuristic `expr_type_probe` | `pinac.py` | low |
 | B8 | `.ll` files are written next to sources | `pinac.py main()` | cosmetic |
 | B9 | `+ - *` wrap silently (overflow panics removed for speed until check elision exists, int-overflow.md O3) | codegen | correctness |

@@ -162,7 +162,8 @@ f("json_string", J, "json_string(string $json, string $key): string", 'A top-lev
   r'''echo json_string("{\"name\": \"Som\\u0e01\", \"n\": 5}", "name"), "|", json_string("{\"n\": 5}", "n"), "|\n";''',
   ['`""` when the key is missing, the value is not a string, or the text is not a JSON object.',
    r'Escapes are decoded (`\n`, `\"`, `\uXXXX` including surrogate pairs).'],
-  php="Pin has no `json_decode` yet; these functions read one top-level key at a time. Nested values are skipped safely.")
+  php="Instead of `json_decode($body, true)['name']`. Pin reads top-level keys of a JSON object with these "
+      "functions; nested objects and arrays are skipped safely (a full `json_decode` for nested data comes later).")
 f("json_int", J, "json_int(string $json, string $key): int", "A top-level integer value, or 0.",
   r'''echo json_int("{\"qty\": 3}", "qty"), " ", json_int("{\"qty\": 1.5}", "qty"), " ", json_int("{\"qty\": \"3\"}", "qty"), " ", json_int("{\"qty\": 99999999999999999999}", "qty"), "\n";''',
   ['0 when missing, not an integer (`1.5`, `"3"`), or not a JSON object — use `json_has` to tell missing from 0.',

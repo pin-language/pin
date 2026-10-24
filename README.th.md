@@ -138,10 +138,10 @@ macOS ล็อก CPU core ไม่ได้ ส่วนต่างต่ำ
 
 | benchmark | Pin | Rust 1.95 | Go 1.26 | PHP 8.5 + JIT | PHP 8.5 | Python 3.15 |
 |---|---|---|---|---|---|---|
-| sieve (20M) | 0.048s | 0.074s | 0.046s | 0.642s | 1.385s | 4.420s |
-| collatz (1M) | 0.163s | 0.133s | 0.174s | 0.715s | 3.223s | 6.370s |
-| pi (100M terms) | 0.098s | 0.096s | 0.093s | 0.943s | 2.260s | 13.265s |
-| list build + sum | 0.116s | 0.141s | 0.178s | 0.459s | 1.210s | 5.280s |
+| sieve (20M) | 0.042s | 0.043s | 0.041s | 0.652s | 1.337s | 4.283s |
+| collatz (1M) | 0.165s | 0.131s | 0.175s | 0.714s | 3.204s | 6.302s |
+| pi (100M terms) | 0.090s | 0.090s | 0.091s | 0.930s | 2.235s | 13.239s |
+| list build + sum | 0.114s | 0.131s | 0.183s | 0.440s | 1.192s | 4.754s |
 
 ข้อควรรู้: เป็น loop CPU เล็กๆ ไม่ใช่แอปจริง · ตัด `fib` ออกเพราะ clang optimize recursion จนไม่ได้บอกอะไรเรื่องภาษา ·
 ผล load test ของ HTTP server (Linux 2 core) อยู่ใน [pin-language/benchmarks](https://github.com/pin-language/benchmarks) server ของ Pin ทำงานน้อยกว่า Go
