@@ -1,1 +1,1 @@
-panic: float is NAN, INF or too large to turn into an int on line 3
+panic: float is NAN, INF or too large to turn into an int on line 2

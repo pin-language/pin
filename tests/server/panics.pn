@@ -1,4 +1,3 @@
-<?php
 // A handler that panics must answer 500, free what the request allocated, and keep serving.
 function boom(): string {
     $big = fill(1000000, 7);            // 8 MB that only the panic cleanup can free

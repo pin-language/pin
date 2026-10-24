@@ -1,5 +1,4 @@
-<?php
-// ไฟล์ทดลองเขียน Pin — แก้ได้ตามใจ แล้วรัน:  python3 pinac.py try.pn && ./try
+// ไฟล์ทดลองเขียน Pin — แก้ได้ตามใจ แล้วรัน:  ./pin run try.pn
 
 function greet(string $name): string {
     return "สวัสดี " . $name . "!";

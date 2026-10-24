@@ -41,7 +41,6 @@ cd pin
 ## ตัวอย่าง
 
 ```php
-<?php
 function squares(int $n): list<int> {   // คืน list ให้คนเรียกเป็นเจ้าของ
     list<int> $out = [];
     for ($i = 1; $i <= $n; $i++) { $out[] = $i * $i; }

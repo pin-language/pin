@@ -5,8 +5,9 @@ accepts. Anything not listed here is not supported yet.
 
 ## Files and running
 
-A program is one `.pn` file. It may start with `<?php` (optional). Top-level statements run in order;
-functions can be declared anywhere in the file.
+A program is one `.pn` file. There is no `<?php` tag: the file is code from the first line (a leading
+`<?php` is ignored, so pasted PHP still compiles). Top-level statements run in order; functions can be
+declared anywhere in the file.
 
 ```bash
 pin run hello.pn          # compile + run

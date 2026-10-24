@@ -1,4 +1,3 @@
-<?php
 // A JSON API in one file. Build it, run it, then:  curl localhost:8080/hello
 //   pin run examples/api.pn
 // Each request runs on one of the server threads (one per CPU core). There are no global variables,

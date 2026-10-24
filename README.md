@@ -16,7 +16,6 @@ LLVM into a single native binary, including a multi-threaded HTTP server.
 > 🇹🇭 ภาษาไทย: [README.th.md](README.th.md)
 
 ```php
-<?php
 function squares(int $n): list<int> {   // returns a list the caller will own
     list<int> $out = [];
     for ($i = 1; $i <= $n; $i++) { $out[] = $i * $i; }
@@ -112,7 +111,7 @@ collector, no reference counting. The compiler checks every path through your co
 value moved in one `if` branch can still be used in the other branch. Errors explain the fix:
 
 ```
-ownership.pn:21: error: $a was moved on line 19 and can no longer be used here. Use copy($a) if you need two separate values
+ownership.pn:20: error: $a was moved on line 18 and can no longer be used here. Use copy($a) if you need two separate values
 loop.pn:2: error: $last may be used before it is assigned: on some paths to this line it never gets a value (an if without else, or a loop that can run zero times). Give $last a value before the if/loop
 ```
 

@@ -1,4 +1,3 @@
-<?php
 // Sieve of Eratosthenes. Every index is bounds-checked; the compiler (LLVM) removes most checks itself.
 function count_primes(int $n): int {
     $composite = fill($n + 1, false);

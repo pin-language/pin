@@ -17,7 +17,7 @@ so fix and re-check. Exit code 0 = ok, 1 = compile error or run-time panic, 2 = 
 
 ## Program shape and output
 
-- A program is one `.pn` file. `<?php` at the top is optional. Statements outside functions run from top
+- A program is one `.pn` file. Do not write `<?php` (it is ignored if present). Statements outside functions run from top
   to bottom; functions can be declared anywhere in the file (before or after use).
 - Top-level variables are local to the top level: functions cannot see them (there are no globals).
 - Print with `echo`, several values separated by commas: `echo "total: ", $t, "\n";`. Double-quoted
@@ -55,7 +55,6 @@ so fix and re-check. Exit code 0 = ok, 1 = compile error or run-time panic, 2 = 
 ## Idioms
 
 ```php
-<?php
 // build and return a list (caller owns it)
 function evens(int $n): list<int> {
     list<int> $out = [];

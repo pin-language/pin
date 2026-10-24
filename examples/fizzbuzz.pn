@@ -1,4 +1,3 @@
-<?php
 // Conditions must be real bools: write `$i % 3 == 0`, not `!($i % 3)`.
 for ($i = 1; $i <= 15; $i++) {
     if ($i % 15 == 0) { echo "FizzBuzz\n"; }

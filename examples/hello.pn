@@ -1,4 +1,3 @@
-<?php
 // pin run examples/hello.pn
 $name = "world";
 echo "Hello, $name!\n";

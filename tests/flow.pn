@@ -1,4 +1,3 @@
-<?php
 // The checker follows each branch separately (B3) and only merges where paths meet.
 function pick(bool $big): list<int> {
     $a = fill(3, 1);

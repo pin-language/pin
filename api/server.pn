@@ -1,4 +1,3 @@
-<?php
 // JSON API: 3 endpoints. Each request runs on one of the server threads;
 // there are no global variables, so handlers share nothing and need no locks.
 

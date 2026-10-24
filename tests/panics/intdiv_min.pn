@@ -1,4 +1,3 @@
-<?php
 // INT_MIN / -1 is undefined behaviour in LLVM and crashes x86; it must be a clean panic
 $min = intval("-9223372036854775808");
 echo intdiv($min, intval("-1")), "\n";

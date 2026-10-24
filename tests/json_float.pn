@@ -1,3 +1,2 @@
-<?php
 // whole floats keep ".0" (shortest %g would give 3.8e+02 for 380.0); others are the shortest exact form
 echo json_encode([380.0, 1200.0, 0.1, 1.5e20, -42.0, 0.00012, 123456789012.0, 1e15, 2.5]), PHP_EOL;

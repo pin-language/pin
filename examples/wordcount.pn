@@ -1,4 +1,3 @@
-<?php
 // Strings and ordered maps. A missing key in `$m[$k] += 1` starts at 0, like PHP but without the warning.
 function count_words(string $text): map<string,int> {
     map<string,int> $counts = [];

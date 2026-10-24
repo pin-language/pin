@@ -1,0 +1,3 @@
+<?php
+// a leading <?php from pasted PHP is ignored, nothing else about it is supported
+echo "ok\n";

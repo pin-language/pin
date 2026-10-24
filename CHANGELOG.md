@@ -6,6 +6,7 @@ Pin is aimed at AI coding agents: `docs/ai-guide.md` is the whole language on on
 `pin check --json` gives machine-readable errors.
 
 ### Language
+- No `<?php` tag: files are code from the first line. A leading `<?php` (from pasted PHP) is ignored.
 - Variables are checked on every path: using a variable that is not assigned on all paths is a compile
   error (this used to compile and could crash on a null list).
 - Moves are tracked per branch: moving a value in one `if` branch no longer blocks the other branch, and
@@ -32,5 +33,5 @@ Pin is aimed at AI coding agents: `docs/ai-guide.md` is the whole language on on
   errors. A missing file, a non-UTF-8 file or a missing clang gives a one-line message.
 - Builds no longer leave `.ll` files next to the source.
 - `examples/` with six runnable programs; English README, language guide, AI guide, `llms.txt`.
-- Test suite: 54 checks, run on macOS and Linux, plus sanitizer runs (ASAN/UBSAN, LeakSanitizer on
+- Test suite: 55 checks, run on macOS and Linux, plus sanitizer runs (ASAN/UBSAN, LeakSanitizer on
   Linux) and a GitHub Actions workflow.

@@ -1,4 +1,3 @@
-<?php
 // PHP-like syntax, compiled to native code
 function fib(int $n): int {
     if ($n < 2) { return $n; }
