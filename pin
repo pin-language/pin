@@ -6,4 +6,4 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import pinac  # noqa: E402
 
-sys.exit(pinac.cli(sys.argv[1:]))
+sys.exit(pinac.cli(sys.argv[1:], default_run=True))

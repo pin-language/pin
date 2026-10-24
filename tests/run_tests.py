@@ -147,6 +147,10 @@ try:
 except (OSError, ValueError, KeyError) as e:
     fail("vscode grammar", repr(e))
 
+r = subprocess.run(PIN + [os.path.join(ROOT, "examples", "hello.pn")], capture_output=True, text=True)
+(ok if r.returncode == 0 and r.stdout.startswith("Hello, world!") else
+ lambda n: fail(n, f"exit {r.returncode}: {r.stdout!r} {r.stderr!r}"))("pin FILE.pn runs the program")
+
 print("examples (examples/*.pn: must compile; programs without serve() must run and exit 0)")
 for src in sorted(glob.glob(os.path.join(ROOT, "examples", "*.pn"))):
     name = os.path.splitext(os.path.basename(src))[0]

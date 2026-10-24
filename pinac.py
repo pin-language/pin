@@ -2041,6 +2041,7 @@ VERSION = "0.1.0"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 
+  pin FILE.pn                compile, then run it (same as pin run FILE.pn)
   pin run FILE.pn            compile, then run it (the binary is thrown away)
   pin build FILE.pn [-o OUT] compile to a native binary (default: FILE without .pn)
   pin check FILE.pn          type- and ownership-check only, no binary
@@ -2071,7 +2072,7 @@ def report(path, line, msg):
         import json
         print(json.dumps({"file": path, "line": line, "severity": "error", "message": msg}, ensure_ascii=False))
     else:
-        print(f"{path}:{line}: error: {msg}", file=sys.stderr)
+        print(f"{path}{f':{line}' if line else ''}: error: {msg}", file=sys.stderr)
 
 
 def to_ir(path):
@@ -2101,7 +2102,12 @@ def link(ir, out):
         sys.exit(2)
 
 
-def cli(argv):
+SUBCOMMANDS = ("run", "build", "check", "version", "-v", "--version", "help", "-h", "--help")
+
+
+def cli(argv, default_run=False):
+    """default_run: the `pin` command runs `pin FILE.pn` like `python file.py`; plain `pinac.py FILE.pn`
+    keeps its old meaning (compile only), which the tests rely on."""
     import argparse
     global JSON_ERRORS
     if "--json" in argv:
@@ -2110,7 +2116,9 @@ def cli(argv):
     if not argv:
         print(USAGE)
         return 0
-    if argv[0] in ("run", "build", "check", "version", "-v", "--version", "help", "-h", "--help"):
+    if default_run and argv[0] not in SUBCOMMANDS and not argv[0].startswith("-"):
+        argv = ["run"] + argv
+    if argv[0] in SUBCOMMANDS:
         cmd, rest = argv[0], argv[1:]
         if cmd in ("help", "-h", "--help"):
             print(USAGE)

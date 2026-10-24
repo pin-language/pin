@@ -30,9 +30,9 @@ Pin is aimed at AI coding agents: `docs/ai-guide.md` is the whole language on on
 
 ### Tools
 - VS Code extension in `editors/vscode`: syntax highlighting, comment toggling, brackets, auto-indent.
-- `pin` command: `pin run`, `pin build`, `pin check`, `pin version`; `--json` for machine-readable
+- `pin` command: `pin FILE.pn` (runs it), `pin run`, `pin build`, `pin check`, `pin version` / `-v`; `--json` for machine-readable
   errors. A missing file, a non-UTF-8 file or a missing clang gives a one-line message.
 - Builds no longer leave `.ll` files next to the source.
 - `examples/` with six runnable programs; English README, language guide, AI guide, `llms.txt`.
-- Test suite: 56 checks, run on macOS and Linux, plus sanitizer runs (ASAN/UBSAN, LeakSanitizer on
+- Test suite: 57 checks, run on macOS and Linux, plus sanitizer runs (ASAN/UBSAN, LeakSanitizer on
   Linux) and a GitHub Actions workflow.

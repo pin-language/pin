@@ -58,7 +58,7 @@ You need **Python 3.10+** and **clang**.
 ```bash
 git clone https://github.com/pin-language/pin.git
 cd pin
-./pin run examples/hello.pn
+./pin examples/hello.pn
 ```
 
 Put `pin` on your PATH (no sudo needed; `~/.local/bin` is on the PATH of most setups — if `pin -v`
@@ -70,6 +70,7 @@ mkdir -p ~/.local/bin && ln -sf "$PWD/pin" ~/.local/bin/pin && pin -v
 
 | command | what it does |
 |---|---|
+| `pin file.pn` | compile and run (same as `pin run file.pn`) |
 | `pin run file.pn` | compile and run (the binary is thrown away) |
 | `pin build file.pn [-o out]` | compile to a native binary |
 | `pin check file.pn` | type- and ownership-check only |

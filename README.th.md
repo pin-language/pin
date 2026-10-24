@@ -26,7 +26,7 @@ compile (คล้าย Rust แต่ย่อให้ง่าย) และ
 ```bash
 git clone https://github.com/pin-language/pin.git
 cd pin
-./pin run examples/hello.pn
+./pin examples/hello.pn
 ```
 
 ใส่ `pin` ลง PATH (ไม่ต้องใช้ sudo ถ้า `pin -v` ขึ้นว่า command not found ให้เพิ่ม
@@ -38,6 +38,7 @@ mkdir -p ~/.local/bin && ln -sf "$PWD/pin" ~/.local/bin/pin && pin -v
 
 | คำสั่ง | ทำอะไร |
 |---|---|
+| `pin file.pn` | compile แล้วรันเลย (เหมือน `pin run file.pn`) |
 | `pin run file.pn` | compile แล้วรันเลย |
 | `pin build file.pn [-o out]` | compile เป็น binary |
 | `pin check file.pn` | เช็ค type และ ownership อย่างเดียว |
