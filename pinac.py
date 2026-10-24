@@ -1939,35 +1939,106 @@ def compile_source(src):
     return "\n".join(mod.header() + out) + "\n" + TBAA
 
 
-def main():
-    import argparse
-    ap = argparse.ArgumentParser(description="Compile a .pn file to a native binary")
-    ap.add_argument("src")
-    ap.add_argument("-o", "--out")
-    ap.add_argument("--emit-ll", action="store_true", help="only write the LLVM IR")
-    a = ap.parse_args()
+VERSION = "0.1.0"
+
+USAGE = """pin — compile and run Pin programs (.pn)
+
+  pin run FILE.pn            compile, then run it (the binary is thrown away)
+  pin build FILE.pn [-o OUT] compile to a native binary (default: FILE without .pn)
+  pin check FILE.pn          type- and ownership-check only, no binary
+  pin version
+
+Needs clang. Old form `pinac.py FILE.pn [-o OUT] [--emit-ll]` still works."""
+
+
+def read_source(path):
     try:
-        src = open(a.src, encoding="utf-8").read()
+        return open(path, encoding="utf-8").read()
     except OSError as e:
-        print(f"{a.src}: error: cannot read the file ({e.strerror})", file=sys.stderr)
+        print(f"{path}: error: cannot read the file ({e.strerror})", file=sys.stderr)
         sys.exit(1)
+
+
+def to_ir(path):
     try:
-        ir = compile_source(src)
+        return compile_source(read_source(path))
     except CompileError as e:
-        print(f"{a.src}:{e.line}: error: {e.msg}", file=sys.stderr)
+        print(f"{path}:{e.line}: error: {e.msg}", file=sys.stderr)
         sys.exit(1)
-    base = os.path.splitext(a.src)[0]
-    ll = base + ".ll"
-    with open(ll, "w") as f:
-        f.write(ir)
-    if a.emit_ll:
-        return
-    out = a.out or base
-    r = subprocess.run(["clang", "-O2", "-pthread", "-Wno-override-module", ll, os.path.join(HERE, "runtime.c"),
-                        "-lm", "-o", out], capture_output=True, text=True)
+
+
+def link(ir, out):
+    """LLVM IR + runtime.c -> native binary at `out`. The .ll lives in a temp dir, not next to the source."""
+    import shutil
+    import tempfile
+    if not shutil.which("clang"):
+        print("error: pin needs clang. macOS: xcode-select --install · Ubuntu/Debian: sudo apt install clang",
+              file=sys.stderr)
+        sys.exit(2)
+    with tempfile.TemporaryDirectory(prefix="pin-") as d:
+        ll = os.path.join(d, "prog.ll")
+        with open(ll, "w") as f:
+            f.write(ir)
+        r = subprocess.run(["clang", "-O2", "-pthread", "-Wno-override-module", ll, os.path.join(HERE, "runtime.c"),
+                            "-lm", "-o", out], capture_output=True, text=True)
     if r.returncode:
         print(r.stderr, file=sys.stderr)
         sys.exit(2)
+
+
+def cli(argv):
+    import argparse
+    if not argv:
+        print(USAGE)
+        return 0
+    if argv[0] in ("run", "build", "check", "version", "help", "-h", "--help"):
+        cmd, rest = argv[0], argv[1:]
+        if cmd in ("help", "-h", "--help"):
+            print(USAGE)
+            return 0
+        if cmd == "version":
+            print(f"pin {VERSION}")
+            return 0
+        if not rest:
+            print(USAGE, file=sys.stderr)
+            return 2
+        src = rest[0]
+        if cmd == "check":
+            to_ir(src)
+            print(f"{src}: ok")
+            return 0
+        if cmd == "build":
+            ap = argparse.ArgumentParser(prog="pin build")
+            ap.add_argument("src")
+            ap.add_argument("-o", "--out")
+            a = ap.parse_args(rest)
+            link(to_ir(a.src), a.out or os.path.splitext(a.src)[0])
+            return 0
+        import tempfile                                   # run
+        ir = to_ir(src)
+        with tempfile.TemporaryDirectory(prefix="pin-run-") as d:
+            exe = os.path.join(d, os.path.splitext(os.path.basename(src))[0])
+            link(ir, exe)
+            try:
+                return subprocess.run([exe] + rest[1:]).returncode
+            except KeyboardInterrupt:
+                return 130
+    ap = argparse.ArgumentParser(description="Compile a .pn file to a native binary (see also: pin help)")
+    ap.add_argument("src")
+    ap.add_argument("-o", "--out")
+    ap.add_argument("--emit-ll", action="store_true", help="only write the LLVM IR, next to the source")
+    a = ap.parse_args(argv)
+    ir = to_ir(a.src)
+    if a.emit_ll:
+        with open(os.path.splitext(a.src)[0] + ".ll", "w") as f:
+            f.write(ir)
+        return 0
+    link(ir, a.out or os.path.splitext(a.src)[0])
+    return 0
+
+
+def main():
+    sys.exit(cli(sys.argv[1:]))
 
 
 if __name__ == "__main__":
