@@ -8,8 +8,7 @@ The owner has said "decide for me, just go": make design calls by that rule, wri
 ask when the rule cannot decide or a decision would change project direction.
 
 Design specs (agreed with the owner, not all implemented): `docs/design/` — ownership-v2, error-handling,
-int-overflow, null, strings, concurrency. *(They were written in a scratch folder; if they are still at
-the repo root, move them into `docs/design/`.)*
+int-overflow, null, strings, concurrency.
 
 ## 1. What works (verified)
 
