@@ -15,6 +15,9 @@ Language rules in this prototype:
       - borrowed values (heap parameters, foreach variables) cannot be changed, moved or returned
         as-is; strings are copied automatically, lists/maps need copy()
       - a list cannot be appended to, and a map cannot be changed, while a foreach walks over it
+  * Checks follow every path separately (class Flow): a variable is usable only if it is assigned
+    and not moved on every path that reaches the use; a value moved inside one if branch is still
+    usable in the other branch.
   * There are no global variables, so request handlers running on many threads share nothing.
 """
 import os
@@ -587,6 +590,42 @@ class Module:
         return h
 
 
+class Loop:
+    def __init__(self, brk, cont):
+        self.brk, self.cont = brk, cont
+        self.breaks, self.conts = [], []    # Flow at each break / continue
+
+
+class Flow:
+    """What the checker knows at one point of a function: which variables surely hold a value, which
+    were moved out (name -> line), and whether the point can be reached at all. Each branch works on
+    its own copy; where paths meet the copies are merged, so a variable counts as assigned only if it
+    is assigned on every path that gets there, and as moved if it was moved on any of them."""
+
+    def __init__(self, assigned=(), moved=None, live=True, maybe=()):
+        self.assigned, self.moved, self.live = set(assigned), dict(moved or {}), live
+        self.maybe = set(maybe)            # moved on some paths only (for a clearer message)
+
+    def copy(self):
+        return Flow(self.assigned, self.moved, self.live, self.maybe)
+
+    @staticmethod
+    def merge(flows, fallback):
+        live = [f for f in flows if f.live]
+        if not live:                       # nothing reaches this point: keep checking dead code calmly
+            r = fallback.copy()
+            r.live = False
+            return r
+        r = live[0].copy()
+        for f in live[1:]:
+            r.assigned &= f.assigned
+            r.maybe |= f.maybe
+            for n, ln in f.moved.items():
+                r.moved.setdefault(n, ln)
+        r.maybe |= {n for n in r.moved if any(n not in f.moved for f in live)}
+        return r
+
+
 class FuncGen:
     def __init__(self, mod, name, params, ret, line, is_main=False):
         self.mod, self.name, self.ret, self.line, self.is_main = mod, name, ret, line, is_main
@@ -596,14 +635,19 @@ class FuncGen:
         self.term = False
         self.vars = {}          # name -> type
         self.borrowed = set()   # heap vars this function does not own (parameters, foreach variables)
-        self.moved = {}         # name -> line where it was moved
+        self.flow = Flow()      # assigned / moved state at the current point (see Flow)
         self.iterating = []     # vars a foreach is currently walking over
-        self.loops = []         # (break_label, continue_label)
+        self.loops = []         # Loop: labels + the flows that leave by break / continue
         self.temps = []         # owned temporaries (value, type) freed at the end of the statement
         self.pending = []       # temporaries that must live until a foreach ends
         for ptype, pname in params:
             self.declare(pname, ptype, borrowed=is_heap(ptype))
+            self.flow.assigned.add(pname)
             self.inits.append(f"  store {llty(ptype)} %arg.{pname[1:]}, ptr {self.slot(pname)}")
+
+    @property
+    def moved(self):
+        return self.flow.moved
 
     # --- emission helpers
     def tmp(self):
@@ -679,12 +723,22 @@ class FuncGen:
                                f"Work on a copy instead: {fix}", line)
 
     # --- expressions: return (llvm value, type, owned)
-    def use_var(self, name, line):
+    def require_assigned(self, name, line):
         if name not in self.vars:
             raise CompileError(f"variable {name} is used before it is assigned", line)
-        if name in self.moved:
+        if name not in self.flow.assigned and name not in self.moved:
             raise CompileError(
-                f"{name} was moved on line {self.moved[name]} and can no longer be used here. "
+                f"{name} may be used before it is assigned: on some paths to this line it never gets a "
+                f"value (an if without else, or a loop that can run zero times). Give {name} a value "
+                f"before the if/loop", line)
+
+    def use_var(self, name, line):
+        self.require_assigned(name, line)
+        if name in self.moved:
+            how = "may have been moved" if name in self.flow.maybe else "was moved"
+            where = " (on one path of an if or loop)" if name in self.flow.maybe else ""
+            raise CompileError(
+                f"{name} {how} on line {self.moved[name]}{where} and can no longer be used here. "
                 f"Use copy({name}) if you need two separate values", line)
         t = self.vars[name]
         r = self.tmp()
@@ -1487,8 +1541,10 @@ class FuncGen:
             if not self.loops:
                 raise CompileError(f"'{k}' outside a loop", s.line)
             self.flush_temps()
-            brk, cont = self.loops[-1]
-            self.emit(f"br label %{brk if k == 'break' else cont}")
+            lp = self.loops[-1]
+            (lp.breaks if k == "break" else lp.conts).append(self.flow.copy())
+            self.flow.live = False
+            self.emit(f"br label %{lp.brk if k == 'break' else lp.cont}")
         elif k == "return":
             self.return_(s)
         else:
@@ -1524,7 +1580,9 @@ class FuncGen:
                 self.emit(f"{old} = load ptr, ptr {self.slot(name)}")
                 self.call("void", free_fn(t), f"ptr {old}")
             self.moved.pop(name, None)
+            self.flow.maybe.discard(name)
         self.emit(f"store {llty(t)} {v}, ptr {self.slot(name)}")
+        self.flow.assigned.add(name)
 
     def free_var(self, name, t):
         old = self.tmp()
@@ -1539,8 +1597,7 @@ class FuncGen:
             name = tg.name
             if op == "=":
                 return self.assign_var(name, s.val, s.line)
-            if name not in self.vars:
-                raise CompileError(f"variable {name} is used before it is assigned", s.line)
+            self.require_assigned(name, s.line)
             vt = self.vars[name]
             if op == ".=":
                 if vt != "string":
@@ -1567,8 +1624,9 @@ class FuncGen:
         if tg.seq.kind != "var":
             raise CompileError("can only assign into a list or map variable", s.line)
         name = tg.seq.name
-        if name not in self.vars:
-            raise CompileError(f"variable {name} is used before it is assigned", s.line)
+        self.require_assigned(name, s.line)
+        if name in self.moved:
+            self.use_var(name, s.line)          # reports the move
         st = self.vars[name]
         self.check_writable(name, s.line)
         if tg.kind == "append":
@@ -1666,36 +1724,48 @@ class FuncGen:
         v = self.cond(s.cond)
         then, els, end = self.newlabel("then"), self.newlabel("else"), self.newlabel("endif")
         self.emit(f"br i1 {v}, label %{then}, label %{els}")
+        start = self.flow
+        self.flow = start.copy()
         self.place_label(then)
         self.stmt(s.then)
+        then_flow = self.flow
         if not self.term:
             self.emit(f"br label %{end}")
+        self.flow = start.copy()
         self.place_label(els)
         if s.els:
             self.stmt(s.els)
         self.place_label(end)
+        self.flow = Flow.merge([then_flow, self.flow], start)
 
     def loop(self, cond, step, body):
         head, bodyl, stepl, end = (self.newlabel(x) for x in ("loop", "body", "step", "endloop"))
-        before, moved_before = set(self.vars), set(self.moved)
+        head_flow = self.flow.copy()
         self.place_label(head)
         if cond is not None:
             v = self.cond(cond)
             self.emit(f"br i1 {v}, label %{bodyl}, label %{end}")
         self.place_label(bodyl)
-        self.loops.append((end, stepl))
+        lp = Loop(end, stepl)
+        self.loops.append(lp)
         self.stmt(body)
         self.loops.pop()
+        self.flow = Flow.merge([self.flow] + lp.conts, head_flow)
         self.place_label(stepl)
         if step:
             self.stmt(step)
+        self.check_back_edge(head_flow)
         self.emit(f"br label %{head}")
         self.place_label(end)
-        self.check_loop_moves(before, moved_before)
+        forever = cond is None or (cond.kind == "bool" and cond.val)
+        self.flow = Flow.merge(lp.breaks + ([] if forever else [head_flow]), head_flow)
 
-    def check_loop_moves(self, before, moved_before):
+    def check_back_edge(self, head_flow):
+        """The state going round again must be no worse than the state the loop started with."""
+        if not self.flow.live:
+            return
         for n, ln in self.moved.items():
-            if n in before and n not in moved_before:
+            if n in head_flow.assigned and n not in head_flow.moved:
                 raise CompileError(
                     f"{n} is moved inside a loop, so the next round would use a moved value. "
                     f"Move it after the loop, or use copy({n})", ln)
@@ -1710,7 +1780,6 @@ class FuncGen:
         self.declare(name, t, borrowed=is_heap(t))
 
     def foreach(self, s):
-        before, moved_before = set(self.vars), set(self.moved)
         mark = len(self.temps)
         seq, st = self.borrow(s.seq)
         mine = self.temps[mark:]           # a temporary being walked over lives until the loop ends
@@ -1732,6 +1801,7 @@ class FuncGen:
         walked = s.seq.name if s.seq.kind == "var" else None
         if walked:
             self.iterating.append(walked)
+        head_flow = self.flow.copy()
         head, bodyl, stepl, end = (self.newlabel(x) for x in ("fe", "febody", "festep", "feend"))
         self.place_label(head)
         i, c = self.tmp(), self.tmp()
@@ -1763,18 +1833,23 @@ class FuncGen:
             nxt = self.tmp()
             self.emit(f"{nxt} = add i64 {idx}, 1")
         self.emit(f"store i64 {nxt}, ptr {pos}")
-        self.loops.append((end, stepl))
+        lp = Loop(end, stepl)
+        self.loops.append(lp)
         self.pending.append(mine)
+        self.flow = head_flow.copy()
+        self.flow.assigned.update(n for n in (s.key, s.var) if n)
         self.stmt(s.body)
         self.pending.pop()
         self.loops.pop()
+        self.flow = Flow.merge([self.flow] + lp.conts, head_flow)
         self.place_label(stepl)
+        self.check_back_edge(head_flow)
         self.emit(f"br label %{head}")
         self.place_label(end)
         if walked:
             self.iterating.pop()
         self.free_temps(mine)
-        self.check_loop_moves(before, moved_before)
+        self.flow = Flow.merge(lp.breaks + [head_flow], head_flow)
 
     def return_(self, s):
         if self.is_main:
@@ -1784,6 +1859,7 @@ class FuncGen:
             self.free_pending()
             self.free_owned()
             self.emit("ret i32 0")
+            self.flow.live = False
             return
         if s.val is None:
             if self.ret != "void":
@@ -1792,6 +1868,7 @@ class FuncGen:
             self.free_pending()
             self.free_owned()
             self.emit("ret void")
+            self.flow.live = False
             return
         if self.ret == "void":
             raise CompileError(f"{self.name}() is void and cannot return a value", s.line)
@@ -1804,6 +1881,7 @@ class FuncGen:
         self.free_pending()
         self.free_owned()
         self.emit(f"ret {llty(self.ret)} {v}")
+        self.flow.live = False
 
     def free_pending(self):
         for group in self.pending:

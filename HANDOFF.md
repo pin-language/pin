@@ -12,7 +12,7 @@ int-overflow, null, strings, concurrency.
 
 ## 1. What works (verified)
 
-`python3 tests/run_tests.py` → **38 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
+`python3 tests/run_tests.py` → **43 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
 Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang python3`).
 
 - Everything from the first prototype (functions, int/float/bool/string, `list<T>`, ordered `map<K,V>`,
@@ -27,7 +27,14 @@ Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang
 - **Handler panics answer 500** and the server keeps going. Every heap block has a 16-byte header;
   during a request blocks are linked per thread, and a panic longjmps back and frees them all.
   Body is generic (`{"error":"Internal Server Error"}`), the message goes to stderr only.
-- ASAN+UBSAN clean on macOS and Linux: hello, strmap, arith, listsum, all panic tests, and both servers
+- **Path-aware checking** (`class Flow` in `pinac.py`): each if-branch and loop is checked on its own
+  copy of the state (assigned / moved / reachable) and the copies are merged where paths meet. Fixes B3,
+  and adds *definite assignment*: using a variable that is not assigned on every path is a compile error.
+  That closes a crash found while testing: `if ($c) { $xs = [1]; } echo count($xs);` read a null list
+  (segfault) when `$c` was false. `break`, `continue` and `return` are followed correctly (a move just
+  before `break` or `return` is fine). Tests: `tests/flow.pn`, `tests/errors/maybe_*.pn`,
+  `loop_zero_times.pn`, `move_then_continue.pn`.
+- ASAN+UBSAN clean on macOS and Linux (LeakSanitizer on Linux too): hello, strmap, arith, listsum, all panic tests, and both servers
   under load (pipelining, half-close, garbage, chunked bodies, ~1,450 panicking requests).
 
 ## 2. Measured (owner's M-series Mac, best of 5, pin only)
@@ -46,7 +53,6 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 
 | # | problem | where | severity |
 |---|---|---|---|
-| B3 | Move tracking is not branch-aware: moving `$a` in `then` makes it "moved" in `else` too | `FuncGen.moved`, `if_()` | annoying — fix with the shared control-flow analysis |
 | B5 | No request headers, query string, timeouts (slowloris), per-connection limits | server | security |
 | B6 | `maplit` key type comes from a heuristic `expr_type_probe` | `pinac.py` | low |
 | B8 | `.ll` files are written next to sources | `pinac.py main()` | cosmetic |
@@ -54,13 +60,16 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | B10 | Request-block tracking is per thread. When `go`/`await` arrives, tasks must use the request's list (or their own) — revisit then | `runtime.c` allocator | design |
 | B11 | Panic outside a request still `exit(1)` (correct for CLI programs) | runtime | by design |
 
-Fixed today: B1 (Linux-only server), B2 (panic kills server), B4 (silent int overflow), B7 (Mac bench units).
+Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int
+overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
 
 ## 4. Task queue (in order)
 
-1. **Shared control-flow analysis** in `pinac.py` (liveness + per-branch state). Needed by B3,
-   ownership-v2 R2 (borrows from `$x = $list[0]`), null narrowing (null.md N2), `try` exits
-   (error-handling.md E-R4) and `await` (concurrency.md C1). Fix B3 with it first, as the test.
+1. ~~Shared control-flow analysis~~ — **done** as `class Flow` (per-path assigned/moved/live, merged at
+   joins; loops require the back-edge state to be no worse than the loop head, which avoids a fixpoint).
+   Still to add on top of it when the features arrive: null-narrowed vars (null.md N2), live borrows
+   (ownership-v2 R2 — needs "last use" liveness, a backward pass over the function body), pending tasks
+   (concurrency.md C1). Each is one more field in `Flow` plus its merge rule.
 2. **Error handling** (error-handling.md): `throws`, `try`, `catch`, `error(code, msg)`, handler `throws`.
 3. **Strings** (strings.md): UTF-8 validation at the edges (invalid request → 400), `substr` boundary
    panic, `mb_*`, `grapheme_*`.

@@ -1,0 +1,2 @@
+for ($i = 0; $i < intval("0"); $i++) { $last = $i; }
+echo $last;

@@ -1,0 +1,1 @@
+$a is moved inside a loop, so the next round would use a moved value. Move it after the loop, or use copy($a)
