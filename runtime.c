@@ -544,6 +544,8 @@ static Str *json_float(Str *d, double v) {
         snprintf(buf, sizeof buf, "%.*g", prec, v);
         if (strtod(buf, NULL) == v) break;
     }
+    // shortest %g of a whole number can come out as 3.8e+02; write whole numbers below 1e15 like PHP: 380.0
+    if (strpbrk(buf, "eE") && v == floor(v) && fabs(v) < 1e15) snprintf(buf, sizeof buf, "%.1f", v);
     if (!strpbrk(buf, ".eE")) strcat(buf, ".0");
     return str_add_bytes(d, buf, (int64_t)strlen(buf));
 }

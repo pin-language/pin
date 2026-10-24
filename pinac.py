@@ -507,6 +507,45 @@ def flatten_concat(e):
     return [e]
 
 
+# PHP functions an agent will try; what to do in Pin v0.1 instead
+PHP_FUNCTION_HINTS = {
+    "explode": "no explode() yet: walk the string with strpos() and substr() (see docs/ai-guide.md, idioms)",
+    "implode": "no implode() yet: join in a loop with .=",
+    "str_split": "no str_split() yet: use substr($s, $i, 1) in a loop",
+    "sort": "no sort() yet: write the loop (e.g. pick the max, remember it, repeat)",
+    "rsort": "no rsort() yet: write the loop", "usort": "no usort() yet: write the loop",
+    "ksort": "no ksort() yet: maps keep insertion order; write the loop",
+    "asort": "no asort() yet: write the loop", "arsort": "no arsort() yet: write the loop",
+    "array_map": "no array_map() yet: use a for/foreach loop into a new list",
+    "array_filter": "no array_filter() yet: use a foreach loop into a new list",
+    "array_reduce": "no array_reduce() yet: use a foreach loop",
+    "array_sum": "no array_sum() yet: $t = 0; foreach ($xs as $x) { $t += $x; }",
+    "in_array": "no in_array() yet: loop and compare, or keep a map<int,bool> and use isset()",
+    "array_search": "no array_search() yet: loop and return the index, -1 if not found",
+    "array_keys": "no array_keys() yet: foreach ($m as $k => $v)", "array_values": "no array_values() yet",
+    "array_push": "write $xs[] = $value;", "array_pop": "no array_pop() yet",
+    "array_merge": "no array_merge() yet: copy() one list and append the other in a loop",
+    "array_slice": "no array_slice() yet: copy the range in a loop", "count_chars": "not in Pin",
+    "max": "no max() yet: $a > $b ? $a : $b", "min": "no min() yet: $a < $b ? $a : $b",
+    "abs": "no abs() yet: $x < 0 ? -$x : $x",
+    "round": "no round() yet: (int)($x + 0.5) for positive numbers, or keep money in integer satang/cents",
+    "floor": "no floor() yet: (int)$x truncates toward zero", "ceil": "no ceil() yet",
+    "number_format": "no number_format() yet: keep money as integer satang/cents and format with intdiv() and %",
+    "sprintf": "no sprintf() yet: build the string with . and \"$var\" interpolation",
+    "printf": "no printf() yet: use echo with . or \"$var\" interpolation",
+    "print_r": "no print_r(): echo json_encode($value)", "var_dump": "no var_dump(): echo json_encode($value)",
+    "print": "use echo", "json_decode": "no json_decode() yet (request bodies cannot be parsed yet)",
+    "is_numeric": "no is_numeric() yet: check the characters with substr() in a loop",
+    "str_replace": "no str_replace() yet: rebuild the string with strpos()/substr()",
+    "ucfirst": "no ucfirst() yet: strtoupper(substr($s, 0, 1)) . substr($s, 1)",
+    "strrev": "no strrev() yet: loop from the end with substr($s, $i, 1)",
+    "rand": "no random numbers yet", "mt_rand": "no random numbers yet", "time": "no clock yet",
+    "date": "no dates yet", "microtime": "no clock yet", "exit": "return from the top level instead",
+    "die": "return from the top level instead", "header": "no response headers yet; http_status() sets the status",
+    "file_get_contents": "no file or network access yet", "fopen": "no file access yet",
+}
+
+
 # PHP words a newcomer (or an AI trained on PHP) will reach for, and what to do instead in Pin v0.1
 NOT_IN_PIN = {
     "class": "classes are not in Pin v0.1 yet (designed in docs/design/ownership-v2.md); use functions and maps",
@@ -1057,6 +1096,10 @@ class FuncGen:
                 kt = first_k
             if kt not in ("int", "string"):
                 raise CompileError(f"map keys must be int or string, not {kt}", e.line)
+            if vt is None:                      # ints and floats mixed: the map holds floats (like [1, 2.5])
+                probes = {self.expr_type_probe(ve) for _, ve in entries}
+                if "float" in probes and probes <= {"int", "float", None}:
+                    vt = "float"
             m = None
             for i, (ke, ve) in enumerate(entries):
                 v, t = self.owned_value(ve, vt, e.line)
@@ -1069,6 +1112,11 @@ class FuncGen:
                 elif m is None:
                     mt = f"map<{kt},{vt}>"
                     m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {KIND[vt]}")
+                if t != vt and not (t == "int" and vt == "float"):
+                    raise CompileError(
+                        f"a map holds one value type: this literal is {mt} (from its first value), but a value "
+                        f"here is {t}. For a JSON object with mixed values, build the string: "
+                        f"\"{{\\\"a\\\":\" . json_encode($text) . \",\\\"n\\\":\" . $n . \"}}\"", e.line)
                 v = self.coerce(v, t, vt, e.line, "map value")
                 key = self.map_key(mt, ke, e.line)
                 p = self.call("ptr", "@pn_map_slot", f"ptr {m}", f"i64 {key}", "i64 1")
@@ -1350,7 +1398,9 @@ class FuncGen:
         if name in BUILTINS:
             return self.builtin(e, hint)
         if name not in self.mod.funcs:
-            raise CompileError(f"unknown function {name}()", e.line)
+            hint = PHP_FUNCTION_HINTS.get(name)
+            raise CompileError(f"unknown function {name}()" + (f": {hint}" if hint else
+                               ". See the built-in list in docs/ai-guide.md"), e.line)
         ptypes, ret = self.mod.funcs[name]
         if len(args) != len(ptypes):
             raise CompileError(f"{name}() takes {len(ptypes)} argument(s) but got {len(args)}", e.line)

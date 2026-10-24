@@ -14,6 +14,7 @@ Pin is aimed at AI coding agents: `docs/ai-guide.md` is the whole language on on
 - A non-void function that can reach its end without `return` is a compile error (was a run-time panic).
 - PHP features that Pin lacks (`class`, `new`, `try`, `switch`, `match`, `null`, closures, `array()`,
   `include`, `global`, ...) get a message saying so and what to write instead.
+- `json_encode` of a whole float like 380.0 gives `380.0` (it gave `3.8e+02`).
 - `intdiv(PHP_INT_MIN, -1)` panics (it was undefined behaviour and crashed x86 machines); `x % -1` is 0.
 - `(int)` of NAN, INF or a float outside the int range panics; `intval()` of a number that does not fit
   panics instead of giving a wrong value.
@@ -31,5 +32,5 @@ Pin is aimed at AI coding agents: `docs/ai-guide.md` is the whole language on on
   errors. A missing file, a non-UTF-8 file or a missing clang gives a one-line message.
 - Builds no longer leave `.ll` files next to the source.
 - `examples/` with six runnable programs; English README, language guide, AI guide, `llms.txt`.
-- Test suite: 53 checks, run on macOS and Linux, plus sanitizer runs (ASAN/UBSAN, LeakSanitizer on
+- Test suite: 54 checks, run on macOS and Linux, plus sanitizer runs (ASAN/UBSAN, LeakSanitizer on
   Linux) and a GitHub Actions workflow.

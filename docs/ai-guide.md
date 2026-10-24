@@ -15,6 +15,17 @@ pin build app.pn -o app   # native binary
 Write → `pin check --json` → fix the reported line → repeat → `pin run`. Errors stop at the first one,
 so fix and re-check. Exit code 0 = ok, 1 = compile error or run-time panic, 2 = toolchain problem.
 
+## Program shape and output
+
+- A program is one `.pn` file. `<?php` at the top is optional. Statements outside functions run from top
+  to bottom; functions can be declared anywhere in the file (before or after use).
+- Top-level variables are local to the top level: functions cannot see them (there are no globals).
+- Print with `echo`, several values separated by commas: `echo "total: ", $t, "\n";`. Double-quoted
+  strings interpolate `"$name"` and `"{$name}x"`; single-quoted strings do not. `PHP_EOL` is `"\n"`.
+- Printing a float uses PHP's format: `380.5` → `380.5`, `380.0` → `380`, `1/3` → `0.33333333333333`.
+  `json_encode` of a whole float keeps `.0` (`380.0`; PHP would print `380`). `true` prints `1`, `false` prints nothing.
+- Maps keep insertion order (like PHP arrays), in `foreach` and in `json_encode`.
+
 ## The rules that matter
 
 1. **Types.** `int float bool string list<T> map<K,V> void`. `T` ∈ int/float/bool. `K` ∈ int/string,
@@ -33,6 +44,10 @@ so fix and re-check. Exit code 0 = ok, 1 = compile error or run-time panic, 2 = 
 10. **No globals.** Pass everything as parameters. Functions may be declared anywhere in the file.
 11. **Non-void functions must return on every path.**
 12. **Missing map key / bad index panic.** Use `isset($m[$k])` or `$m[$k] ?? $default`.
+13. **A map literal has one value type.** `["a" => 1, "b" => 2.5]` becomes `map<string,float>`;
+    `["a" => 1, "b" => "x"]` is an error — build mixed JSON objects as strings (idiom below).
+14. **`intval()` of text that is not a number gives 0; of a number too big for an int it panics** (in a
+    server: a 500). Validate input ranges after `intval()`.
 
 ## Idioms
 
@@ -78,6 +93,26 @@ function user_json(int $id, string $name): string {
 }
 ```
 
+Top N from a map (no `sort` yet): pick the best not yet used, N times.
+
+```php
+function top3(map<string,int> $counts): string {
+    map<string,bool> $used = [];
+    $out = "";
+    for ($round = 0; $round < 3; $round++) {
+        $best = "";
+        $bestN = -1;
+        foreach ($counts as $w => $n) {
+            if (!isset($used[$w]) && $n > $bestN) { $best = $w; $bestN = $n; }
+        }
+        if ($bestN < 0) { break; }
+        $used[$best] = true;
+        $out .= "$best: $bestN\n";
+    }
+    return $out;
+}
+```
+
 Splitting a string (no `explode` yet):
 
 ```php
@@ -112,8 +147,18 @@ function handle(string $method, string $path, string $body): string {   // exact
 serve(8080, "handle");    // last statement; blocks forever
 ```
 
-The response is always `Content-Type: application/json`. `$path` includes any query string. There is no
-header access, no body parsing (`json_decode`), no database yet.
+The response is always `Content-Type: application/json`; the body format is yours. `$path` includes any
+query string (`/health?x=1`), so strip it first if you route on exact paths:
+
+```php
+function route(string $path): string {
+    $q = strpos($path, "?");
+    return $q < 0 ? $path : substr($path, 0, $q);
+}
+```
+
+There is no header access, no body parsing (`json_decode`), no database yet. Handlers cannot keep state
+between requests (no globals): compute each answer from the request.
 
 ## PHP → Pin
 
@@ -129,7 +174,7 @@ header access, no body parsing (`json_decode`), no database yet.
 | `include`, `use`, `namespace` | one file per program |
 | `global`, `static`, `const`, `define` | parameters / local variables |
 | `strpos(...) === false` | `strpos(...) < 0` |
-| `explode`, `implode`, `sort`, `array_map`, `in_array` | write the loop (see idioms) |
+| `explode`, `implode`, `sort`, `array_map`, `in_array`, `max`, `sprintf`… | write the loop (see idioms); the error message names the replacement |
 | `json_decode` | not yet |
 | `(bool)$x`, truthiness | compare explicitly |
 | `$s + 1` on strings | `intval($s) + 1` |
