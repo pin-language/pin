@@ -1,0 +1,22 @@
+<?php
+// A handler that panics must answer 500, free what the request allocated, and keep serving.
+function boom(): string {
+    $big = fill(1000000, 7);            // 8 MB that only the panic cleanup can free
+    map<string,int> $m = ["a" => 1];
+    $s = str_repeat("x", 100000);
+    return "{\"n\":" . $m["missing"] . "}";
+}
+
+function oob(): string {
+    $xs = [1, 2, 3];
+    return "{\"n\":" . $xs[10] . "}";
+}
+
+function handle(string $method, string $path, string $body): string {
+    if ($path == "/boom") { return boom(); }
+    if ($path == "/oob") { return oob(); }
+    if ($path == "/overflow") { return "{\"n\":" . (intval(substr($path, 1, 0) . "9223372036854775807") + 1) . "}"; }
+    return "{\"ok\":true}";
+}
+
+serve(8085, "handle");

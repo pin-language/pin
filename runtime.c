@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <setjmp.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
@@ -30,13 +31,77 @@
 #endif
 
 static void oom(void) { fprintf(stderr, "fatal: out of memory\n"); exit(2); }
-static void *xmalloc(size_t n) { void *p = malloc(n ? n : 1); if (!p) oom(); return p; }
-static void *xrealloc(void *p, size_t n) { p = realloc(p, n ? n : 1); if (!p) oom(); return p; }
+
+// ---------------------------------------------------------------- allocation and panics
+// Every heap value of the language (lists, strings, maps and their buffers) is allocated here with a
+// 16-byte header. While an HTTP request is being handled, its blocks are linked into a per-thread
+// list. If the handler panics, the worker longjmps back, frees every block of that request and
+// answers 500. Handlers share nothing (no globals), so nothing outside the request can point at
+// those blocks. Outside requests blocks are not linked and the header only costs 16 bytes.
+
+typedef struct Blk { struct Blk *prev, *next; } Blk;
+
+static __thread Blk req_blocks;        // circular list of the current request's blocks
+static __thread int req_active;        // link new blocks into req_blocks
+static __thread jmp_buf *req_jmp;      // where a panic goes while a handler runs
+
+static void blk_link(Blk *b) {
+    b->prev = req_blocks.prev; b->next = &req_blocks;
+    req_blocks.prev->next = b; req_blocks.prev = b;
+}
+
+static void blk_unlink(Blk *b) { b->prev->next = b->next; b->next->prev = b->prev; }
+
+static void *xmalloc(size_t n) {
+    Blk *b = malloc(sizeof(Blk) + n);
+    if (!b) oom();
+    if (req_active) blk_link(b); else b->prev = b->next = NULL;
+    return b + 1;
+}
+
+static void *xcalloc(size_t n) { return memset(xmalloc(n), 0, n); }
+
+static void *xrealloc(void *p, size_t n) {
+    if (!p) return xmalloc(n);
+    Blk *b = (Blk *)p - 1;
+    int linked = b->prev != NULL;
+    if (linked) blk_unlink(b);
+    b = realloc(b, sizeof(Blk) + n);
+    if (!b) oom();
+    if (linked) blk_link(b); else b->prev = b->next = NULL;
+    return b + 1;
+}
+
+static void xfree(void *p) {
+    if (!p) return;
+    Blk *b = (Blk *)p - 1;
+    if (b->prev) blk_unlink(b);
+    free(b);
+}
+
+static void req_begin(void) {
+    req_blocks.prev = req_blocks.next = &req_blocks;
+    req_active = 1;
+}
+
+// Free everything the request still owns (only needed after a panic: normally the list is empty
+// except for blocks the server frees itself right after).
+static void req_free_all(void) {
+    Blk *b = req_blocks.next;
+    while (b != &req_blocks) { Blk *n = b->next; free(b); b = n; }
+    req_blocks.prev = req_blocks.next = &req_blocks;
+}
+
+// After a panic message: inside a handler, abandon the request; otherwise stop the program.
+__attribute__((noreturn)) static void die(void) {
+    if (req_jmp) longjmp(*req_jmp, 1);
+    exit(1);
+}
 
 __attribute__((noreturn)) static void panic_msg(const char *msg) {
     fflush(stdout);
     fprintf(stderr, "panic: %s\n", msg);
-    exit(1);
+    die();
 }
 
 // Byte size of n items of esize bytes plus `extra`, or panic. Every allocation whose size comes
@@ -100,45 +165,45 @@ List *pn_list_copy(List *src, int64_t esize) {
 
 void pn_list_free(List *l) {
     if (!l) return;
-    free(l->data);
-    free(l);
+    xfree(l->data);
+    xfree(l);
 }
 
 __attribute__((noreturn)) void pn_oob(int64_t i, int64_t len) {
     fflush(stdout);
     fprintf(stderr, "panic: index %lld out of range (list has %lld items)\n", (long long)i, (long long)len);
-    exit(1);
+    die();
 }
 
 __attribute__((noreturn)) void pn_divzero(int32_t line) {
     fflush(stdout);
     fprintf(stderr, "panic: division by zero on line %d\n", line);
-    exit(1);
+    die();
 }
 
 __attribute__((noreturn)) void pn_overflow(int32_t line) {
     fflush(stdout);
     fprintf(stderr, "panic: integer overflow on line %d "
                     "(use wrapping_add/wrapping_sub/wrapping_mul if wrapping around is intended)\n", line);
-    exit(1);
+    die();
 }
 
 __attribute__((noreturn)) void pn_float_to_int(int32_t line) {
     fflush(stdout);
     fprintf(stderr, "panic: float is NAN, INF or too large to turn into an int on line %d\n", line);
-    exit(1);
+    die();
 }
 
 __attribute__((noreturn)) void pn_noreturn(int32_t line) {
     fflush(stdout);
     fprintf(stderr, "panic: function ended without return (line %d)\n", line);
-    exit(1);
+    die();
 }
 
 __attribute__((noreturn)) void pn_map_missing(int32_t line) {
     fflush(stdout);
     fprintf(stderr, "panic: key not found on line %d (check with isset() or use the ?? operator)\n", line);
-    exit(1);
+    die();
 }
 
 // ============================================================================ strings
@@ -161,7 +226,7 @@ static Str *str_from(const char *p, int64_t n) {
 
 Str *pn_str_new(int64_t cap) { return str_alloc(cap); }
 
-void pn_str_free(Str *s) { if (s && s->cap >= 0) free(s); }
+void pn_str_free(Str *s) { if (s && s->cap >= 0) xfree(s); }
 
 // Copy a string. Literals are immutable and live forever, so their "copy" is the literal itself.
 Str *pn_str_dup(Str *s) {
@@ -349,16 +414,14 @@ Map *pn_map_new(int64_t kk, int64_t vk) {
     m->count = 0; m->used = 0; m->cap = 8;
     m->e = xmalloc(sizeof(Entry) * 8);
     m->isize = 16;
-    m->idx = calloc(16, sizeof(int64_t));
-    if (!m->idx) oom();
+    m->idx = xcalloc(16 * sizeof(int64_t));
     m->kk = (int32_t)kk; m->vk = (int32_t)vk;
     return m;
 }
 
 static void map_reindex(Map *m) {
-    free(m->idx);
-    m->idx = calloc((size_t)m->isize, sizeof(int64_t));
-    if (!m->idx) oom();
+    xfree(m->idx);
+    m->idx = xcalloc(checked_size(m->isize, (int64_t)sizeof(int64_t), 0));
     uint64_t mask = (uint64_t)m->isize - 1;
     for (int64_t i = 0; i < m->used; i++) {
         uint64_t j = m->e[i].hash & mask;
@@ -436,7 +499,7 @@ void pn_map_free(Map *m) {
         if (m->kk == 3) pn_str_free((Str *)m->e[i].key);
         if (m->vk == 3) pn_str_free((Str *)m->e[i].val);
     }
-    free(m->e); free(m->idx); free(m);
+    xfree(m->e); xfree(m->idx); xfree(m);
 }
 
 Map *pn_map_copy(Map *src) {
@@ -577,6 +640,32 @@ static int ieq_prefix(const char *p, const char *end, const char *name) {
     return strncasecmp(p, name, n) == 0;
 }
 
+static const char internal_error_body[] = "{\"error\":\"Internal Server Error\"}";
+
+// Call the program's handler for one request. A panic inside it frees everything the request
+// allocated and becomes a 500 response; the panic message (already on stderr) is the only trace,
+// so the client never sees internal details.
+static Str *run_handler(const char *line, const char *sp1, const char *sp2, const char *body, int64_t blen) {
+    jmp_buf jb;
+    req_begin();
+    if (setjmp(jb)) {
+        req_jmp = NULL;
+        req_free_all();
+        fprintf(stderr, "  in request %.*s -> 500\n", (int)(sp2 - line), line);
+        http_status = 500;
+        return str_from(internal_error_body, (int64_t)sizeof internal_error_body - 1);
+    }
+    req_jmp = &jb;
+    Str *method = str_from(line, sp1 - line);
+    Str *path = str_from(sp1 + 1, sp2 - sp1 - 1);
+    Str *b = str_from(body, blen);
+    http_status = 200;
+    Str *resp = pn_user_handler(method, path, b);
+    req_jmp = NULL;
+    pn_str_free(method); pn_str_free(path); pn_str_free(b);
+    return resp;
+}
+
 // Parse and answer every complete request in the input buffer. -1 = close the connection.
 static int handle_input(Conn *c) {
     size_t off = 0;
@@ -612,11 +701,7 @@ static int handle_input(Conn *c) {
         size_t hlen = (size_t)(hend - buf) + 4;
         if (avail < hlen + (size_t)clen) break;      // body not complete yet
 
-        Str *method = str_from(buf, sp1 - buf);
-        Str *path = str_from(sp1 + 1, sp2 - sp1 - 1);
-        Str *body = str_from(hend + 4, clen);
-        http_status = 200;
-        Str *resp = pn_user_handler(method, path, body);
+        Str *resp = run_handler(buf, sp1, sp2, hend + 4, clen);
         char head[256];
         int hn = snprintf(head, sizeof head,
                           "HTTP/1.1 %lld %s\r\nContent-Type: application/json\r\nContent-Length: %lld\r\n%s\r\n",
@@ -624,7 +709,8 @@ static int handle_input(Conn *c) {
                           keep ? "" : "Connection: close\r\n");
         out_add(c, head, (size_t)hn);
         if (resp) out_add(c, resp->data, (size_t)resp->len);
-        pn_str_free(resp); pn_str_free(method); pn_str_free(path); pn_str_free(body);
+        pn_str_free(resp);
+        req_active = 0;
         off += hlen + (size_t)clen;
         if (!keep) c->close_after = 1;
     }
