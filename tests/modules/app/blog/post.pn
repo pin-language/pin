@@ -1,0 +1,2 @@
+import util/text;
+export function title(string $s): string { return text::shout($s); }

@@ -1,0 +1,6 @@
+// line 1
+export function f(): int {
+    $x = 1;
+    $x = "one";
+    return $x;
+}

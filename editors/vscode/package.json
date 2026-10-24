@@ -1,24 +1,40 @@
 {
   "name": "pin",
   "displayName": "Pin language",
-  "description": "Syntax highlighting for Pin (.pn) — a PHP-like language for AI coding agents, compiled to native code",
-  "version": "0.1.0",
+  "description": "Syntax highlighting for Pin (.pn) \u2014 a PHP-like language for AI coding agents, compiled to native code",
+  "version": "0.4.0",
   "publisher": "pin-language",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/pin-language/pin" },
-  "engines": { "vscode": "^1.60.0" },
-  "categories": ["Programming Languages"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pin-language/pin"
+  },
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
   "contributes": {
     "languages": [
       {
         "id": "pin",
-        "aliases": ["Pin", "pin"],
-        "extensions": [".pn"],
+        "aliases": [
+          "Pin",
+          "pin"
+        ],
+        "extensions": [
+          ".pn"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
-      { "language": "pin", "scopeName": "source.pin", "path": "./syntaxes/pin.tmLanguage.json" }
+      {
+        "language": "pin",
+        "scopeName": "source.pin",
+        "path": "./syntaxes/pin.tmLanguage.json"
+      }
     ]
   }
 }

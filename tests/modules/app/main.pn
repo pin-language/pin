@@ -1,0 +1,17 @@
+// A program in several files: main.pn imports prices.pn and util/text.pn (as t).
+import prices;
+import util/text as t;
+import blog/post;                             // blog/post.pn imports util/text: paths start at this folder
+
+function total(list<int> $xs): int {          // same name as prices::total, no clash
+    $s = 0;
+    foreach ($xs as $x) { $s += $x; }
+    return $s * 1000;
+}
+
+echo prices::price("tea"), " ", prices::price("pizza"), "\n";
+$menu = prices::menu();                        // a list returned across files: the caller owns it
+echo t::shout(implode(", ", $menu)), "\n";
+echo prices::total(["tea", "cake"]), " ", total([1, 2]), "\n";
+echo t::shout(prices::label("cake")), "\n";
+echo post::title("from a subfolder"), "\n";

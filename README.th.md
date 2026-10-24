@@ -48,7 +48,7 @@ printf '%s\n' 'echo "สวัสดีจาก Pin\n";' > hello.pn && pin hell
 | `pin version` | ดูเวอร์ชัน |
 
 **VS Code:** มีสีตาม syntax ใน [`editors/vscode`](editors/vscode/) ติดตั้งด้วย
-`cd ~/.pin/editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`
+`cd ~/.pin/editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.4.0.vsix`
 
 เริ่มเรียน: [Learn Pin](https://github.com/pin-language/docs/blob/HEAD/learn/README.md) (10 บทสั้นๆ ภาษาอังกฤษ) ·
 ตัวอย่างอยู่ใน [`examples/`](examples/) และคู่มือภาษาเต็ม (ภาษาอังกฤษ) อยู่ที่ [language.md](https://github.com/pin-language/docs/blob/HEAD/language.md) (เอกสารทั้งหมดอยู่ที่ [pin-language/docs](https://github.com/pin-language/docs))
@@ -149,7 +149,7 @@ macOS ล็อก CPU core ไม่ได้ ส่วนต่างต่ำ
 
 ## ยังไม่มี
 
-class, `null`, `try`/`catch`, container ซ้อนกัน (list ใน list, map ของ list), closure, module/import, header ของ
+class, `null`, `try`/`catch`, container ซ้อนกัน (list ใน list, map ของ list), closure, header ของ
 request, `json_decode` เต็มรูปแบบ (ตอนนี้อ่าน key ชั้นบนสุดได้ด้วย `json_string` / `json_int` / …), PostgreSQL (SQLite มีแล้ว), `go`/`await` · ส่วนใหญ่ออกแบบไว้แล้วใน [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/)
 
 ## อยากได้ feedback

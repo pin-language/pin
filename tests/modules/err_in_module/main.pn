@@ -1,0 +1,2 @@
+import broken;
+echo broken::f();

@@ -1,4 +1,4 @@
-# HANDOFF — state as of 2026-10-24 (v0.3.0)
+# HANDOFF — state as of 2026-10-24 (v0.4.0)
 
 **Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
 `ai-guide.md` (pin-language/docs) complete and correct for every release: it is what agents read. Error messages should
@@ -23,7 +23,7 @@ int-overflow, null, strings, concurrency.
 
 ## 1. What works (verified)
 
-`python3 tests/run_tests.py` → **75 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
+`python3 tests/run_tests.py` → **88 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
 Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang python3`).
 
 - Everything from the first prototype (functions, int/float/bool/string, `list<T>`, ordered `map<K,V>`,
@@ -104,7 +104,9 @@ overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
    (owner, 2026-10-24: "SQLite first, then PostgreSQL") with the same `db_*` functions; then a full
    `json_decode`.
 8. **Concurrency** (concurrency.md) — needs 1, 2 and the request allocator (B10).
-9. Modules/imports — design not written yet.
+9. ~~Modules/imports~~ done in 0.4.0: `import`/`export`/`mod::fn()`, packages via `pin get` + `pin.lock`
+   (commit + sha256, checked every build). Not yet: transitive package resolution (a package's own package
+   imports must be `pin get`-ed by the project), package versions by semver ranges, a package index.
 
 After each: tests for the feature and every new compile error, ASAN/UBSAN on macOS, run the suite in the
 Linux container, update this file.

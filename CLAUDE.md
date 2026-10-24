@@ -73,6 +73,9 @@ Changing any of these = change of project direction → ask first.
 
 ## Codegen conventions (pinac.py)
 
+- Several files: `compile_file()` loads the main file and every import (depth first, cycle check); function
+  table keys are `name` in the main file and `moduleid::name` elsewhere; `FuncGen.fkey()` resolves a call.
+  LLVM names are `@"f.<key>"`. Packages: `package_file()` / `pin_get()` with `pin.lock` (commit + sha256).
 - `expr()` returns `(llvm_value, type, owned)`. `owned=True` means the caller must free or store it.
 - `borrow(e)` = evaluate for reading; owned results go to `self.temps`, freed at end of statement.
 - `owned_value(e)` = evaluate for storing; moves lists/maps out of variables, dups strings.

@@ -1,0 +1,25 @@
+import util/text;
+
+export function price(string $item): int {
+    return table()[$item] ?? -1;
+}
+
+export function menu(): list<string> {
+    list<string> $out = [];
+    foreach (table() as $name => $p) { $out[] = $name; }
+    return $out;
+}
+
+export function total(list<string> $items): int {
+    $sum = 0;
+    foreach ($items as $i) { $sum += price($i); }
+    return $sum;
+}
+
+export function label(string $item): string {
+    return text::pad($item, 6) . "= " . price($item);
+}
+
+function table(): map<string,int> {            // private: only this file can call it
+    return ["tea" => 40, "cake" => 89, "coffee" => 55];
+}

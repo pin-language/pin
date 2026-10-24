@@ -30,9 +30,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 class CompileError(Exception):
-    def __init__(self, msg, line):
+    def __init__(self, msg, line, file=None):
         super().__init__(msg)
-        self.msg, self.line = msg, line
+        self.msg, self.line, self.file = msg, line, file   # file: set for errors in imported modules
 
 
 # ----------------------------------------------------------------------------- lexer
@@ -47,7 +47,7 @@ TOKEN_RE = re.compile(r"""
  |(?P<STRING>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')
  |(?P<VAR>\$[A-Za-z_]\w*)
  |(?P<IDENT>[A-Za-z_]\w*)
- |(?P<OP>\+\+|--|\+=|-=|\*=|/=|%=|\.=|===|!==|==|!=|<=|>=|=>|&&|\|\||\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?])
+ |(?P<OP>::|\+\+|--|\+=|-=|\*=|/=|%=|\.=|===|!==|==|!=|<=|>=|=>|&&|\|\||\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?])
 """, re.VERBOSE)
 
 
@@ -141,16 +141,46 @@ class Parser:
         return False
 
     def program(self):
-        funcs, main = [], []
+        funcs, main, imports = [], [], []
         while self.cur.kind != "EOF":
             if self.at("function", "IDENT"):
                 funcs.append(self.function())
+            elif self.at("export", "IDENT"):
+                line = self.eat().line
+                if not self.at("function", "IDENT"):
+                    raise CompileError("export goes before a function: export function name(...): type { ... }", line)
+                f = self.function()
+                f.exported = True
+                funcs.append(f)
+            elif self.at("import", "IDENT"):
+                imports.append(self.import_())
             else:
                 main.append(self.statement())
-        return funcs, main
+        return funcs, main, imports
+
+    def import_(self):
+        """import prices;   import http/router;   import github.com/owner/repo/path as name;"""
+        line = self.eat("import").line
+        parts = []
+        while not self.at(";") and not self.at("as", "IDENT") and self.cur.kind != "EOF":
+            if self.cur.kind not in ("IDENT", "OP", "INT"):
+                break
+            parts.append(self.cur.val)
+            self.i += 1
+        path = "".join(parts)
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*(/[A-Za-z0-9_][A-Za-z0-9_.\-]*)*", path) or ".." in path.split("/"):
+            raise CompileError("import needs a module path like  import prices;  or  import http/router;  "
+                               "(a file in the project folder, without .pn; paths start at the main file's folder, "
+                               "so no ../ is needed)", line)
+        alias = None
+        if self.accept("as"):
+            alias = self.eat(kind="IDENT").val
+        self.eat(";")
+        return Node("import", line, path=path, alias=alias or path.split("/")[-1].replace("-", "_").replace(".", "_"))
 
     def function(self):
         line = self.eat("function").line
+        exported = False
         name = self.eat(kind="IDENT").val
         self.eat("(")
         params = []
@@ -169,7 +199,7 @@ class Parser:
         self.eat(":")
         ret = self.type_()
         body = self.block()
-        return Node("func", line, name=name, params=params, ret=ret, body=body)
+        return Node("func", line, name=name, params=params, ret=ret, body=body, exported=exported)
 
     def type_(self):
         t = self.cur
@@ -414,6 +444,10 @@ class Parser:
             if t.val in NOT_IN_PIN and not (t.val == "list" and self.peek().val == "<"):
                 raise CompileError(NOT_IN_PIN[t.val], t.line)
             self.eat()
+            module = None
+            if self.at("::"):                       # prices::price(...)
+                self.eat()
+                module, t = t.val, self.eat(kind="IDENT")
             if not self.at("("):
                 raise CompileError(f"unknown name '{t.val}' (variables start with $)", t.line)
             self.eat("(")
@@ -423,7 +457,7 @@ class Parser:
                 if not self.accept(","):
                     break
             self.eat(")")
-            return Node("call", t.line, name=t.val, args=args)
+            return Node("call", t.line, name=t.val, args=args, module=module)
         if t.kind == "OP" and t.val == "(":
             self.eat()
             e = self.expr()
@@ -565,9 +599,9 @@ NOT_IN_PIN = {
     "finally": "try/catch is not in Pin v0.1 yet",
     "switch": "switch is not in Pin; use if / elseif / else", "match": "match is not in Pin; use if / elseif / else",
     "do": "do/while is not in Pin; use while", "goto": "goto is not in Pin",
-    "include": "a Pin program is one file (no include/require yet)", "require": "a Pin program is one file",
-    "include_once": "a Pin program is one file", "require_once": "a Pin program is one file",
-    "use": "a Pin program is one file (no use/namespace yet)", "namespace": "a Pin program is one file",
+    "include": "use `import name;` (loads name.pn; call name::fn())", "require": "use `import name;`",
+    "include_once": "use `import name;`", "require_once": "use `import name;`",
+    "use": "use `import name;` to load name.pn and call name::fn()", "namespace": "each file is a module: use `import name;` and name::fn()",
     "global": "Pin has no global variables, by design: pass values as parameters",
     "static": "Pin has no static variables: pass values as parameters",
     "const": "const is not in Pin v0.1; use a variable or a function that returns the value",
@@ -678,7 +712,8 @@ declare double @llvm.sqrt.f64(double)
 class Module:
     def __init__(self):
         self.lits = {}
-        self.funcs = {}
+        self.funcs = {}         # key ("name" in the main file, "module::name" elsewhere) -> (param types, ret)
+        self.exported = {}      # key -> bool
         self.handler = None
 
     def lit(self, s):
@@ -739,8 +774,10 @@ class Flow:
 
 
 class FuncGen:
-    def __init__(self, mod, name, params, ret, line, is_main=False):
+    def __init__(self, mod, name, params, ret, line, is_main=False, modid="", imports=None):
         self.mod, self.name, self.ret, self.line, self.is_main = mod, name, ret, line, is_main
+        self.modid, self.imports = modid, imports or {}     # imports: alias -> (module id, file)
+        self.key = name if not modid else f"{modid}::{name}"
         self.params = params
         self.allocas, self.inits, self.body = [], [], []
         self.n = 0
@@ -1197,8 +1234,8 @@ class FuncGen:
             return self.expr_type_probe(e.e)
         if e.kind == "var" and e.name in self.vars:
             return self.vars[e.name]
-        if e.kind == "call" and e.name in self.mod.funcs:
-            return self.mod.funcs[e.name][1]
+        if e.kind == "call" and self.fkey(e, quiet=True):
+            return self.mod.funcs[self.fkey(e, quiet=True)][1]
         if e.kind == "call" and e.name in ("strval", "substr", "trim", "strtolower", "strtoupper", "json_encode",
                                            "implode", "url_path", "query_param", "form_param", "json_string",
                                            "db_json", "db_string", "db_error"):
@@ -1512,22 +1549,44 @@ class FuncGen:
             raise CompileError(f"{e.name}() argument {i + 1} must be an int but got {t}", e.line)
         return v
 
+    def fkey(self, e, quiet=False):
+        """The function-table key for a call: name in this file, or module::name for an imported module."""
+        module = getattr(e, "module", None)
+        if module is None:
+            k = e.name if not self.modid else f"{self.modid}::{e.name}"
+            return k if k in self.mod.funcs else None
+        if module not in self.imports:
+            if quiet:
+                return None
+            raise CompileError(f"{module}::{e.name}(): there is no `import {module};` in this file", e.line)
+        target, file = self.imports[module]
+        k = f"{target}::{e.name}" if target else e.name
+        if k not in self.mod.funcs:
+            if quiet:
+                return None
+            raise CompileError(f"{module}::{e.name}(): {os.path.basename(file)} has no function {e.name}()", e.line)
+        if not self.mod.exported.get(k) and not quiet:
+            raise CompileError(f"{module}::{e.name}() is not exported. Add `export` before `function {e.name}` "
+                               f"in {os.path.basename(file)} to let other files call it", e.line)
+        return k
+
     def call_expr(self, e, hint):
         name, args = e.name, e.args
-        if name in BUILTINS:
+        if name in BUILTINS and getattr(e, "module", None) is None:
             return self.builtin(e, hint)
-        if name not in self.mod.funcs:
+        key = self.fkey(e)
+        if key is None:
             hint = PHP_FUNCTION_HINTS.get(name)
             raise CompileError(f"unknown function {name}()" + (f": {hint}" if hint else
                                ". See the built-in list in the AI guide, github.com/pin-language/docs"), e.line)
-        ptypes, ret = self.mod.funcs[name]
+        ptypes, ret = self.mod.funcs[key]
         if len(args) != len(ptypes):
             raise CompileError(f"{name}() takes {len(ptypes)} argument(s) but got {len(args)}", e.line)
         vals = []
         for a, pt in zip(args, ptypes):
             v, t = self.borrow(a, pt)     # heap values are lent to the callee
             vals.append(f"{llty(pt)} {self.coerce(v, t, pt, e.line, f'argument of {name}()')}")
-        r = self.call(llty(ret), f'@"f.{name}"', *vals)
+        r = self.call(llty(ret), f'@"f.{key}"', *vals)
         return r, ret, is_heap(ret)
 
     def builtin(self, e, hint):
@@ -1739,7 +1798,7 @@ class FuncGen:
             port = self.int_arg(e, 0)
             h = args[1]
             sig = (["string", "string", "string"], "string")
-            if h.kind != "str" or h.val not in self.mod.funcs or self.mod.funcs[h.val] != sig:
+            if h.kind != "str" or self.mod.funcs.get(h.val) != sig:
                 raise CompileError('serve($port, "handler") needs the name of a function declared as '
                                    'handler(string $method, string $path, string $body): string', e.line)
             if self.mod.handler and self.mod.handler != h.val:
@@ -1811,10 +1870,10 @@ class FuncGen:
         t = self.vars.get(name)
         if t and is_heap(t) and name in self.iterating:
             raise CompileError(f"cannot replace {name} while a foreach is looping over it", line)
-        if t is None and val_e.kind == "call" and val_e.name in self.mod.funcs and is_heap(self.mod.funcs[val_e.name][1]):
+        if t is None and val_e.kind == "call" and self.fkey(val_e, quiet=True) and is_heap(self.mod.funcs[self.fkey(val_e, quiet=True)][1]):
             # a first assignment inside a loop still runs many times: declare now so the
             # previous round's value can be freed before the new one is built
-            t = self.mod.funcs[val_e.name][1]
+            t = self.mod.funcs[self.fkey(val_e, quiet=True)][1]
             self.declare(name, t)
         early = False
         if t and is_heap(t) and not mentions(val_e, name):
@@ -2185,7 +2244,7 @@ class FuncGen:
             sig = "define i32 @main()"
         else:
             ps = ", ".join(f"{llty(t)} %arg.{n[1:]}" for t, n in self.params)
-            sig = f"define internal {llty(self.ret)} @\"f.{self.name}\"({ps})"
+            sig = f"define internal {llty(self.ret)} @\"f.{self.key}\"({ps})"
         return [sig + " {", "entry:"] + self.allocas + self.inits + ["  br label %body", "body:"] + self.body + ["}"]
 
 
@@ -2208,30 +2267,241 @@ TBAA = """
 """
 
 
-def compile_source(src):
-    toks = lex(src)
-    funcs, main = Parser(toks).program()
+def parse_file(path, src=None):
+    try:
+        src = read_source(path) if src is None else src
+        return Parser(lex(src)).program()
+    except CompileError as err:
+        err.file = err.file or path
+        raise
+
+
+def compile_file(path, src=None):
+    """Compile the program whose main file is `path`, with every module it imports, into one LLVM module."""
+    main_path = os.path.abspath(path)
+    mods = {}               # absolute file -> (module id, funcs, imports {alias: (id, file)})
+    order = []
+
+    def load(file, mid, stack, src=None):
+        if file in mods:
+            return
+        funcs, main, imports = parse_file(file, src)
+        if mid and main:
+            raise CompileError("a module (a file other files import) may only contain functions and imports; "
+                               "move this code into a function, or into the main file", main[0].line, file)
+        table = {}
+        for imp in imports:
+            target = resolve_import(imp, file, main_path)
+            if target in stack:
+                chain = " -> ".join(os.path.basename(f) for f in stack[stack.index(target):] + [target])
+                raise CompileError(f"import cycle: {chain}. Move what both files need into a third module",
+                                   imp.line, file)
+            if imp.alias in table:
+                raise CompileError(f"two imports are both called {imp.alias}; rename one with `as`", imp.line, file)
+            tid = module_id(target, main_path, imp.path)
+            table[imp.alias] = (tid, target)
+            load(target, tid, stack + [target])
+        mods[file] = (mid, funcs, main, table)
+        order.append(file)
+
+    load(main_path, "", [main_path], src)
     mod = Module()
-    for f in funcs:
-        if f.name in mod.funcs or f.name in BUILTINS:
-            raise CompileError(f"function {f.name}() is already defined", f.line)
-        names = [p for _, p in f.params]
-        if len(set(names)) != len(names):
-            raise CompileError(f"{f.name}() has two parameters with the same name", f.line)
-        mod.funcs[f.name] = ([t for t, _ in f.params], f.ret)
+    for file in order:
+        mid, funcs, _, _ = mods[file]
+        for f in funcs:
+            key = f.name if not mid else f"{mid}::{f.name}"
+            if key in mod.funcs or (not mid and f.name in BUILTINS) or (mid and f.name in BUILTINS):
+                raise CompileError(f"function {f.name}() is already defined", f.line, file)
+            names = [p for _, p in f.params]
+            if len(set(names)) != len(names):
+                raise CompileError(f"{f.name}() has two parameters with the same name", f.line, file)
+            mod.funcs[key] = ([t for t, _ in f.params], f.ret)
+            mod.exported[key] = getattr(f, "exported", False) or not mid
     out = []
-    for f in funcs:
-        g = FuncGen(mod, f.name, f.params, f.ret, f.line)
-        g.stmt(f.body)
-        out += g.finish()
-    g = FuncGen(mod, "main", [], "void", 1, is_main=True)
-    for s in main:
-        g.stmt(s)
-    out += g.finish()
+    for file in order:
+        mid, funcs, main, table = mods[file]
+        try:
+            for f in funcs:
+                g = FuncGen(mod, f.name, f.params, f.ret, f.line, modid=mid, imports=table)
+                g.stmt(f.body)
+                out += g.finish()
+            if not mid:
+                g = FuncGen(mod, "main", [], "void", 1, is_main=True, imports=table)
+                for s in main:
+                    g.stmt(s)
+                out += g.finish()
+        except CompileError as err:
+            err.file = err.file or file
+            raise
     return "\n".join(mod.header() + out) + "\n" + TBAA
 
 
-VERSION = "0.3.0"
+def compile_source(src):
+    """Compile a single file given as text (no imports relative to a real directory)."""
+    return compile_file(os.path.join(os.getcwd(), "<source>.pn"), src)
+
+
+def module_id(file, main_path, import_path):
+    """A readable, unique name for a module: its path from the main file's folder, or its package path."""
+    rel = os.path.relpath(file, os.path.dirname(main_path))
+    if rel.startswith(".."):
+        return import_path
+    return rel[:-3] if rel.endswith(".pn") else rel
+
+
+def import_root(from_file, main_path):
+    """Local import paths start at the project folder (the main file's folder), whichever file imports them,
+    so `import posts;` means the same file everywhere. Inside a package they start at the package's root."""
+    cache = os.path.abspath(cache_root())
+    f = os.path.abspath(from_file)
+    if f.startswith(cache + os.sep):
+        parts = os.path.relpath(f, cache).split(os.sep)
+        return os.path.join(cache, *parts[:3])          # host/owner/repo@commit
+    return os.path.dirname(os.path.abspath(main_path))
+
+
+def resolve_import(imp, from_file, main_path):
+    """A local import is a file under the project (or package) folder; a path whose first part has a dot is a
+    package."""
+    first = imp.path.split("/")[0]
+    if "." in first:
+        return package_file(imp.path, main_path, imp.line, from_file)
+    root = import_root(from_file, main_path)
+    f = os.path.join(root, imp.path + ".pn")
+    if not os.path.isfile(f):
+        raise CompileError(f"import {imp.path}: there is no file {imp.path}.pn in the project folder "
+                           f"{os.path.relpath(root) or '.'} (import paths start at the folder of the main file)",
+                           imp.line, from_file)
+    return os.path.abspath(f)
+
+
+# ----------------------------------------------------------------------------- packages
+# import github.com/owner/repo/path;  needs a pin.lock entry made by  pin get github.com/owner/repo@version.
+# pin.lock pins the exact commit and a sha256 of every .pn file in the package; the hash is checked on every
+# build, so a package that changes after it was locked (a moved tag, a tampered cache) does not compile.
+
+def cache_root():
+    return os.environ.get("PIN_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "pin", "pkg")
+
+
+def find_lock(start_dir):
+    d = os.path.abspath(start_dir)
+    while True:
+        f = os.path.join(d, "pin.lock")
+        if os.path.isfile(f):
+            return f
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def read_lock(path):
+    entries = {}
+    if path and os.path.isfile(path):
+        for line in open(path, encoding="utf-8"):
+            parts = line.split()
+            if len(parts) == 4 and not line.startswith("#"):
+                entries[parts[0]] = {"version": parts[1], "commit": parts[2], "hash": parts[3]}
+    return entries
+
+
+def write_lock(path, entries):
+    lines = ["# pin.lock — written by `pin get`; commit it. Each package is pinned to a commit and a sha256 of",
+             "# its .pn files, checked on every build.", ""]
+    for repo in sorted(entries):
+        e = entries[repo]
+        lines.append(f"{repo} {e['version']} {e['commit']} {e['hash']}")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def package_hash(d):
+    import hashlib
+    h = hashlib.sha256()
+    for root, dirs, files in os.walk(d):
+        dirs[:] = sorted(x for x in dirs if x != ".git")
+        for name in sorted(files):
+            if name.endswith(".pn"):
+                p = os.path.join(root, name)
+                h.update(os.path.relpath(p, d).replace(os.sep, "/").encode() + b"\0")
+                h.update(open(p, "rb").read() + b"\0")
+    return "sha256:" + h.hexdigest()
+
+
+def git_url(repo):
+    base = os.environ.get("PIN_GIT_BASE")              # tests point this at local repositories
+    return f"{base.rstrip('/')}/{repo}" if base else f"https://{repo}.git"
+
+
+def fetch_package(repo, ref):
+    """Clone repo at ref into the cache; return (commit, directory)."""
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="pin-get-")
+    try:
+        r = subprocess.run(["git", "clone", "--quiet", git_url(repo), tmp], capture_output=True, text=True)
+        if r.returncode:
+            raise CompileError(f"cannot download {repo}: {r.stderr.strip()}", 0)
+        if ref:
+            r = subprocess.run(["git", "-C", tmp, "checkout", "--quiet", ref], capture_output=True, text=True)
+            if r.returncode:
+                raise CompileError(f"{repo} has no version {ref}: {r.stderr.strip()}", 0)
+        commit = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        dest = os.path.join(cache_root(), f"{repo}@{commit}")
+        if not os.path.isdir(dest):
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copytree(tmp, dest, ignore=shutil.ignore_patterns(".git"))
+        return commit, dest
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def package_file(path, main_path, line, from_file):
+    parts = path.split("/")
+    if len(parts) < 4:
+        raise CompileError(f"import {path}: a package import is host/owner/repo/module, e.g. "
+                           f"github.com/pin-language/web/router", line, from_file)
+    repo, rest = "/".join(parts[:3]), "/".join(parts[3:])
+    lock = find_lock(os.path.dirname(main_path))
+    entry = read_lock(lock).get(repo)
+    if not entry:
+        raise CompileError(f"import {path}: {repo} is not in pin.lock. Run:  pin get {repo}@<version>", line, from_file)
+    d = os.path.join(cache_root(), f"{repo}@{entry['commit']}")
+    if not os.path.isdir(d):
+        commit, d = fetch_package(repo, entry["commit"])
+    got = package_hash(d)
+    if got != entry["hash"]:
+        raise CompileError(f"{repo}: the code does not match pin.lock ({entry['hash']}, found {got}). The "
+                           f"package changed after it was locked, so it is not built. To get the locked code "
+                           f"back, delete {d} (it is downloaded again). Run  pin get {repo}@<version>  only "
+                           f"after reading what changed", line, from_file)
+    f = os.path.join(d, rest + ".pn")
+    if not os.path.isfile(f):
+        raise CompileError(f"import {path}: {repo} has no {rest}.pn", line, from_file)
+    return os.path.abspath(f)
+
+
+def pin_get(spec):
+    """pin get host/owner/repo[@version]: download, pin the commit and hash in ./pin.lock."""
+    repo, _, ref = spec.partition("@")
+    if len(repo.split("/")) != 3 or "." not in repo.split("/")[0]:
+        print("usage: pin get github.com/owner/repo[@version]", file=sys.stderr)
+        return 2
+    try:
+        commit, d = fetch_package(repo, ref)
+    except CompileError as e:
+        print(f"error: {e.msg}", file=sys.stderr)
+        return 1
+    lock = find_lock(os.getcwd()) or os.path.join(os.getcwd(), "pin.lock")
+    entries = read_lock(lock)
+    entries[repo] = {"version": ref or "HEAD", "commit": commit, "hash": package_hash(d)}
+    write_lock(lock, entries)
+    print(f"{repo} {ref or 'HEAD'} -> {commit[:12]} ({entries[repo]['hash'][:19]}…) in {os.path.relpath(lock)}")
+    return 0
+
+
+VERSION = "0.4.0"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 
@@ -2239,6 +2509,7 @@ USAGE = """pin — compile and run Pin programs (.pn)
   pin run FILE.pn            compile, then run it (the binary is thrown away)
   pin build FILE.pn [-o OUT] compile to a native binary (default: FILE without .pn)
   pin check FILE.pn          type- and ownership-check only, no binary
+  pin get HOST/OWNER/REPO[@VERSION]  add a package to ./pin.lock (then: import host/owner/repo/module;)
   pin version                (also -v, --version)
 
   --json                     errors as JSON lines on stdout: {"file","line","severity","message"}
@@ -2271,9 +2542,11 @@ def report(path, line, msg):
 
 def to_ir(path):
     try:
-        return compile_source(read_source(path))
+        return compile_file(path)
     except CompileError as e:
-        report(path, e.line, e.msg)
+        f = e.file or path
+        shown = f if f.startswith("<") else os.path.relpath(f) if os.path.isabs(f) else f
+        report(shown, e.line, e.msg)
         sys.exit(1)
 
 
@@ -2302,7 +2575,7 @@ def link(ir, out):
         sys.exit(2)
 
 
-SUBCOMMANDS = ("run", "build", "check", "version", "-v", "--version", "help", "-h", "--help")
+SUBCOMMANDS = ("run", "build", "check", "get", "version", "-v", "--version", "help", "-h", "--help")
 
 
 def cli(argv, default_run=False):
@@ -2329,6 +2602,8 @@ def cli(argv, default_run=False):
         if not rest:
             print(USAGE, file=sys.stderr)
             return 2
+        if cmd == "get":
+            return max(pin_get(spec) for spec in rest)
         src = rest[0]
         if cmd == "check":
             to_ir(src)

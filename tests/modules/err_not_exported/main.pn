@@ -1,0 +1,2 @@
+import prices;
+echo prices::table()["tea"];

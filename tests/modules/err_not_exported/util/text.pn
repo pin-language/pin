@@ -1,0 +1,9 @@
+export function shout(string $s): string {
+    return strtoupper($s) . "!";
+}
+
+export function pad(string $s, int $n): string {
+    $out = $s;
+    while (strlen($out) < $n) { $out .= " "; }
+    return $out;
+}

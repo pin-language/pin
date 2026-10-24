@@ -1,0 +1,2 @@
+import helper;
+echo helper::two();

@@ -13,6 +13,9 @@
       "include": "#open-tag"
     },
     {
+      "include": "#imports"
+    },
+    {
       "include": "#function-declaration"
     },
     {
@@ -38,6 +41,9 @@
     },
     {
       "include": "#variables"
+    },
+    {
+      "include": "#module-calls"
     },
     {
       "include": "#builtin-calls"
@@ -100,12 +106,15 @@
       "name": "comment.line.ignored-open-tag.pin"
     },
     "function-declaration": {
-      "match": "\\b(function)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "match": "\\b(?:(export)\\s+)?(function)\\s+([A-Za-z_][A-Za-z0-9_]*)",
       "captures": {
         "1": {
-          "name": "storage.type.function.pin"
+          "name": "storage.modifier.export.pin"
         },
         "2": {
+          "name": "storage.type.function.pin"
+        },
+        "3": {
           "name": "entity.name.function.pin"
         }
       }
@@ -372,6 +381,37 @@
       "captures": {
         "1": {
           "name": "punctuation.separator.return-type.pin"
+        }
+      }
+    },
+    "imports": {
+      "match": "^\\s*(import)\\s+([A-Za-z0-9_./\\-]+)(?:\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*))?",
+      "captures": {
+        "1": {
+          "name": "keyword.control.import.pin"
+        },
+        "2": {
+          "name": "entity.name.namespace.pin"
+        },
+        "3": {
+          "name": "keyword.control.as.pin"
+        },
+        "4": {
+          "name": "entity.name.namespace.pin"
+        }
+      }
+    },
+    "module-calls": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(::)([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "captures": {
+        "1": {
+          "name": "entity.name.namespace.pin"
+        },
+        "2": {
+          "name": "punctuation.separator.namespace.pin"
+        },
+        "3": {
+          "name": "entity.name.function.call.pin"
         }
       }
     }

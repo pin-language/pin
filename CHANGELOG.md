@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 — 2026-10-24
+
+Modules and packages: a program can be many files, and can use code from other repositories.
+
+- `import prices;` loads `prices.pn` from the project folder (the main file's folder) (`import util/text as t;` for folders and
+  short names); call `prices::price()`. Only `export function` can be called from other files.
+- Imported files may contain only functions and imports, so importing never runs code; import cycles, missing
+  files, unexported functions and unknown module names are compile errors that name the fix. Errors and
+  `--json` name the file they are in.
+- `pin get github.com/owner/repo@version` downloads a package (any Git repository) and writes its commit and a
+  SHA-256 of its `.pn` files to `pin.lock`; `import github.com/owner/repo/module;` uses it. The hash is checked
+  on every build: code that changed after it was locked does not compile. The cache refills itself from the
+  locked commit.
+- PHP's `include`, `require`, `use` and `namespace` now point at `import`.
+- VS Code: `import`, `export`, `as` and `module::fn()` are highlighted. Docs: Learn chapter 12.
+
 ## 0.3.0 — 2026-10-24
 
 SQLite: a Pin API can now store data.

@@ -1,0 +1,1 @@
+main.pn:2: error: prices::table() is not exported. Add `export` before `function table` in prices.pn to let other files call it

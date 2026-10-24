@@ -149,6 +149,60 @@ try:
 except (OSError, ValueError, KeyError) as e:
     fail("vscode grammar", repr(e))
 
+print("modules (tests/modules: app/ runs; err_*/ must fail with the message in expected.txt, file name included)")
+app = os.path.join(ROOT, "tests", "modules", "app")
+r = subprocess.run(PIN + ["main.pn"], cwd=app, capture_output=True, text=True)
+want = open(os.path.join(app, "expected.out"), encoding="utf-8").read()
+(ok if r.returncode == 0 and r.stdout == want else lambda n: fail(n, f"got {r.stdout!r} {r.stderr!r}"))("tests/modules/app")
+for d in sorted(glob.glob(os.path.join(ROOT, "tests", "modules", "err_*"))):
+    want = open(os.path.join(d, "expected.txt"), encoding="utf-8").read().strip()
+    r = subprocess.run(PIN + ["check", "main.pn"], cwd=d, capture_output=True, text=True)
+    (ok if r.returncode == 1 and want in r.stderr else
+     lambda n: fail(n, f"want {want!r}\n        got {r.stderr.strip()!r}"))(rel(d))
+r = subprocess.run(PIN + ["check", "--json", "main.pn"], cwd=os.path.join(ROOT, "tests", "modules", "err_in_module"),
+                   capture_output=True, text=True)
+(ok if '"file": "broken.pn", "line": 4' in r.stdout else lambda n: fail(n, r.stdout))("--json names the imported file")
+
+print("packages (pin get + pin.lock with a local git repository standing in for github.com)")
+import shutil  # noqa: E402
+pk = os.path.join(BUILD, "pkgtest")
+shutil.rmtree(pk, ignore_errors=True)
+repo = os.path.join(pk, "repos", "example.com", "acme", "strutil")
+proj = os.path.join(pk, "proj")
+os.makedirs(repo)
+os.makedirs(proj)
+genv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
+            PIN_GIT_BASE="file://" + os.path.join(pk, "repos"), PIN_CACHE=os.path.join(pk, "cache"))
+def git(*a):
+    subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True, env=genv)
+git("init", "-q")
+open(os.path.join(repo, "words.pn"), "w").write(
+    'import inner/helper;\nexport function greet(string $n): string { return helper::wrap("hi " . $n); }\n')
+os.makedirs(os.path.join(repo, "inner"))
+open(os.path.join(repo, "inner", "helper.pn"), "w").write('export function wrap(string $s): string { return "[" . $s . "]"; }\n')
+git("add", "-A"); git("commit", "-q", "-m", "v1"); git("tag", "v1.0.0")
+open(os.path.join(repo, "inner", "helper.pn"), "w").write('export function wrap(string $s): string { return "<" . $s . ">"; }\n')
+git("add", "-A"); git("commit", "-q", "-m", "v2"); git("tag", "v1.1.0")
+open(os.path.join(proj, "main.pn"), "w").write('import example.com/acme/strutil/words;\necho words::greet("pin"), "\\n";\n')
+def pin(*a):
+    return subprocess.run(PIN + list(a), cwd=proj, capture_output=True, text=True, env=genv)
+r = pin("main.pn")
+(ok if r.returncode == 1 and "not in pin.lock. Run:  pin get example.com/acme/strutil@<version>" in r.stderr
+ else lambda n: fail(n, r.stderr))("without pin.lock: tells you to run pin get")
+r = pin("get", "example.com/acme/strutil@v1.0.0")
+r2 = pin("main.pn")
+(ok if r.returncode == 0 and r2.stdout == "[hi pin]\n" else lambda n: fail(n, r.stderr + r2.stdout + r2.stderr))("pin get v1.0.0, build, run")
+cached = glob.glob(os.path.join(pk, "cache", "example.com", "acme", "strutil@*", "inner", "helper.pn"))[0]
+open(cached, "a").write("// tampered\n")
+r = pin("main.pn")
+(ok if r.returncode == 1 and "does not match pin.lock" in r.stderr else lambda n: fail(n, r.stdout + r.stderr))("a changed package does not build")
+shutil.rmtree(os.path.join(pk, "cache"))
+r = pin("main.pn")
+(ok if r.stdout == "[hi pin]\n" else lambda n: fail(n, r.stdout + r.stderr))("empty cache: downloads the locked commit again")
+pin("get", "example.com/acme/strutil@v1.1.0")
+r = pin("main.pn")
+(ok if r.stdout == "<hi pin>\n" else lambda n: fail(n, r.stdout + r.stderr))("pin get v1.1.0 moves the lock")
+
 print("examples (examples/*.pn: must compile; programs without serve() must run and exit 0)")
 for src in sorted(glob.glob(os.path.join(ROOT, "examples", "*.pn"))):
     name = os.path.splitext(os.path.basename(src))[0]

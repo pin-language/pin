@@ -90,7 +90,7 @@ Messages are written for agents trained on PHP: reaching for `class`, `try`, `sw
 | `pin version` | print the version |
 
 **Editor:** VS Code syntax highlighting is in [`editors/vscode`](editors/vscode/) — after installing,
-`cd ~/.pin/editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`.
+`cd ~/.pin/editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.4.0.vsix`.
 
 Start with [`examples/`](examples/) (installed in `~/.pin/examples`): `hello`, `fizzbuzz`, `wordcount`, `ownership`, `primes`, and
 `api` (a small JSON server). New to Pin? [Learn Pin](https://github.com/pin-language/docs/blob/HEAD/learn/README.md) — ten short chapters.
@@ -135,6 +135,19 @@ value moved in one `if` branch can still be used in the other branch. Errors exp
 ownership.pn:20: error: $a was moved on line 18 and can no longer be used here. Use copy($a) if you need two separate values
 loop.pn:2: error: $last may be used before it is assigned: on some paths to this line it never gets a value (an if without else, or a loop that can run zero times). Give $last a value before the if/loop
 ```
+
+## Modules and packages
+
+```php
+import prices;                                   // prices.pn in the project folder
+import github.com/someone/strutil/words;         // a package, after: pin get github.com/someone/strutil@v1.0.0
+echo prices::price("tea"), " ", words::greet("pin"), "\n";
+```
+
+Only functions marked `export` can be called from other files; imported files contain only functions. A
+package is any Git repository: `pin get` pins its commit and a SHA-256 of its code in `pin.lock`, checked on
+every build, so code that changes after you locked it does not compile. Everything still builds into one
+binary. ([Learn chapter 12](https://github.com/pin-language/docs/blob/HEAD/learn/12-modules-and-packages.md))
 
 ## A web server in one file
 
@@ -192,7 +205,7 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 ## Not there yet
 
 Classes, `null` / nullable types, `try`/`catch`, nested containers (lists of lists, maps of lists), closures,
-modules/imports, request headers, a full `json_decode` (nested JSON; top-level keys can already be read with
+request headers, a full `json_decode` (nested JSON; top-level keys can already be read with
 `json_string` / `json_int` / …), PostgreSQL (SQLite is there), `go`/`await`.
 Most of these are already designed (in Thai) in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
 [CHANGELOG.md](CHANGELOG.md) for what changed.

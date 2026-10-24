@@ -1,0 +1,1 @@
+b.pn:1: error: import cycle: a.pn -> b.pn -> a.pn. Move what both files need into a third module

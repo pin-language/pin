@@ -1,0 +1,1 @@
+main.pn:1: error: import nope: there is no file nope.pn in the project folder . (import paths start at the folder of the main file)

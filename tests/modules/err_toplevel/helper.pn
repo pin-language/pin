@@ -1,0 +1,2 @@
+export function two(): int { return 2; }
+echo "side effect";
