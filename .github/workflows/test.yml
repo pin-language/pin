@@ -1,0 +1,29 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install clang (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: clang version
+        run: clang --version
+      - name: Test suite
+        run: python3 tests/run_tests.py
+      - name: Sanitizers (ASAN + UBSAN; leaks too on Linux)
+        run: >
+          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn
+          examples/wordcount.pn examples/ownership.pn bench/listsum.pn

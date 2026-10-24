@@ -200,12 +200,16 @@ def rss_mb(pid):
         for line in open(f"/proc/{pid}/status"):
             if line.startswith("VmRSS:"):
                 return int(line.split()[1]) / 1024
-    out = subprocess.run(["footprint", "-p", str(pid)], capture_output=True, text=True).stdout
+    try:
+        out = subprocess.run(["footprint", "-p", str(pid)], capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        out = ""
     for line in out.splitlines():
         parts = line.split()
         if parts[:1] == ["phys_footprint:"]:
             return float(parts[1]) * {"B": 1 / 1048576, "KB": 1 / 1024, "MB": 1, "GB": 1024}[parts[2]]
-    return 0.0
+    out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return int(out.strip() or 0) / 1024                 # fallback: RSS in KB
 
 
 if "--no-server" not in sys.argv:

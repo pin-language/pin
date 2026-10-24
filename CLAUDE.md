@@ -29,6 +29,7 @@ python3 api/loadtest.py <wrk>           # API load test; start the 4 servers fir
 Needs: Python 3.10+ (tested 3.13), clang (tested 18). No Python packages.
 
 Memory-safety check (do this after touching runtime.c or ownership/codegen):
+`tools/sanitize.sh file.pn ...` does the steps below (CI runs it on Linux and macOS). By hand:
 ```bash
 clang -O1 -c -Wno-override-module X.ll -o X.o
 gcc -g -fsanitize=address,undefined runtime.c X.o -lm -pthread -o X_asan && ./X_asan   # Linux
