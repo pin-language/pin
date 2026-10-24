@@ -1,5 +1,9 @@
 # HANDOFF — state as of 2026-10-24 (v0.1.0 preview)
 
+**Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
+`docs/ai-guide.md` complete and correct for every release: it is what agents read. Error messages should
+say what to write instead; `pin check --json` is the agent loop.
+
 The language is **Pin** (was "Pina"), extension `.pn`. Entry point for users: `./pin` (run/build/check);
 the compiler itself is still `pinac.py`. **v0.1.0 is prepared for outside testers** (README.md in English,
 README.th.md, docs/language.md, examples/, LICENSE MIT, CHANGELOG.md, CI workflow). Not yet done, and
@@ -15,7 +19,7 @@ int-overflow, null, strings, concurrency.
 
 ## 1. What works (verified)
 
-`python3 tests/run_tests.py` → **48 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
+`python3 tests/run_tests.py` → **53 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
 Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang python3`).
 
 - Everything from the first prototype (functions, int/float/bool/string, `list<T>`, ordered `map<K,V>`,

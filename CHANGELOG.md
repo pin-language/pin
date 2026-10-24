@@ -2,12 +2,18 @@
 
 ## 0.1.0 — 2026-10-24 (first preview for testers)
 
+Pin is aimed at AI coding agents: `docs/ai-guide.md` is the whole language on one page, and
+`pin check --json` gives machine-readable errors.
+
 ### Language
 - Variables are checked on every path: using a variable that is not assigned on all paths is a compile
   error (this used to compile and could crash on a null list).
 - Moves are tracked per branch: moving a value in one `if` branch no longer blocks the other branch, and
   moving right before `break` or `return` is allowed.
-- `wrapping_add`, `wrapping_sub`, `wrapping_mul`.
+- `wrapping_add`, `wrapping_sub`, `wrapping_mul`; constants `PHP_INT_MAX`, `PHP_INT_MIN`, `PHP_EOL`.
+- A non-void function that can reach its end without `return` is a compile error (was a run-time panic).
+- PHP features that Pin lacks (`class`, `new`, `try`, `switch`, `match`, `null`, closures, `array()`,
+  `include`, `global`, ...) get a message saying so and what to write instead.
 - `intdiv(PHP_INT_MIN, -1)` panics (it was undefined behaviour and crashed x86 machines); `x % -1` is 0.
 - `(int)` of NAN, INF or a float outside the int range panics; `intval()` of a number that does not fit
   panics instead of giving a wrong value.
@@ -21,8 +27,9 @@
   previously produce a buffer smaller than the list claimed (heap overflow).
 
 ### Tools
-- `pin` command: `pin run`, `pin build`, `pin check`, `pin version`. A missing file or a missing clang
-  gives a one-line message.
+- `pin` command: `pin run`, `pin build`, `pin check`, `pin version`; `--json` for machine-readable
+  errors. A missing file, a non-UTF-8 file or a missing clang gives a one-line message.
 - Builds no longer leave `.ll` files next to the source.
-- `examples/` with six runnable programs; English README and language guide.
-- Test suite: 48 checks, run on macOS and Linux, plus sanitizer runs (ASAN/UBSAN, LeakSanitizer on Linux).
+- `examples/` with six runnable programs; English README, language guide, AI guide, `llms.txt`.
+- Test suite: 53 checks, run on macOS and Linux, plus sanitizer runs (ASAN/UBSAN, LeakSanitizer on
+  Linux) and a GitHub Actions workflow.
