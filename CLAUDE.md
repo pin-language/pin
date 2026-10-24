@@ -1,4 +1,4 @@
-# CLAUDE.md — Pina prototype language
+# CLAUDE.md — Pin prototype language (formerly "Pina")
 
 Read `HANDOFF.md` first: it has the current state, verified numbers, known bugs and the task queue.
 
@@ -6,7 +6,9 @@ Read `HANDOFF.md` first: it has the current state, verified numbers, known bugs 
 
 A new programming language for PinaTo Co., Ltd. that **looks like PHP** but compiles to native code via
 LLVM, with **Rust-style ownership instead of a garbage collector**. Target use: web APIs / backends.
-Working name "pina", file extension `.pn`. It is a prototype, not production.
+Name **Pin** (was "pina"), file extension `.pn`. It is a prototype, not production.
+Owner's rule for every design decision: **memory safety > speed > clarity > looking like PHP**.
+Agreed design specs live in `docs/design/` (most not implemented yet — see HANDOFF.md §4).
 
 ```
 .pn source → pinac.py (lexer → parser → type+ownership checker → LLVM IR) → clang -O2 + runtime.c → one native binary
@@ -30,7 +32,8 @@ Memory-safety check (do this after touching runtime.c or ownership/codegen):
 ```bash
 clang -O1 -c -Wno-override-module X.ll -o X.o
 gcc -g -fsanitize=address,undefined runtime.c X.o -lm -pthread -o X_asan && ./X_asan   # Linux
-# macOS: use clang instead of gcc for the link step
+# macOS: use clang instead of gcc for the link step (LeakSanitizer only works on Linux)
+# Linux check from the Mac: Docker image php:8.3-fpm + apt-get install clang python3, then run_tests.py
 ```
 
 ## Layout
@@ -38,8 +41,8 @@ gcc -g -fsanitize=address,undefined runtime.c X.o -lm -pthread -o X_asan && ./X_
 | path | what |
 |---|---|
 | `pinac.py` | whole compiler, one file (~1850 lines). `Parser` → AST `Node`s; `FuncGen` does type checking, ownership checking and IR emission in one pass |
-| `runtime.c` | lists, strings, ordered hash maps, json_encode, printing, panics, HTTP/1.1 server (**epoll → Linux only today**) |
-| `tests/` | `*.pn` + `expected/*.out`; `errors/*.pn` must fail to compile; `panics/*.pn` must exit 1 |
+| `runtime.c` | allocator (16-byte block header, per-request tracking), lists, strings, ordered hash maps, json_encode, printing, panics, HTTP/1.1 server (epoll on Linux, kqueue on macOS) |
+| `tests/` | `*.pn` + `expected/*.out`; `errors/*.pn` must fail to compile; `panics/*.pn` must exit 1; `server/panics.pn` = handler panics give 500 |
 | `bench/` | same 5 programs in pn/rust/go/php/python + `run.py`, `memrun.c` |
 | `api/` | same 3-endpoint JSON API in `server.pn`, `server.go`, PHP (FrankenPHP worker + classic) + `loadtest.py` |
 
@@ -53,8 +56,12 @@ gcc -g -fsanitize=address,undefined runtime.c X.o -lm -pthread -o X_asan && ./X_
    moved or returned. No mutation of a container while `foreach` walks it.
 4. **No global variables** — this is what lets `serve()` run handlers on many threads with no locks.
 5. Conditions must be `bool` (no truthiness). `/` always returns float (like PHP); `intdiv()` for ints.
-6. Runtime errors (index out of range, missing map key, div by zero) **panic** = print + `exit(1)`.
-7. Syntax should stay as close to PHP as the rules above allow. When unsure, do what PHP 8 does.
+6. Runtime errors (index out of range, missing map key, div by zero, int overflow, size too large)
+   **panic** = print + `exit(1)`; inside an HTTP handler a panic frees the request's blocks and answers
+   500 instead. Bounds checks and overflow checks are never optional (no unsafe, no flag).
+7. int `+ - *` panic on overflow; `wrapping_add/sub/mul()` wrap on purpose. Every allocation size that
+   comes from a program value goes through `checked_size()` in `runtime.c`.
+8. Syntax should stay as close to PHP as the rules above allow (PHP likeness is the lowest priority). When unsure, do what PHP 8 does.
 
 Owner decisions so far (in Thai conversation): 1A web API focus · 2C ownership like Rust · 3A goroutine-style
 concurrency (not built yet) · 5B LLVM backend · 4 (errors) **never answered** → defaulting to PHP-style
@@ -68,6 +75,10 @@ try/catch, not built yet. Changing any of these = change of project direction �
 - String literals are constants `{len, cap=-1, bytes}`; runtime never frees/writes `cap < 0`.
 - Map values live in 8-byte slots; strings stored as pointers, bools as i64.
 - Every new heap type needs: `is_heap`, `free_fn`, init in `declare`, and ASAN-clean tests.
+- Language heap memory must come from `xmalloc/xcalloc/xrealloc/xfree` in `runtime.c` (never plain
+  malloc/free): the block header is what lets a panicking request be cleaned up. Server-internal buffers
+  (`Conn`) use plain malloc on purpose — they outlive requests.
+- New panics call `die()` (not `exit`) so they become a 500 inside handlers.
 - Add a test for every feature (`tests/*.pn` + expected) and every new compile error (`tests/errors/`).
 
 ## Working with the owner

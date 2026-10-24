@@ -1,6 +1,6 @@
-# Prototype: ภาษาหน้าตาคล้าย PHP ที่ compile เป็น native code
+# Pin: ภาษาหน้าตาคล้าย PHP ที่ compile เป็น native code
 
-ชื่อชั่วคราว ไฟล์นามสกุล `.pn`
+ชื่อ **Pin** ไฟล์นามสกุล `.pn` (prototype ยังไม่ใช่ production) · หลักการออกแบบ: memory safety > ความเร็ว > อ่านง่าย > เหมือน PHP
 
 ```
 source (.pn) → lexer → parser → type checker + ownership checker → LLVM IR → clang -O2 → ไฟล์ binary ไฟล์เดียว
@@ -14,7 +14,7 @@ python3 pinac.py tests/hello.pn      # ได้ไฟล์ tests/hello
 python3 pinac.py --emit-ll file.pn   # ดู LLVM IR ที่สร้าง
 ```
 
-ต้องมี: Python 3, clang (ทดสอบกับ clang 18)
+ต้องมี: Python 3, clang (ทดสอบกับ Apple clang 15 บน macOS และ clang 18–19 บน Linux)
 
 ## ตัวอย่าง
 
@@ -51,8 +51,9 @@ echo sum(squares(10)), "\n";
 | แก้ array ที่รับเป็น parameter | แก้สำเนาของตัวเอง (copy-on-write) | compile error — ต้อง `copy()` ก่อน |
 | เงื่อนไข `if ($n)` | แปลงเป็น bool ให้เอง | ต้องเป็น bool จริง เช่น `$n != 0` |
 | หน่วยความจำ | reference counting + GC ตอนรัน | ownership ตรวจตอน compile ไม่มี GC ตอนรัน |
-| index เกินขนาด | warning แล้วได้ null | หยุดโปรแกรมทันที (panic) |
-| int ล้น | กลายเป็น float | วนรอบแบบ 64-bit (ยังไม่ตรวจ) |
+| index เกินขนาด | warning แล้วได้ null | หยุดโปรแกรมทันที (panic) ใน server ตอบ 500 แล้วทำงานต่อ |
+| int ล้น | กลายเป็น float | panic (ใช้ `wrapping_add/sub/mul()` ถ้าตั้งใจให้วนรอบ) |
+| `intval("99999999999999999999")` | ได้ PHP_INT_MAX | panic |
 
 ## Ownership (แบบ Rust แต่ย่อให้ง่าย)
 
@@ -76,7 +77,7 @@ append_while_iterating.pn:3: error: cannot append to $a while a foreach is loopi
 
 - list/map: `count`, `fill($n, $v)`, `copy`, `isset($m[$k])`, `array_key_exists`, `unset($m[$k])`, `$m[$k] ?? $default`, `foreach ($m as $k => $v)`
 - string: `strlen`, `substr` (รองรับเลขติดลบแบบ PHP), `strpos` (**ไม่เจอคืน -1** ไม่ใช่ false), `str_contains`, `str_starts_with`, `str_ends_with`, `str_repeat`, `strtolower`, `strtoupper`, `trim`, `intval`, `strval`
-- อื่นๆ: `json_encode`, `sqrt`, `intdiv`, cast `(int)` `(float)` `(string)`, `?:`
+- อื่นๆ: `json_encode`, `sqrt`, `intdiv`, `wrapping_add`, `wrapping_sub`, `wrapping_mul`, cast `(int)` `(float)` `(string)`, `?:`
 - HTTP: `serve($port, "handler")`, `http_status($code)`
 
 ## HTTP server
@@ -90,20 +91,22 @@ function handle(string $method, string $path, string $body): string {
 serve(8080, "handle");
 ```
 
-ได้ไฟล์เดียวที่เป็น web server เลย รัน 1 thread ต่อ 1 core (เปลี่ยนด้วย `PN_THREADS=4`) รองรับ HTTP/1.1 keep-alive และ pipelining
+ได้ไฟล์เดียวที่เป็น web server เลย รัน 1 thread ต่อ 1 core (เปลี่ยนด้วย `PN_THREADS=4`) รองรับ HTTP/1.1 keep-alive และ pipelining ใช้ได้ทั้ง Linux (epoll) และ macOS (kqueue)
+ถ้า handler panic (เช่น key ไม่มี, index เกิน, int ล้น) server ตอบ 500 `{"error":"Internal Server Error"}` คืนหน่วยความจำของ request นั้นทั้งหมด แล้วรับ request ถัดไปต่อ
 
 ตัวอย่างเต็มอยู่ที่ `api/server.pn` (3 endpoint) พร้อมตัวเดียวกันที่เขียนด้วย Go และ PHP
 
 ## ยังไม่มีใน prototype นี้
 
 - class/object, null/nullable, `list<string>`, map ซ้อน map, `explode`
-- try/catch
-- คำสั่ง `go` สำหรับงานพร้อมกันทั่วไป (ตอนนี้มีแค่ server ที่รันหลาย thread ให้เอง)
+- error handling (`throws` / `try` / `catch` — ออกแบบแล้วใน `docs/design/error-handling.md`)
+- `go` / `await` (ออกแบบแล้วใน `docs/design/concurrency.md`) ตอนนี้มีแค่ server ที่รันหลาย thread ให้เอง
 - HTTP: TLS, HTTP/2, header ของ request/response, timeout, จำกัดขนาด request
 - json_decode, database
-- ตรวจ int overflow
 
 ## Benchmark: API server
+
+> ตัวเลขชุดนี้วัดบน Linux container ก่อนเพิ่ม overflow check — ตอนนี้ loop ที่คำนวณ int หนักๆ ช้าลงสูงสุด ~23% (ดู HANDOFF.md §2)
 
 ทุก server รันบน CPU core 0 ส่วนตัวยิงโหลด (wrk, 64 connections, 10 วินาที) รันบน core 1 ทุก server ตอบ byte ตรงกันทุก endpoint
 

@@ -1,101 +1,86 @@
-# HANDOFF — state as of 2026-10-24
+# HANDOFF — state as of 2026-10-24 (evening)
 
-Built in a cloud Linux container (x86-64, 2 cores) over two sessions. You (Claude Code) are picking it up
-on the owner's **MacBook Air (Apple Silicon, macOS)**. First thing: `python3 tests/run_tests.py`.
-On macOS, expect everything green **except the HTTP server** (task 1).
+The language is now called **Pin** (was "Pina"; file extension stays `.pn`). Code still uses the old
+names (`pinac.py`, `PN_THREADS`) — rename when convenient, it is cosmetic.
+
+Owner's rule for every design decision, in order: **memory safety > speed > clarity > looking like PHP.**
+The owner has said "decide for me, just go": make design calls by that rule, write them down, and only
+ask when the rule cannot decide or a decision would change project direction.
+
+Design specs (agreed with the owner, not all implemented): `docs/design/` — ownership-v2, error-handling,
+int-overflow, null, strings, concurrency. *(They were written in a scratch folder; if they are still at
+the repo root, move them into `docs/design/`.)*
 
 ## 1. What works (verified)
 
-`python3 tests/run_tests.py` → **26 passed, 0 failed** on Linux at handoff.
+`python3 tests/run_tests.py` → **38 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
+Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang python3`).
 
-- Compiler `pinac.py`: functions, int/float/bool/string, `list<T>`, `map<K,V>` (ordered like PHP),
-  `if/elseif/else`, `while`, `for`, `foreach ($xs as $i => $v)`, `break/continue`, `?:`, `??`,
-  string interpolation `"$x {$y}"`, `.` / `.=`, casts, ~20 PHP-named built-ins (list in README.md).
-- Ownership checker: use-after-move, move inside loop, mutate/move borrowed param, mutate container
-  during foreach — all rejected at compile time with plain-English fixes (see `tests/errors/`).
-- Runtime: no GC, no refcount. ASAN+UBSAN clean on `tests/hello.pn`, `tests/strmap.pn`, `bench/listsum.pn`,
-  and on the HTTP server under load + pipelining + malformed requests.
-- HTTP server `serve($port, "handler")`: HTTP/1.1, keep-alive, pipelining, one thread per core
-  (`PN_THREADS=n` overrides), 400 on garbage, answers pipelined requests even after client half-close.
+- Everything from the first prototype (functions, int/float/bool/string, `list<T>`, ordered `map<K,V>`,
+  control flow, ownership checker, ~20 PHP built-ins, HTTP/1.1 server with keep-alive + pipelining).
+- **macOS**: server uses kqueue (epoll on Linux) behind a small `poll_*` interface in `runtime.c`. On
+  macOS all threads share one listener (SO_REUSEPORT does not spread load there).
+- **Int overflow panics** in every build (`+ - *`, unary `-`, `intdiv(INT_MIN, -1)`), `x % -1` is 0,
+  `(int)` of NAN/INF/huge float panics, `intval()` of a too-big number panics.
+  `wrapping_add/sub/mul()` wrap on purpose.
+- **Allocation sizes are checked** (`checked_size()`): `fill(2^61)` used to be a real heap overflow
+  (ASAN-confirmed on the old runtime); now it panics.
+- **Handler panics answer 500** and the server keeps going. Every heap block has a 16-byte header;
+  during a request blocks are linked per thread, and a panic longjmps back and frees them all.
+  Body is generic (`{"error":"Internal Server Error"}`), the message goes to stderr only.
+- ASAN+UBSAN clean on macOS and Linux: hello, strmap, arith, listsum, all panic tests, and both servers
+  under load (pipelining, half-close, garbage, chunked bodies, ~1,450 panicking requests).
 
-## 2. Measured results (Linux container — will NOT reproduce exactly on an M-series Mac)
+## 2. Measured (owner's M-series Mac, best of 5, pin only)
 
-CPU benchmarks (best of 3, all languages produce identical output):
+| bench | before overflow checks | now | |
+|---|---|---|---|
+| sieve 20M | 0.049s | 0.054s | +10% |
+| collatz 1M | 0.161s | 0.198s | +23% (`3*$n+1` and step counter must be checked) |
+| pi 100M | 0.091s | 0.090s | 0% (float) |
+| listsum | 0.135–0.145s | 0.117–0.123s | faster after the allocator header change (not investigated) |
 
-| | pina | Rust | Go | PHP 8.3+JIT | Python 3.13 |
-|---|---|---|---|---|---|
-| sieve 20M | 0.13s | 0.14s | 0.13s | 1.26s | 4.67s |
-| collatz 1M | 0.17s | 0.17s | 0.25s | 1.25s | 9.63s |
-| pi 100M | 0.13s | 0.10s | 0.12s | 0.82s | 11.1s |
-| list build+sum | 0.28s / 40MB | 0.27s / 40MB | 1.20s / 162MB | 1.75s / 239MB | 7.31s / 312MB |
+The Linux-container numbers in README.md (vs Rust/Go/PHP) are from before these changes. HTTP req/s was
+not re-measured (no `wrk` on the Mac: `brew install wrk`).
 
-API load test (each server pinned to 1 core, wrk 64 conns on the other core, identical response bytes):
-
-| endpoint | pina | Go net/http | FrankenPHP worker | php -S |
-|---|---|---|---|---|
-| /hello | 132k req/s* | 42k | 10k | 4.7k |
-| /user/42 (JSON) | 95k | 38k | 11k | 4.4k |
-| /primes/20000 | 17k | 14k | 3.5k | 2.3k |
-| RSS | 2.3 MB | 13 MB | 102 MB | ~100 MB |
-
-Caveats the owner already heard — keep repeating them with any new numbers:
-- \* pina /hello was load-generator-bound (server at 80% CPU).
-- pina's server does far less than Go net/http (no TLS, HTTP/2, timeouts, header API). Part of the
-  /hello and /user gap is that. `/primes` is the fairest language comparison (pina 1.2× Go, 4.8× PHP).
-- FrankenPHP 1.13.2 / PHP 8.5.12 crashes on /primes with `opcache.jit=tracing`; we used `jit=function`.
-- `php -S` has no keep-alive (wrk shows read errors) — a weak stand-in for PHP-FPM.
-- fib benchmark is excluded from claims (clang optimises recursion; not a language property).
-
-## 3. Known bugs / limitations (verified unless marked)
+## 3. Known bugs / limitations
 
 | # | problem | where | severity |
 |---|---|---|---|
-| B1 | **HTTP server is Linux-only**: epoll, accept4, SOCK_NONBLOCK, sched_getaffinity/CPU_COUNT, memmem needs _GNU_SOURCE | `runtime.c` server section | blocks Mac dev |
-| B2 | **A panic inside a request handler kills the whole server** (`exit(1)`), e.g. missing map key | `runtime.c` panics | must fix before any real use |
-| B3 | Move tracking is not branch-aware: moving `$a` in the `then` branch makes `$a` "moved" in the `else` branch too → false compile error. (Using it *after* the if is correctly rejected.) | `FuncGen.moved`, `if_()` | annoying |
-| B4 | int overflow wraps silently (`PHP_INT_MAX + 1` → negative). PHP turns it into float. | `binary()` | correctness |
-| B5 | No request headers, query string, timeouts (slowloris), or per-connection limits; 64 KB header / 64 MB body caps only | server | security |
-| B6 | `maplit` infers key type with a heuristic `expr_type_probe` — keys from unlisted built-ins may get the wrong type (not seen, inferred from code) | `pinac.py` | low |
-| B7 | `bench/memrun.c` reads `ru_maxrss` as KB; on macOS it is **bytes**. `taskset` does not exist on macOS. | bench/api scripts | Mac only |
+| B3 | Move tracking is not branch-aware: moving `$a` in `then` makes it "moved" in `else` too | `FuncGen.moved`, `if_()` | annoying — fix with the shared control-flow analysis |
+| B5 | No request headers, query string, timeouts (slowloris), per-connection limits | server | security |
+| B6 | `maplit` key type comes from a heuristic `expr_type_probe` | `pinac.py` | low |
 | B8 | `.ll` files are written next to sources | `pinac.py main()` | cosmetic |
+| B9 | Overflow checks cost up to ~23% on integer-heavy loops; no check elision yet (int-overflow.md O3) | codegen | perf |
+| B10 | Request-block tracking is per thread. When `go`/`await` arrives, tasks must use the request's list (or their own) — revisit then | `runtime.c` allocator | design |
+| B11 | Panic outside a request still `exit(1)` (correct for CLI programs) | runtime | by design |
 
-Not built yet: class/object, null/nullable, try/catch, `list<string>`, nested containers, `explode`,
-`json_decode`, database access, the `go` keyword for general concurrency, closures, modules/imports.
+Fixed today: B1 (Linux-only server), B2 (panic kills server), B4 (silent int overflow), B7 (Mac bench units).
 
 ## 4. Task queue (in order)
 
-**Task 1 — Make it build and pass on macOS (do this first, no need to ask).**
-Port the server loop in `runtime.c` to kqueue behind `#ifdef __APPLE__` (keep epoll for Linux):
-accept + `fcntl(O_NONBLOCK)` instead of accept4, `sysconf(_SC_NPROCESSORS_ONLN)` instead of
-sched_getaffinity, SO_REUSEPORT works on macOS but does not load-balance like Linux — use one listener
-shared by all threads (or one thread) on macOS. Fix B7 too.
-Done when: `python3 tests/run_tests.py` is fully green on the Mac AND still green on Linux
-(check Linux via Docker or CI), and the ASAN run of the server is clean on macOS.
+1. **Shared control-flow analysis** in `pinac.py` (liveness + per-branch state). Needed by B3,
+   ownership-v2 R2 (borrows from `$x = $list[0]`), null narrowing (null.md N2), `try` exits
+   (error-handling.md E-R4) and `await` (concurrency.md C1). Fix B3 with it first, as the test.
+2. **Error handling** (error-handling.md): `throws`, `try`, `catch`, `error(code, msg)`, handler `throws`.
+3. **Strings** (strings.md): UTF-8 validation at the edges (invalid request → 400), `substr` boundary
+   panic, `mb_*`, `grapheme_*`.
+4. **Null** (null.md) together with **class** (ownership-v2 R1–R7).
+5. **`list<string>` and nested containers**.
+6. **Request headers + query string + timeouts** (B5) — needed before any real deployment.
+7. **json_decode, database driver** — design not written yet; decide by the owner's rule when reached.
+8. **Concurrency** (concurrency.md) — needs 1, 2 and the request allocator (B10).
+9. Modules/imports — design not written yet.
 
-**Task 2 — Handler panics return 500 instead of killing the server (B2).**
-Suggested: per-request arena or setjmp/longjmp in the worker around `pn_user_handler`; the request's
-heap values must still be freed (ownership makes the set knowable — or use a per-request arena, which
-also matches "free everything at end of request" from the original design discussion).
-Done when: a test request that hits a missing key returns 500, the next request still works, ASAN clean.
+After each: tests for the feature and every new compile error, ASAN/UBSAN on macOS, run the suite in the
+Linux container, update this file.
 
-**Task 3 — Owner's next feature pick (recommended to them, NOT yet confirmed):**
-request headers + query string, `json_decode` into typed maps, and a database driver (start with
-SQLite or PostgreSQL). Goal: rewrite one real PinaTo API endpoint in pina and benchmark against the
-current implementation. The alternative the owner was offered: pick their slowest real endpoint first.
-→ Ask the owner which one (this is a direction choice), but do tasks 1–2 while waiting.
+## 5. Reproducing
 
-Backlog after that: B3 (branch-aware moves: track moved-sets per branch and merge), B4 (overflow →
-panic or float; ask owner which), try/catch (decision 4 default), `list<string>`, structs/classes,
-`go` keyword (decision 3A), split `pinac.py` into modules once it passes ~2500 lines.
-
-## 5. Reproducing the comparisons
-
-- wrk: build from github.com/wg/wrk (`make`), or `brew install wrk` on Mac.
-- FrankenPHP: release binary `frankenphp-linux-x86_64` was used (v1.13.2); Mac: `brew install frankenphp`.
-  PHP ini used: `opcache.enable=1, opcache.enable_cli=1, opcache.jit=function, opcache.jit_buffer_size=64M,
-  opcache.validate_timestamps=0, memory_limit=512M` via `PHP_INI_SCAN_DIR`.
-- Ports: 8081 pina, 8082 Go, 8083 FrankenPHP (`frankenphp php-server --root api/php-worker --listen :8083
-  --worker api/php-worker/index.php --no-compress`), 8084 `php -S 0.0.0.0:8084 api/php-classic/index.php`.
-- Linux pinned servers with `taskset -c 0` and wrk with `taskset -c 1`. macOS has no CPU pinning:
-  results there are less controlled — say so when reporting.
-- Raw results: `bench/results.json`, `api/loadtest.json`.
+- Tests: `python3 tests/run_tests.py` (≈1 min). Linux: run the same inside Docker (see §1).
+- Sanitizers: see CLAUDE.md. On macOS use clang for the link step; LeakSanitizer only works on Linux.
+- Server memory on macOS: use `footprint -p <pid>` (phys_footprint). RSS hides leaks because macOS
+  compresses idle pages.
+- Benchmarks vs other languages: `python3 bench/run.py` (needs rust, go, php, python). Load test:
+  `python3 api/loadtest.py <wrk>` — on macOS there is no CPU pinning, say so next to any numbers.
+- Raw results from the Linux container: `bench/results.json`, `api/loadtest.json`.
