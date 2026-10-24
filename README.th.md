@@ -1,6 +1,11 @@
 # Pin
 
-**เขียนหน้าตาแบบ PHP, compile เป็น native code, ไม่มี garbage collector**
+**ภาษาสำหรับให้ AI coder เขียน web backend ที่เร็วและปลอดภัยเรื่องหน่วยความจำ**
+หน้าตาแบบ PHP, compile เป็น native code, ไม่มี garbage collector
+
+ทุกวันนี้โค้ดส่วนใหญ่เขียนโดย AI และ AI รู้จัก PHP ดีอยู่แล้ว Pin ใช้ syntax เดียวกัน แต่ย้ายความผิดพลาดจาก
+production มาจับตอน compile ทุก error บอกวิธีแก้ และออกเป็น JSON ได้ (`pin check --json`) ให้ AI วน
+แก้เองได้ · คู่มือสำหรับ AI: [docs/ai-guide.md](docs/ai-guide.md)
 
 คนที่เขียน PHP อ่าน Pin ได้ทันที แต่ตัวแปรแต่ละตัวมี type เดียว หน่วยความจำจัดการด้วย ownership ที่เช็คตอน
 compile (คล้าย Rust แต่ย่อให้ง่าย) และ compile ผ่าน LLVM ออกมาเป็น binary ไฟล์เดียว รวมถึง HTTP server แบบหลาย thread

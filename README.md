@@ -1,10 +1,13 @@
 # Pin
 
-**PHP-like syntax, compiled to native code, no garbage collector.**
+**A language for AI coding agents to write fast, memory-safe web backends.**
+PHP-like syntax, compiled to native code, no garbage collector.
 
-Pin looks familiar if you write PHP, but every variable has one type, memory is managed by
-compile-time ownership (like Rust, simplified), and a program compiles through LLVM into a single
-native binary — including a multi-threaded HTTP server.
+Most code is now written by AI agents, and they already know PHP. Pin keeps that syntax but moves the
+mistakes from production to compile time: every variable has one type, memory is managed by
+compile-time ownership (like Rust, simplified), every path through a function is checked, and each
+error says how to fix it — in plain text or as JSON for the agent's loop. The result compiles through
+LLVM into a single native binary, including a multi-threaded HTTP server.
 
 > **Status: v0.1 preview for early testers.** The language is small and still changing. Do not use it
 > in production, and do not expose its HTTP server to the internet (no TLS, no timeouts yet).
@@ -28,6 +31,20 @@ $name = "world";
 echo "Hello, $name!\n";
 echo total(squares(10)), "\n";          // 385
 ```
+
+## Using Pin with an AI coding agent
+
+1. Point the agent at [docs/ai-guide.md](docs/ai-guide.md) — the whole v0.1 language on one page, with
+   idioms, a PHP → Pin table and an error → fix table. For example, add this line to your project's
+   `AGENTS.md` / `CLAUDE.md`: *"This project is written in Pin. Read `<path to pin>/docs/ai-guide.md`
+   before writing code, and run `pin check --json` after every change."*
+2. Let it loop on `pin check --json file.pn`: one JSON object per error
+   (`{"file","line","severity","message"}`), `{"file","ok":true}` when clean, exit code 1 on error.
+3. Run with `pin run file.pn`. Run-time errors print `panic: ...` with the line and exit 1 (inside an
+   HTTP handler they answer 500 and the server keeps going).
+
+Messages are written for agents trained on PHP: reaching for `class`, `try`, `switch`, `null`,
+`array()`, closures or `include` gets "not in Pin v0.1 — write this instead", not a parse error.
 
 ## Quick start
 
