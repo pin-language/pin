@@ -306,20 +306,38 @@ int64_t pn_str_cmp(Str *a, Str *b) {
     return a->len < b->len ? -1 : a->len > b->len;
 }
 
+// Digits from p to e as an int, saturating at PHP_INT_MAX / PHP_INT_MIN like PHP. Requests carry
+// numbers from clients; saturating keeps them out of the caller's valid range (a 400) instead of a 500.
+static int64_t digits_saturating(const char *p, const char *e, int neg) {
+    uint64_t v = 0, limit = neg ? (uint64_t)INT64_MAX + 1 : (uint64_t)INT64_MAX;
+    for (; p < e && *p >= '0' && *p <= '9'; p++) {
+        uint64_t d = (uint64_t)(*p - '0');
+        if (v > (limit - d) / 10) { v = limit; break; }
+        v = v * 10 + d;
+    }
+    return neg ? (int64_t)(0 - v) : (int64_t)v;
+}
+
 // intval(): optional whitespace, optional sign, digits; anything else stops the number.
-// A number that does not fit in 64 bits panics (PHP would quietly give PHP_INT_MAX).
 int64_t pn_str_to_int(Str *s) {
     const char *p = s->data, *e = s->data + s->len;
     while (p < e && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
     int neg = 0;
     if (p < e && (*p == '+' || *p == '-')) neg = (*p++ == '-');
-    uint64_t v = 0, limit = neg ? (uint64_t)INT64_MAX + 1 : (uint64_t)INT64_MAX;
-    while (p < e && *p >= '0' && *p <= '9') {
-        uint64_t d = (uint64_t)(*p++ - '0');
-        if (v > (limit - d) / 10) panic_msg("intval(): number does not fit in an int");
-        v = v * 10 + d;
-    }
-    return neg ? (int64_t)(0 - v) : (int64_t)v;
+    return digits_saturating(p, e, neg);
+}
+
+// floatval() / (float)"...": the leading number like PHP ("2.5kg" -> 2.5, "abc" -> 0)
+double pn_str_to_float(Str *s) {
+    char buf[64];
+    const char *p = s->data, *e = s->data + s->len;
+    while (p < e && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+    size_t n = 0;
+    while (p < e && n < sizeof buf - 1 && (*p == '+' || *p == '-' || *p == '.' || *p == 'e' || *p == 'E' ||
+                                           (*p >= '0' && *p <= '9')))
+        buf[n++] = *p++;
+    buf[n] = 0;
+    return strtod(buf, NULL);              // stops at the first character that does not fit
 }
 
 // PHP substr semantics, including negative start / length
@@ -732,6 +750,37 @@ Str *pn_query_param(Str *path, Str *key) {
 
 Str *pn_form_param(Str *body, Str *key) { return form_lookup(body->data, body->data + body->len, key); }
 
+// is `key` present at all (even as "key=" or a bare "key")?
+static int form_has(const char *p, const char *e, Str *key) {
+    while (p < e) {
+        const char *amp = memchr(p, '&', (size_t)(e - p)), *end = amp ? amp : e;
+        const char *eq = memchr(p, '=', (size_t)(end - p)), *kend = eq ? eq : end;
+        // decode the name into a temporary and compare (names are short; reuse form_lookup's rules)
+        Str *name = str_alloc(kend - p);
+        for (const char *c = p; c < kend; c++) {
+            char ch = *c;
+            if (ch == '+') ch = ' ';
+            else if (ch == '%' && kend - c > 2 && hexval(c[1]) >= 0 && hexval(c[2]) >= 0) {
+                ch = (char)(hexval(c[1]) * 16 + hexval(c[2])); c += 2;
+            }
+            name->data[name->len++] = ch;
+        }
+        name->data[name->len] = 0;
+        int match = kend > p && pn_str_eq(name, key);
+        pn_str_free(name);
+        if (match) return 1;
+        p = amp ? amp + 1 : e;
+    }
+    return 0;
+}
+
+int64_t pn_query_has(Str *path, Str *key) {
+    const char *q = memchr(path->data, '?', (size_t)path->len);
+    return q ? form_has(q + 1, path->data + path->len, key) : 0;
+}
+
+int64_t pn_form_has(Str *body, Str *key) { return form_has(body->data, body->data + body->len, key); }
+
 // --- a minimal JSON reader for the top level of an object: {"key": value, ...}
 static const char *jws(const char *p, const char *e) {
     while (p < e && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
@@ -876,14 +925,10 @@ int64_t pn_jget_int(Str *json, Str *key) {
     int neg = 0;
     if (p < e && *p == '-') { neg = 1; p++; }
     if (p >= e || *p < '0' || *p > '9') return 0;
-    uint64_t v = 0, limit = neg ? (uint64_t)INT64_MAX + 1 : (uint64_t)INT64_MAX;
-    for (; p < e && *p >= '0' && *p <= '9'; p++) {
-        uint64_t d = (uint64_t)(*p - '0');
-        if (v > (limit - d) / 10) panic_msg("json_int(): number does not fit in an int");
-        v = v * 10 + d;
-    }
-    if (p != e) return 0;                  // 1.5, 1e3: not an int
-    return neg ? (int64_t)(0 - v) : (int64_t)v;
+    const char *q = p;
+    while (q < e && *q >= '0' && *q <= '9') q++;
+    if (q != e) return 0;                  // 1.5, 1e3: not an int
+    return digits_saturating(p, e, neg);
 }
 
 double pn_jget_float(Str *json, Str *key) {

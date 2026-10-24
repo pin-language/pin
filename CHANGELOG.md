@@ -14,6 +14,9 @@ Writing a real JSON API no longer needs hand-written parsing loops.
 - `examples/api.pn` handles GET with a query string and POST with a JSON body; `examples/wordcount.pn`
   uses `explode`, `list<string>` and `sort`.
 - Documentation moved to github.com/pin-language/docs; benchmarks to github.com/pin-language/benchmarks.
+- Numbers from text never fail: `intval()` and `json_int()` saturate at `PHP_INT_MAX` / `PHP_INT_MIN` like
+  PHP (0.1.0 panicked, which turned a bad client number into a 500); `floatval()` and `(float)"2.5"` read
+  the leading number; `query_has()` / `form_has()` tell a missing key from an empty one.
 - `pin FILE.pn` runs the program; `pin -v`; one-command installer (`install.sh`).
 
 ## 0.1.0 — 2026-10-24 (first preview for testers)

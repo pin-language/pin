@@ -157,7 +157,7 @@ serving.
 - **At compile time:** types, ownership (use after move, moving inside a loop, changing a borrowed
   value, changing a list while `foreach` walks it), and that every variable has a value on every path.
 - **At run time (always on, no flag to turn them off):** list bounds, missing map keys, division by zero,
-  `intdiv(PHP_INT_MIN, -1)`, `(int)` of NAN/INF/huge floats, `intval()` of numbers that do not fit, and
+  `intdiv(PHP_INT_MIN, -1)`, `(int)` of NAN/INF/huge floats, and
   every allocation size (a huge `fill()` panics instead of producing a too-small buffer).
 - **Not checked yet:** `+ - *` on ints wrap around on overflow. Checking them cost up to 23% on integer
   loops, so it is postponed until the compiler can skip the checks it can prove unnecessary.

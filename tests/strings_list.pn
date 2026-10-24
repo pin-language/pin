@@ -25,3 +25,7 @@ echo form_param("a=1&b=two%20words", "b"), "\n";
 $j = "{\"name\": \"Somchai \\u0e01\\\"q\\\"\", \"qty\": 3, \"price\": 12.5, \"ok\": true, \"tags\": [1, {\"x\": 2}], \"neg\": -7}";
 echo json_string($j, "name"), " ", json_int($j, "qty"), " ", json_float($j, "price"), " ", json_bool($j, "ok"), " ", json_has($j, "tags"), " ", json_has($j, "x"), " ", json_int($j, "neg"), " ", json_int($j, "price"), "[", json_string($j, "missing"), "]\n";
 echo json_string("{bad", "a"), json_int("[1]", "a"), json_has("", "a"), "|\n";
+// numbers from clients: too-big values saturate (so range checks reject them) instead of panicking
+echo intval("99999999999999999999"), " ", intval("-99999999999999999999"), " ", json_int("{\"n\": 123456789012345678901234}", "n"), " ", json_int("{\"n\": -99999999999999999999}", "n"), "\n";
+echo floatval("2.5kg"), " ", (float)"  -1.25e2", " ", floatval("abc"), " ", floatval(3), " ", (float)"12", "\n";
+echo query_has("/p?a=&b", "a"), query_has("/p?a=&b", "b"), query_has("/p?a=&b", "c"), query_has("/p", "a"), " ", form_has("x=1&y", "y"), form_has("x=1", "z"), "|\n";

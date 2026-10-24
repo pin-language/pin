@@ -284,7 +284,7 @@
       }
     },
     "builtin-calls": {
-      "match": "\\b(count|fill|copy|isset|unset|array_key_exists|json_encode|strlen|substr|strpos|str_contains|str_starts_with|str_ends_with|str_repeat|strtolower|strtoupper|trim|intval|strval|sqrt|intdiv|wrapping_add|wrapping_sub|wrapping_mul|serve|http_status|explode|implode|sort|rsort|url_path|query_param|form_param|json_has|json_string|json_int|json_float|json_bool)\\s*(?=\\()",
+      "match": "\\b(count|fill|copy|isset|unset|array_key_exists|json_encode|strlen|substr|strpos|str_contains|str_starts_with|str_ends_with|str_repeat|strtolower|strtoupper|trim|intval|strval|sqrt|intdiv|wrapping_add|wrapping_sub|wrapping_mul|serve|http_status|explode|implode|sort|rsort|url_path|query_param|form_param|query_has|form_has|floatval|json_has|json_string|json_int|json_float|json_bool)\\s*(?=\\()",
       "captures": {
         "1": {
           "name": "support.function.builtin.pin"

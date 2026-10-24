@@ -581,7 +581,7 @@ BUILTINS = {"count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strp
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
-            "url_path", "query_param", "form_param", "json_has", "json_string", "json_int", "json_float",
+            "url_path", "query_param", "form_param", "query_has", "form_has", "floatval", "json_has", "json_string", "json_int", "json_float",
             "json_bool"}
 
 RUNTIME_DECLS = """
@@ -600,6 +600,9 @@ declare ptr @pn_url_path(ptr)
 declare ptr @pn_query_param(ptr, ptr)
 declare ptr @pn_form_param(ptr, ptr)
 declare i64 @pn_jget_has(ptr, ptr)
+declare double @pn_str_to_float(ptr)
+declare i64 @pn_query_has(ptr, ptr)
+declare i64 @pn_form_has(ptr, ptr)
 declare ptr @pn_jget_string(ptr, ptr)
 declare i64 @pn_jget_int(ptr, ptr)
 declare double @pn_jget_float(ptr, ptr)
@@ -961,6 +964,8 @@ class FuncGen:
     def cast(self, e):
         v, t = self.borrow(e.e)
         if e.to == "float":
+            if t == "string":
+                return self.call("double", "@pn_str_to_float", f"ptr {v}"), "float", False
             return self.coerce(v, t, "float", e.line, "(float) cast"), "float", False
         if e.to == "string":
             return self.to_string(v, t, e.line)
@@ -1558,6 +1563,16 @@ class FuncGen:
         if name == "url_path":
             self.argc(e, 1)
             return self.call("ptr", "@pn_url_path", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name in ("query_has", "form_has"):
+            self.argc(e, 2)
+            src, key = self.str_arg(e, 0), self.str_arg(e, 1)
+            return self.i64_to_bool(self.call("i64", f"@pn_{name}", f"ptr {src}", f"ptr {key}")), "bool", False
+        if name == "floatval":
+            self.argc(e, 1)
+            v, t = self.borrow(args[0])
+            if t == "string":
+                return self.call("double", "@pn_str_to_float", f"ptr {v}"), "float", False
+            return self.coerce(v, t, "float", e.line, "floatval()"), "float", False
         if name in ("query_param", "form_param"):
             self.argc(e, 2)
             src, key = self.str_arg(e, 0), self.str_arg(e, 1)
