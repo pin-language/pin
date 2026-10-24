@@ -1,7 +1,10 @@
-# HANDOFF — state as of 2026-10-24 (evening)
+# HANDOFF — state as of 2026-10-24 (v0.1.0 preview)
 
-The language is now called **Pin** (was "Pina"; file extension stays `.pn`). Code still uses the old
-names (`pinac.py`, `PN_THREADS`) — rename when convenient, it is cosmetic.
+The language is **Pin** (was "Pina"), extension `.pn`. Entry point for users: `./pin` (run/build/check);
+the compiler itself is still `pinac.py`. **v0.1.0 is prepared for outside testers** (README.md in English,
+README.th.md, docs/language.md, examples/, LICENSE MIT, CHANGELOG.md, CI workflow). Not yet done, and
+the owner's step: create the public repository, replace the `TODO` URL placeholders in both READMEs,
+push, and watch the first CI run.
 
 Owner's rule for every design decision, in order: **memory safety > speed > clarity > looking like PHP.**
 The owner has said "decide for me, just go": make design calls by that rule, write them down, and only
@@ -12,7 +15,7 @@ int-overflow, null, strings, concurrency.
 
 ## 1. What works (verified)
 
-`python3 tests/run_tests.py` → **43 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
+`python3 tests/run_tests.py` → **48 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
 Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang python3`).
 
 - Everything from the first prototype (functions, int/float/bool/string, `list<T>`, ordered `map<K,V>`,

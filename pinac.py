@@ -1898,7 +1898,7 @@ class FuncGen:
 
 
 TBAA = """
-!0 = !{!"pina"}
+!0 = !{!"pin"}
 !6 = !{!"len", !0, i64 0}
 !7 = !{!"data", !0, i64 0}
 !8 = !{!"elem.int", !0, i64 0}
