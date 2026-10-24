@@ -1,0 +1,5 @@
+<?php
+// money math that would silently go negative in C or Go
+$price = intval("4611686018427387904");
+$qty = 2;
+echo $price * $qty, "\n";

@@ -499,7 +499,8 @@ def flatten_concat(e):
 
 BUILTINS = {"count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
-            "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status"}
+            "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
+            "wrapping_add", "wrapping_sub", "wrapping_mul"}
 
 RUNTIME_DECLS = """
 declare ptr @pn_list_new(i64)
@@ -511,6 +512,11 @@ declare void @pn_list_grow(ptr, i64) cold
 declare void @pn_oob(i64, i64) noreturn cold
 declare void @pn_divzero(i32) noreturn cold
 declare void @pn_noreturn(i32) noreturn cold
+declare void @pn_overflow(i32) noreturn cold
+declare void @pn_float_to_int(i32) noreturn cold
+declare {i64, i1} @llvm.sadd.with.overflow.i64(i64, i64)
+declare {i64, i1} @llvm.ssub.with.overflow.i64(i64, i64)
+declare {i64, i1} @llvm.smul.with.overflow.i64(i64, i64)
 declare void @pn_map_missing(i32) noreturn cold
 declare void @pn_print_int(i64)
 declare void @pn_print_float(double)
@@ -759,7 +765,7 @@ class FuncGen:
                 self.emit(f"{r} = xor i1 {v}, true")
                 return r, "bool", False
             if t == "int":
-                self.emit(f"{r} = sub i64 0, {v}")
+                return self.checked_int("-", "0", v, e.line), t, False
             elif t == "float":
                 self.emit(f"{r} = fneg double {v}")
             else:
@@ -832,6 +838,15 @@ class FuncGen:
             return v
         r = self.tmp()
         if t == "float":
+            # fptosi of NAN/INF/out-of-range is poison in LLVM: panic instead
+            lo, hi, inr = self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{lo} = fcmp oge double {v}, 0xC3E0000000000000")
+            self.emit(f"{hi} = fcmp olt double {v}, 0x43E0000000000000")
+            self.emit(f"{inr} = and i1 {lo}, {hi}")
+            bad = self.tmp()
+            self.emit(f"{bad} = xor i1 {inr}, true")
+            self.panic_if(bad, "@pn_float_to_int", line)
+            r = self.tmp()
             self.emit(f"{r} = fptosi double {v} to i64")
         elif t == "bool":
             self.emit(f"{r} = zext i1 {v} to i64")
@@ -1189,16 +1204,24 @@ class FuncGen:
                 self.emit(f"{r} = fcmp {cc} double {lv}, {rv}")
             return r, "bool", False
         if t == "int":
-            if op in ("%", "%div"):
-                z, ok, bad = self.tmp(), self.newlabel("nz"), self.newlabel("dz")
-                self.emit(f"{z} = icmp eq i64 {rv}, 0")
-                self.emit(f"br i1 {z}, label %{bad}, label %{ok}, !prof !11")
-                self.place_label(bad)
-                self.call("void", "@pn_divzero", f"i32 {e.line}")
-                self.emit("unreachable")
-                self.place_label(ok)
-            ins = {"+": "add", "-": "sub", "*": "mul", "%": "srem", "%div": "sdiv"}[op]
-            self.emit(f"{r} = {ins} i64 {lv}, {rv}")
+            if op in ("+", "-", "*"):
+                return self.checked_int(op, lv, rv, e.line), t, False
+            z = self.tmp()
+            self.emit(f"{z} = icmp eq i64 {rv}, 0")
+            self.panic_if(z, "@pn_divzero", e.line)
+            m1 = self.tmp()
+            self.emit(f"{m1} = icmp eq i64 {rv}, -1")
+            if op == "%":
+                # x % -1 is 0, but srem INT_MIN, -1 is undefined in LLVM: divide by 1 instead
+                d = self.tmp()
+                self.emit(f"{d} = select i1 {m1}, i64 1, i64 {rv}")
+                self.emit(f"{r} = srem i64 {lv}, {d}")
+            else:
+                mn, bad = self.tmp(), self.tmp()
+                self.emit(f"{mn} = icmp eq i64 {lv}, -9223372036854775808")
+                self.emit(f"{bad} = and i1 {mn}, {m1}")
+                self.panic_if(bad, "@pn_overflow", e.line)
+                self.emit(f"{r} = sdiv i64 {lv}, {rv}")
         else:
             if op == "%":
                 raise CompileError("'%' works on int only", e.line)
@@ -1218,6 +1241,24 @@ class FuncGen:
         if t != "string":
             raise CompileError(f"{e.name}() argument {i + 1} must be a string but got {t}", e.line)
         return v
+
+    def panic_if(self, cond, fn, line):
+        ok, bad = self.newlabel("ok"), self.newlabel("panic")
+        self.emit(f"br i1 {cond}, label %{bad}, label %{ok}, !prof !11")
+        self.place_label(bad)
+        self.call("void", fn, f"i32 {line}")
+        self.emit("unreachable")
+        self.place_label(ok)
+
+    def checked_int(self, op, lv, rv, line):
+        """int + - * that panics on overflow instead of wrapping around."""
+        fn = {"+": "sadd", "-": "ssub", "*": "smul"}[op]
+        pair, r, o = self.tmp(), self.tmp(), self.tmp()
+        self.emit(f"{pair} = call {{i64, i1}} @llvm.{fn}.with.overflow.i64(i64 {lv}, i64 {rv})")
+        self.emit(f"{r} = extractvalue {{i64, i1}} {pair}, 0")
+        self.emit(f"{o} = extractvalue {{i64, i1}} {pair}, 1")
+        self.panic_if(o, "@pn_overflow", line)
+        return r
 
     def int_arg(self, e, i):
         v, t = self.borrow(e.args[i])
@@ -1262,6 +1303,12 @@ class FuncGen:
             v, t = self.borrow(args[0])
             v = self.coerce(v, t, "float", e.line, "sqrt()")
             return self.call("double", "@llvm.sqrt.f64", f"double {v}"), "float", False
+        if name in ("wrapping_add", "wrapping_sub", "wrapping_mul"):
+            self.argc(e, 2)
+            a, b = self.int_arg(e, 0), self.int_arg(e, 1)
+            r = self.tmp()
+            self.emit(f"{r} = {name[9:]} i64 {a}, {b}")      # plain add/sub/mul wrap around in LLVM
+            return r, "int", False
         if name == "intdiv":
             self.argc(e, 2)
             return self.binary(Node("bin", e.line, op="%div", l=args[0], r=args[1]))

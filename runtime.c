@@ -39,6 +39,23 @@ __attribute__((noreturn)) static void panic_msg(const char *msg) {
     exit(1);
 }
 
+// Byte size of n items of esize bytes plus `extra`, or panic. Every allocation whose size comes
+// from a program value goes through here, so a huge or wrapped-around int can never produce a
+// small buffer that later code believes is big.
+static size_t checked_size(int64_t n, int64_t esize, int64_t extra) {
+    int64_t bytes;
+    if (n < 0 || __builtin_mul_overflow(n, esize, &bytes) || __builtin_add_overflow(bytes, extra, &bytes)
+        || bytes > ((int64_t)1 << 47))
+        panic_msg("value is too large to allocate");
+    return (size_t)bytes;
+}
+
+static int64_t checked_add(int64_t a, int64_t b) {
+    int64_t r;
+    if (__builtin_add_overflow(a, b, &r)) panic_msg("value is too large to allocate");
+    return r;
+}
+
 // ============================================================================ lists
 
 typedef struct { int64_t len, cap; void *data; } List;
@@ -54,16 +71,17 @@ List *pn_list_fill(int64_t n, int64_t esize, uint64_t bits) {
     if (n < 0) panic_msg("fill() with negative size");
     List *l = xmalloc(sizeof(List));
     l->len = n; l->cap = n > 0 ? n : 1;
-    l->data = xmalloc((size_t)(l->cap * esize));
-    if (bits == 0) memset(l->data, 0, (size_t)(n * esize));
+    l->data = xmalloc(checked_size(l->cap, esize, 0));
+    if (bits == 0) memset(l->data, 0, (size_t)n * (size_t)esize);
     else if (esize == 1) memset(l->data, (int)(bits & 0xff), (size_t)n);
     else { uint64_t *d = l->data; for (int64_t i = 0; i < n; i++) d[i] = bits; }
     return l;
 }
 
 void pn_list_grow(List *l, int64_t esize) {
+    size_t bytes = checked_size(l->cap, esize * 2, 0);
     l->cap *= 2;
-    l->data = xrealloc(l->data, (size_t)(l->cap * esize));
+    l->data = xrealloc(l->data, bytes);
 }
 
 void pn_list_push(List *l, int64_t esize, uint64_t bits) {
@@ -75,7 +93,7 @@ void pn_list_push(List *l, int64_t esize, uint64_t bits) {
 List *pn_list_copy(List *src, int64_t esize) {
     List *l = xmalloc(sizeof(List));
     l->len = src->len; l->cap = src->len > 0 ? src->len : 1;
-    l->data = xmalloc((size_t)(l->cap * esize));
+    l->data = xmalloc(checked_size(l->cap, esize, 0));
     memcpy(l->data, src->data, (size_t)(src->len * esize));
     return l;
 }
@@ -98,6 +116,19 @@ __attribute__((noreturn)) void pn_divzero(int32_t line) {
     exit(1);
 }
 
+__attribute__((noreturn)) void pn_overflow(int32_t line) {
+    fflush(stdout);
+    fprintf(stderr, "panic: integer overflow on line %d "
+                    "(use wrapping_add/wrapping_sub/wrapping_mul if wrapping around is intended)\n", line);
+    exit(1);
+}
+
+__attribute__((noreturn)) void pn_float_to_int(int32_t line) {
+    fflush(stdout);
+    fprintf(stderr, "panic: float is NAN, INF or too large to turn into an int on line %d\n", line);
+    exit(1);
+}
+
 __attribute__((noreturn)) void pn_noreturn(int32_t line) {
     fflush(stdout);
     fprintf(stderr, "panic: function ended without return (line %d)\n", line);
@@ -116,7 +147,7 @@ typedef struct { int64_t len, cap; char data[]; } Str;
 
 static Str *str_alloc(int64_t cap) {
     if (cap < 15) cap = 15;
-    Str *s = xmalloc(sizeof(Str) + (size_t)cap + 1);
+    Str *s = xmalloc(checked_size(cap, 1, (int64_t)sizeof(Str) + 1));
     s->len = 0; s->cap = cap; s->data[0] = 0;
     return s;
 }
@@ -142,16 +173,17 @@ Str *pn_str_dup(Str *s) {
 // Make room for `extra` more bytes. Takes ownership of `s`; returns the (possibly new) string.
 static Str *str_reserve(Str *s, int64_t extra) {
     if (!s) return str_alloc(extra);
+    int64_t need = checked_add(s->len, extra);
     if (s->cap < 0) {                      // literal: never written to, copy first
-        Str *n = str_alloc(s->len + extra > 2 * s->len ? s->len + extra : 2 * s->len);
+        Str *n = str_alloc(need > 2 * s->len ? need : 2 * s->len);
         memcpy(n->data, s->data, (size_t)s->len + 1);
         n->len = s->len;
         return n;
     }
-    if (s->len + extra > s->cap) {
-        int64_t nc = s->cap * 2;
-        if (nc < s->len + extra) nc = s->len + extra;
-        s = xrealloc(s, sizeof(Str) + (size_t)nc + 1);
+    if (need > s->cap) {
+        int64_t nc = s->cap * 2;           // cap passed checked_size, so doubling it cannot wrap
+        if (nc < need) nc = need;
+        s = xrealloc(s, checked_size(nc, 1, (int64_t)sizeof(Str) + 1));
         s->cap = nc;
     }
     return s;
@@ -210,15 +242,20 @@ int64_t pn_str_cmp(Str *a, Str *b) {
     return a->len < b->len ? -1 : a->len > b->len;
 }
 
-// intval(): optional whitespace, optional sign, digits; anything else stops the number
+// intval(): optional whitespace, optional sign, digits; anything else stops the number.
+// A number that does not fit in 64 bits panics (PHP would quietly give PHP_INT_MAX).
 int64_t pn_str_to_int(Str *s) {
     const char *p = s->data, *e = s->data + s->len;
     while (p < e && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
     int neg = 0;
     if (p < e && (*p == '+' || *p == '-')) neg = (*p++ == '-');
-    uint64_t v = 0;
-    while (p < e && *p >= '0' && *p <= '9') v = v * 10 + (uint64_t)(*p++ - '0');
-    return neg ? -(int64_t)v : (int64_t)v;
+    uint64_t v = 0, limit = neg ? (uint64_t)INT64_MAX + 1 : (uint64_t)INT64_MAX;
+    while (p < e && *p >= '0' && *p <= '9') {
+        uint64_t d = (uint64_t)(*p++ - '0');
+        if (v > (limit - d) / 10) panic_msg("intval(): number does not fit in an int");
+        v = v * 10 + d;
+    }
+    return neg ? (int64_t)(0 - v) : (int64_t)v;
 }
 
 // PHP substr semantics, including negative start / length
@@ -229,7 +266,7 @@ Str *pn_substr(Str *s, int64_t start, int64_t len, int64_t has_len) {
     int64_t end = n;
     if (has_len) {
         if (len < 0) { end = n + len; if (end < start) return str_alloc(0); }
-        else if (start + len < n) end = start + len;
+        else if (len < n - start) end = start + len;
     }
     return str_from(s->data + start, end - start);
 }
@@ -248,6 +285,7 @@ int64_t pn_str_ends(Str *h, Str *n) {
 
 Str *pn_str_repeat(Str *s, int64_t times) {
     if (times < 0) panic_msg("str_repeat() with a negative count");
+    if (times > 0 && s->len > INT64_MAX / times) panic_msg("str_repeat() result is too large");
     Str *r = str_alloc(s->len * times);
     for (int64_t i = 0; i < times; i++) memcpy(r->data + i * s->len, s->data, (size_t)s->len);
     r->len = s->len * times;

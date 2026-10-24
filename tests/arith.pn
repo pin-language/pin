@@ -1,0 +1,12 @@
+<?php
+// int edge cases: wrapping on request, PHP-compatible % and intdiv, checked everything else
+$max = intval("9223372036854775807");
+$min = intval("-9223372036854775808");
+echo wrapping_add($max, 1), " ", wrapping_sub($min, 1), " ", wrapping_mul($max, 2), "\n";
+echo $min % -1, " ", 7 % -1, " ", -7 % 3, " ", 7 % -3, " ", intdiv(-7, 2), " ", intdiv(7, -1), "\n";
+echo $max - 1 + 1, " ", $min + 1 - 1, " ", -($min + 1), "\n";
+echo (int)2.9, " ", (int)-2.9, " ", (int)-9.2233720368547e18, "\n";
+echo intval("-9223372036854775808"), " ", intval("  42abc"), " ", intval("-0"), "\n";
+$h = 0;
+foreach ([104, 105] as $c) { $h = wrapping_mul(wrapping_add($h, $c), 1099511628211); }
+echo $h, "\n";
