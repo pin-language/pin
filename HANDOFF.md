@@ -8,7 +8,9 @@ The language is **Pin** (was "Pina"), extension `.pn`. Entry point for users: `.
 the compiler itself is still `pinac.py`. **v0.1.0 is prepared for outside testers** (README.md in English,
 README.th.md, docs/language.md, docs/ai-guide.md, examples/, LICENSE MIT, CHANGELOG.md, CI workflow) and
 tag `v0.1.0`. **Not published yet**: creating the public repository was blocked by Claude Code's
-permission check, so the owner does it. The READMEs already point at https://github.com/hugo8xx/pin-lang
+permission check. Plan (owner, 2026-10-24: use an organisation, not the personal account): the owner
+creates the GitHub organisation `pin-language` (free plan, web UI only); then the repo `pin` is created
+in it and pushed. The READMEs already point at https://github.com/pin-language/pin
 (clone URL, issues, CI badge). Planned push: branch `release/v0.1.0` + tag `v0.1.0` (the owner's rule is
 never to push to `main` without saying so), then check that the first CI run is green.
 

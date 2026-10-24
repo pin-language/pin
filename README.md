@@ -1,6 +1,6 @@
 # Pin
 
-[![test](https://github.com/hugo8xx/pin-lang/actions/workflows/test.yml/badge.svg)](https://github.com/hugo8xx/pin-lang/actions/workflows/test.yml)
+[![test](https://github.com/pin-language/pin/actions/workflows/test.yml/badge.svg)](https://github.com/pin-language/pin/actions/workflows/test.yml)
 
 **A language for AI coding agents to write fast, memory-safe web backends.**
 PHP-like syntax, compiled to native code, no garbage collector.
@@ -57,8 +57,8 @@ You need **Python 3.10+** and **clang**.
 - Windows: not supported yet (WSL with Ubuntu should work but is untested).
 
 ```bash
-git clone https://github.com/hugo8xx/pin-lang.git
-cd pin-lang
+git clone https://github.com/pin-language/pin.git
+cd pin
 ./pin run examples/hello.pn
 ```
 
@@ -176,7 +176,7 @@ Most of these are already designed (in Thai) in [`docs/design/`](docs/design/); 
 ## Feedback wanted
 
 This preview exists to learn what AI agents and PHP developers find natural or confusing. Please
-[open an issue](https://github.com/hugo8xx/pin-lang/issues) with:
+[open an issue](https://github.com/pin-language/pin/issues) with:
 
 - code that you expected to work but got a compile error for (and whether the message helped),
 - anything that crashed instead of printing `panic:` — that is a bug we want to see,
