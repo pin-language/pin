@@ -11,7 +11,7 @@ compile-time ownership (like Rust, simplified), every path through a function is
 error says how to fix it — in plain text or as JSON for the agent's loop. The result compiles through
 LLVM into a single native binary, including a multi-threaded HTTP server.
 
-> **Status: v0.1 preview for early testers.** The language is small and still changing. Do not use it
+> **Status: preview (0.4) for early testers.** The language is small and still changing. Do not use it
 > in production, and do not expose its HTTP server to the internet (no TLS, no timeouts yet).
 > 🇹🇭 ภาษาไทย: [README.th.md](README.th.md)
 
@@ -67,7 +67,7 @@ echo total(squares(10)), "\n";          // 385
 
 ## Using Pin with an AI coding agent
 
-1. Point the agent at the [AI guide](https://github.com/pin-language/docs/blob/HEAD/ai-guide.md) — the whole v0.1 language on one page, with
+1. Point the agent at the [AI guide](https://github.com/pin-language/docs/blob/HEAD/ai-guide.md) — the whole language on one page, with
    idioms, a PHP → Pin table and an error → fix table. For example, add this line to your project's
    `AGENTS.md` / `CLAUDE.md`: *"This project is written in Pin. Read
    https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md before writing code, and run `pin check --json` after every change."*
@@ -77,7 +77,7 @@ echo total(squares(10)), "\n";          // 385
    HTTP handler they answer 500 and the server keeps going).
 
 Messages are written for agents trained on PHP: reaching for `class`, `try`, `switch`, `null`,
-`array()`, closures or `include` gets "not in Pin v0.1 — write this instead", not a parse error.
+`array()`, closures or `include` gets "not in Pin yet — write this instead", not a parse error.
 
 ## Commands
 

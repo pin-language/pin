@@ -204,7 +204,7 @@ class Parser:
     def type_(self):
         t = self.cur
         if t.val == "?":
-            raise CompileError("nullable types (?T) are not in Pin v0.1 yet (designed: pin-language/docs design/null.md)", t.line)
+            raise CompileError("nullable types (?T) are not in Pin yet (designed: pin-language/docs design/null.md)", t.line)
         name = self.eat(kind="IDENT").val
         if name not in TYPE_NAMES:
             raise CompileError(f"unknown type '{name}'", t.line)
@@ -397,7 +397,7 @@ class Parser:
                     raise CompileError("append needs a variable: $a[] = value", t.line)
                 e = Node("append", t.line, seq=e)
             elif t.kind == "OP" and t.val == "-" and self.peek().val == ">":
-                raise CompileError("objects (->) are not in Pin v0.1 yet; use a map, e.g. $user[\"name\"]", t.line)
+                raise CompileError("objects (->) are not in Pin yet; use a map, e.g. $user[\"name\"]", t.line)
             else:
                 return e
 
@@ -435,7 +435,7 @@ class Parser:
                 self.eat()
                 return Node("bool", t.line, val=t.val == "true")
             if t.val == "null":
-                raise CompileError("null is not in Pin v0.1 yet (designed: pin-language/docs design/null.md); use a value "
+                raise CompileError("null is not in Pin yet (designed: pin-language/docs design/null.md); use a value "
                                    "that means 'none', e.g. -1, \"\" or an empty list", t.line)
             if t.val in CONSTANTS:
                 self.eat()
@@ -551,7 +551,7 @@ def flatten_concat(e):
     return [e]
 
 
-# PHP functions an agent will try; what to do in Pin v0.1 instead
+# PHP functions an agent will try; what to do in Pin instead
 PHP_FUNCTION_HINTS = {
     "str_split": "no str_split() yet: use substr($s, $i, 1) in a loop",
     "usort": "no usort() yet: sort($xs) / rsort($xs) sort lists of int, float, bool or string",
@@ -587,16 +587,16 @@ PHP_FUNCTION_HINTS = {
 }
 
 
-# PHP words a newcomer (or an AI trained on PHP) will reach for, and what to do instead in Pin v0.1
+# PHP words a newcomer (or an AI trained on PHP) will reach for, and what to do instead in Pin
 NOT_IN_PIN = {
-    "class": "classes are not in Pin v0.1 yet (designed: pin-language/docs design/ownership-v2.md); use functions and maps",
-    "new": "objects are not in Pin v0.1 yet; use functions and maps",
-    "interface": "interfaces are not in Pin v0.1", "trait": "traits are not in Pin v0.1",
-    "enum": "enums are not in Pin v0.1; use int or string constants", "abstract": "classes are not in Pin v0.1",
-    "try": "try/catch is not in Pin v0.1 yet (designed: pin-language/docs design/error-handling.md); check values before "
+    "class": "classes are not in Pin yet (designed: pin-language/docs design/ownership-v2.md); use functions and maps",
+    "new": "objects are not in Pin yet; use functions and maps",
+    "interface": "interfaces are not in Pin yet", "trait": "traits are not in Pin yet",
+    "enum": "enums are not in Pin yet; use int or string constants", "abstract": "classes are not in Pin yet",
+    "try": "try/catch is not in Pin yet (designed: pin-language/docs design/error-handling.md); check values before "
            "using them, e.g. isset($m[$k]) or $m[$k] ?? default",
-    "catch": "try/catch is not in Pin v0.1 yet", "throw": "throw is not in Pin v0.1 yet; return an error value",
-    "finally": "try/catch is not in Pin v0.1 yet",
+    "catch": "try/catch is not in Pin yet", "throw": "throw is not in Pin yet; return an error value",
+    "finally": "try/catch is not in Pin yet",
     "switch": "switch is not in Pin; use if / elseif / else", "match": "match is not in Pin; use if / elseif / else",
     "do": "do/while is not in Pin; use while", "goto": "goto is not in Pin",
     "include": "use `import name;` (loads name.pn; call name::fn())", "require": "use `import name;`",
@@ -604,10 +604,10 @@ NOT_IN_PIN = {
     "use": "use `import name;` to load name.pn and call name::fn()", "namespace": "each file is a module: use `import name;` and name::fn()",
     "global": "Pin has no global variables, by design: pass values as parameters",
     "static": "Pin has no static variables: pass values as parameters",
-    "const": "const is not in Pin v0.1; use a variable or a function that returns the value",
-    "define": "define() is not in Pin v0.1; use a variable or a function that returns the value",
-    "function": "anonymous functions (closures) are not in Pin v0.1; declare a named function",
-    "fn": "arrow functions are not in Pin v0.1; declare a named function",
+    "const": "const is not in Pin yet; use a variable or a function that returns the value",
+    "define": "define() is not in Pin yet; use a variable or a function that returns the value",
+    "function": "anonymous functions (closures) are not in Pin yet; declare a named function",
+    "fn": "arrow functions are not in Pin yet; declare a named function",
     "array": "array() is not in Pin: write [1, 2] for a list<int> or [\"k\" => 1] for a map<string,int>",
     "list": "list() destructuring is not in Pin; assign each value separately",
     "yield": "generators are not in Pin",
