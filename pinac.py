@@ -1986,6 +1986,9 @@ USAGE = """pin — compile and run Pin programs (.pn)
   pin check FILE.pn          type- and ownership-check only, no binary
   pin version
 
+  --json                     errors as JSON lines on stdout: {"file","line","severity","message"}
+                             (pin check --json prints {"file","ok":true} on success)
+
 Needs clang. Old form `pinac.py FILE.pn [-o OUT] [--emit-ll]` still works."""
 
 
@@ -1993,15 +1996,29 @@ def read_source(path):
     try:
         return open(path, encoding="utf-8").read()
     except OSError as e:
-        print(f"{path}: error: cannot read the file ({e.strerror})", file=sys.stderr)
+        report(path, 0, f"cannot read the file ({e.strerror})")
         sys.exit(1)
+    except UnicodeDecodeError:
+        report(path, 0, "the file is not UTF-8 text")
+        sys.exit(1)
+
+
+JSON_ERRORS = False      # --json: report errors as one JSON object per line on stdout (for tools / AI agents)
+
+
+def report(path, line, msg):
+    if JSON_ERRORS:
+        import json
+        print(json.dumps({"file": path, "line": line, "severity": "error", "message": msg}, ensure_ascii=False))
+    else:
+        print(f"{path}:{line}: error: {msg}", file=sys.stderr)
 
 
 def to_ir(path):
     try:
         return compile_source(read_source(path))
     except CompileError as e:
-        print(f"{path}:{e.line}: error: {e.msg}", file=sys.stderr)
+        report(path, e.line, e.msg)
         sys.exit(1)
 
 
@@ -2026,6 +2043,10 @@ def link(ir, out):
 
 def cli(argv):
     import argparse
+    global JSON_ERRORS
+    if "--json" in argv:
+        JSON_ERRORS = True
+        argv = [a for a in argv if a != "--json"]
     if not argv:
         print(USAGE)
         return 0
@@ -2043,7 +2064,11 @@ def cli(argv):
         src = rest[0]
         if cmd == "check":
             to_ir(src)
-            print(f"{src}: ok")
+            if JSON_ERRORS:
+                import json
+                print(json.dumps({"file": src, "ok": True}))
+            else:
+                print(f"{src}: ok")
             return 0
         if cmd == "build":
             ap = argparse.ArgumentParser(prog="pin build")

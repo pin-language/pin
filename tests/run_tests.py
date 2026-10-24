@@ -119,6 +119,21 @@ for src in sorted(glob.glob(os.path.join(ROOT, "tests", "errors", "*.pn"))):
 for ll in glob.glob(os.path.join(ROOT, "tests", "**", "*.ll"), recursive=True):
     os.remove(ll)
 
+print("pin --json (machine-readable errors for tools and AI agents)")
+import json  # noqa: E402
+PIN = [sys.executable, os.path.join(ROOT, "pin")]
+r = subprocess.run(PIN + ["check", "--json", os.path.join(ROOT, "tests", "errors", "use_after_move.pn")],
+                   capture_output=True, text=True)
+try:
+    d = json.loads(r.stdout.strip().splitlines()[-1])
+    good = r.returncode == 1 and d["line"] == 3 and d["severity"] == "error" and "was moved" in d["message"]
+except (ValueError, IndexError, KeyError):
+    good = False
+(ok if good else lambda n: fail(n, f"got exit {r.returncode}: {r.stdout!r} {r.stderr!r}"))("check --json on an error")
+r = subprocess.run(PIN + ["check", "--json", os.path.join(ROOT, "examples", "hello.pn")], capture_output=True, text=True)
+(ok if r.returncode == 0 and json.loads(r.stdout)["ok"] else
+ lambda n: fail(n, r.stdout + r.stderr))("check --json on a good file")
+
 print("examples (examples/*.pn: must compile; programs without serve() must run and exit 0)")
 for src in sorted(glob.glob(os.path.join(ROOT, "examples", "*.pn"))):
     name = os.path.splitext(os.path.basename(src))[0]
