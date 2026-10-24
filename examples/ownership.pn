@@ -1,0 +1,37 @@
+<?php
+// Pin has no garbage collector. Each list/map has one owner, checked when you compile.
+
+function total(list<int> $xs): int {        // a parameter is a read-only loan: no copy is made
+    $sum = 0;
+    foreach ($xs as $x) { $sum += $x; }
+    return $sum;
+}
+
+function doubled(list<int> $xs): list<int> {
+    $out = copy($xs);                       // want to change it? make your own copy
+    for ($i = 0; $i < count($out); $i++) { $out[$i] *= 2; }
+    return $out;                            // hand ownership to the caller
+}
+
+$a = [1, 2, 3];
+echo total($a), "\n";                       // $a is lent, still ours afterwards
+
+$b = $a;                                    // lists MOVE: $b owns it now, $a is gone
+echo count($b), "\n";
+// echo count($a);                          // compile error: $a was moved on line 19
+
+$c = doubled($b);
+echo json_encode($b), " ", json_encode($c), "\n";
+
+$s = "text";
+$t = $s;                                    // strings COPY, like PHP
+$t .= "!";
+echo "$s $t\n";
+
+$flag = count($c) > 2;
+if ($flag) {
+    $keep = $c;                             // moved on this path only...
+    echo "kept ", count($keep), "\n";
+} else {
+    echo "not kept ", count($c), "\n";      // ...so the other path can still use $c
+}

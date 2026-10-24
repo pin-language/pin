@@ -1,0 +1,42 @@
+<?php
+// A JSON API in one file. Build it, run it, then:  curl localhost:8080/hello
+//   pin run examples/api.pn
+// Each request runs on one of the server threads (one per CPU core). There are no global variables,
+// so handlers share nothing and need no locks. If a handler panics (missing key, index out of range)
+// the client gets a 500 and the server keeps going.
+// Prototype server: no TLS, no request headers, no timeouts — do not expose it to the internet.
+
+function menu(): string {
+    $price = ["coffee" => 55, "tea" => 40, "cake" => 89];
+    return json_encode($price);
+}
+
+function order(string $item, int $qty): string {
+    $price = ["coffee" => 55, "tea" => 40, "cake" => 89];
+    if (!isset($price[$item])) {
+        http_status(404);
+        return json_encode(["error" => "no such item"]);
+    }
+    if ($qty < 1 || $qty > 100) {
+        http_status(400);
+        return json_encode(["error" => "qty must be 1 to 100"]);
+    }
+    // a map holds one value type, so mixed JSON objects are built as strings (json_encode quotes text)
+    return "{\"item\":" . json_encode($item) . ",\"qty\":" . $qty . ",\"total\":" . ($price[$item] * $qty) . "}";
+}
+
+function handle(string $method, string $path, string $body): string {
+    if ($path == "/hello") { return json_encode(["message" => "hello from Pin"]); }
+    if ($path == "/menu") { return menu(); }
+    if (str_starts_with($path, "/order/")) {            // /order/coffee/2
+        $rest = substr($path, 7);
+        $slash = strpos($rest, "/");
+        if ($slash < 0) { return order($rest, 1); }
+        return order(substr($rest, 0, $slash), intval(substr($rest, $slash + 1)));
+    }
+    http_status(404);
+    return json_encode(["error" => "not found"]);
+}
+
+echo "listening on http://localhost:8080 (Ctrl-C to stop)\n";
+serve(8080, "handle");

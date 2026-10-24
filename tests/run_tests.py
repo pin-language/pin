@@ -4,6 +4,7 @@
   tests/*.pn            compile + run, stdout must equal tests/expected/<name>.out
   tests/panics/*.pn     compile + run, must exit 1 and stderr must contain tests/panics/<name>.expected
   tests/errors/*.pn     must FAIL to compile; stderr must contain tests/errors/<name>.expected
+  examples/*.pn         compile; the ones without serve() must run and exit 0
   bench/*.pn            compile + run, output must match the known answer
   api/server.pn         start the HTTP server, check 5 endpoints (status + body)
   tests/server/panics.pn  handler panics must give 500, free the request's memory, and keep serving
@@ -117,6 +118,23 @@ for src in sorted(glob.glob(os.path.join(ROOT, "tests", "errors", "*.pn"))):
         ok(rel(src))
 for ll in glob.glob(os.path.join(ROOT, "tests", "**", "*.ll"), recursive=True):
     os.remove(ll)
+
+print("examples (examples/*.pn: must compile; programs without serve() must run and exit 0)")
+for src in sorted(glob.glob(os.path.join(ROOT, "examples", "*.pn"))):
+    name = os.path.splitext(os.path.basename(src))[0]
+    out = os.path.join(BUILD, "example_" + name)
+    b = build(src, out)
+    if b.returncode:
+        fail(rel(src), "compile failed: " + b.stderr)
+        continue
+    if "serve(" in open(src, encoding="utf-8").read():
+        ok(rel(src) + " (compiles)")
+        continue
+    r = run(out)
+    if r.returncode:
+        fail(rel(src), f"exit {r.returncode}: {r.stderr}")
+    else:
+        ok(rel(src))
 
 print("benchmarks (bench/*.pn)")
 for name, answer in BENCH_ANSWERS.items():

@@ -1,0 +1,22 @@
+<?php
+// Strings and ordered maps. A missing key in `$m[$k] += 1` starts at 0, like PHP but without the warning.
+function count_words(string $text): map<string,int> {
+    map<string,int> $counts = [];
+    $start = 0;
+    $len = strlen($text);
+    while ($start < $len) {
+        $sp = strpos(substr($text, $start), " ");      // strpos gives -1 when not found
+        $end = $sp < 0 ? $len : $start + $sp;
+        $word = strtolower(trim(substr($text, $start, $end - $start)));
+        if (strlen($word) > 0) { $counts[$word] += 1; }
+        $start = $end + 1;
+    }
+    return $counts;                                    // the caller becomes the owner
+}
+
+$counts = count_words("the quick brown fox jumps over the lazy dog The End");
+foreach ($counts as $word => $n) {
+    if ($n > 1) { echo "$word: $n\n"; }
+}
+echo json_encode($counts), "\n";
+echo "missing: ", $counts["cat"] ?? 0, "\n";             // ?? instead of a panic for missing keys
