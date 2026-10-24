@@ -1,0 +1,30 @@
+<?php
+// ไฟล์ทดลองเขียน Pin — แก้ได้ตามใจ แล้วรัน:  python3 pinac.py try.pn && ./try
+
+function greet(string $name): string {
+    return "สวัสดี " . $name . "!";
+}
+
+function squares(int $n): list<int> {
+    list<int> $out = [];
+    for ($i = 1; $i <= $n; $i++) {
+        $out[] = $i * $i;
+    }
+    return $out;
+}
+
+echo greet("PinaTo"), "\n";
+
+$xs = squares(5);
+echo "squares: ", json_encode($xs), "\n";
+
+$total = 0;
+foreach ($xs as $x) { $total += $x; }
+echo "total = $total\n";
+
+$price = ["coffee" => 55, "tea" => 40];
+$price["cake"] = 89;
+foreach ($price as $item => $baht) {
+    echo "$item: $baht บาท\n";
+}
+echo json_encode($price), "\n";

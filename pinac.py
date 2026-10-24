@@ -1956,7 +1956,11 @@ def main():
     ap.add_argument("-o", "--out")
     ap.add_argument("--emit-ll", action="store_true", help="only write the LLVM IR")
     a = ap.parse_args()
-    src = open(a.src, encoding="utf-8").read()
+    try:
+        src = open(a.src, encoding="utf-8").read()
+    except OSError as e:
+        print(f"{a.src}: error: cannot read the file ({e.strerror})", file=sys.stderr)
+        sys.exit(1)
     try:
         ir = compile_source(src)
     except CompileError as e:
