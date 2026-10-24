@@ -24,8 +24,8 @@ compile (คล้าย Rust แต่ย่อให้ง่าย) และ
 - Windows: ยังไม่รองรับ (WSL + Ubuntu น่าจะใช้ได้ แต่ยังไม่ได้ทดสอบ)
 
 ```bash
-git clone https://github.com/OWNER/pin.git   # TODO: ใส่ URL ของ repository จริงตอน public
-cd pin
+git clone https://github.com/hugo8xx/pin-lang.git
+cd pin-lang
 ./pin run examples/hello.pn
 ```
 
@@ -137,7 +137,7 @@ class, `null`, `try`/`catch`, `list<string>` และ container ซ้อนก
 
 ## อยากได้ feedback
 
-เปิด issue ได้เลย (TODO: ใส่ลิงก์ issue tracker ตอน public) โดยเฉพาะ:
+[เปิด issue](https://github.com/hugo8xx/pin-lang/issues) ได้เลย โดยเฉพาะ:
 
 - โค้ดที่คิดว่าน่าจะใช้ได้แต่ compile ไม่ผ่าน (และข้อความ error ช่วยไหม)
 - อะไรก็ตามที่ crash แทนที่จะพิมพ์ `panic:` — นั่นคือบั๊กที่อยากเห็นที่สุด
