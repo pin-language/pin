@@ -2501,7 +2501,7 @@ def pin_get(spec):
     return 0
 
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 
@@ -2550,6 +2550,11 @@ def to_ir(path):
         sys.exit(1)
 
 
+def needs_sqlite(ir):
+    """Only programs that call a db_* function link SQLite (every program *declares* them)."""
+    return re.search(r"call [^\n]*@pn_db_", ir) is not None
+
+
 def link(ir, out):
     """LLVM IR + runtime.c -> native binary at `out`. The .ll lives in a temp dir, not next to the source."""
     import shutil
@@ -2562,7 +2567,7 @@ def link(ir, out):
         ll = os.path.join(d, "prog.ll")
         with open(ll, "w") as f:
             f.write(ir)
-        db = ["-DPIN_SQLITE", "-lsqlite3"] if "@pn_db_" in ir else []
+        db = ["-DPIN_SQLITE", "-lsqlite3"] if needs_sqlite(ir) else []
         r = subprocess.run(["clang", "-O2", "-pthread", "-Wno-override-module", ll, os.path.join(HERE, "runtime.c"),
                             "-lm", *db, "-o", out], capture_output=True, text=True)
     if r.returncode:

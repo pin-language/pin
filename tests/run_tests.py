@@ -149,6 +149,14 @@ try:
 except (OSError, ValueError, KeyError) as e:
     fail("vscode grammar", repr(e))
 
+print("linking (only programs that call db_* need SQLite)")
+sys.path.insert(0, ROOT)
+import pinac  # noqa: E402
+hello_ir = pinac.compile_file(os.path.join(ROOT, "examples", "hello.pn"))
+db_ir = pinac.compile_file(os.path.join(ROOT, "tests", "db_basics.pn"))
+(ok if not pinac.needs_sqlite(hello_ir) and pinac.needs_sqlite(db_ir) else
+ lambda n: fail(n, "needs_sqlite() is wrong"))("hello.pn does not link SQLite; db_basics.pn does")
+
 print("modules (tests/modules: app/ runs; err_*/ must fail with the message in expected.txt, file name included)")
 app = os.path.join(ROOT, "tests", "modules", "app")
 r = subprocess.run(PIN + ["main.pn"], cwd=app, capture_output=True, text=True)

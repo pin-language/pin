@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 — 2026-10-25
+
+- Fix: on Linux without SQLite's development files, every program failed to build — even hello world — so
+  the installer stopped at its hello test. Since 0.3.0 the compiler linked SQLite whenever the program merely
+  declared the `db_*` functions, which every program does; it now links SQLite only for programs that call
+  them. Found by installing from the public URL on a clean Debian container (Mac and CI both had SQLite, so
+  tests did not see it). A test now checks the decision.
+
 ## 0.4.0 — 2026-10-24
 
 Modules and packages: a program can be many files, and can use code from other repositories.

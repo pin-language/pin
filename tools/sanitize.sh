@@ -13,7 +13,7 @@ for src in "$@"; do
     mv "$ll" "build/sanitize/$name.ll"
     clang -O1 -c -Wno-override-module "build/sanitize/$name.ll" -o "build/sanitize/$name.o"
     db=""
-    if grep -q "@pn_db_" "build/sanitize/$name.ll"; then db="-DPIN_SQLITE -lsqlite3"; fi
+    if grep -q "call .*@pn_db_" "build/sanitize/$name.ll"; then db="-DPIN_SQLITE -lsqlite3"; fi
     # shellcheck disable=SC2086  # $db is two flags or nothing
     clang -g -fsanitize=address,undefined runtime.c "build/sanitize/$name.o" -lm -pthread $db -o "build/sanitize/$name"
     if "build/sanitize/$name" > /dev/null 2> "build/sanitize/$name.err" \
