@@ -15,6 +15,38 @@ LLVM into a single native binary, including a multi-threaded HTTP server.
 > in production, and do not expose its HTTP server to the internet (no TLS, no timeouts yet).
 > 🇹🇭 ภาษาไทย: [README.th.md](README.th.md)
 
+## Install
+
+macOS or Linux, one command (no sudo; it checks for Python 3.10+ and clang, puts Pin in `~/.pin`, links
+the `pin` command into `~/.local/bin`, and runs a hello-world to prove it works):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pin-language/pin/HEAD/install.sh | sh
+```
+
+If it says clang is missing: macOS `xcode-select --install`, Ubuntu/Debian `sudo apt install clang`.
+If `pin` is then "command not found", the installer prints the one line to add to your shell config.
+Windows: use WSL with Ubuntu (untested).
+
+Check it, and run your first program:
+
+```bash
+pin -v
+printf '%s\n' 'echo "Hello from Pin\n";' > hello.pn && pin hello.pn
+```
+
+Update later by running the same `curl … | sh` again. To uninstall: `rm -rf ~/.pin ~/.local/bin/pin`.
+
+<details><summary>Install by hand instead</summary>
+
+```bash
+git clone https://github.com/pin-language/pin.git ~/.pin
+mkdir -p ~/.local/bin && ln -sf ~/.pin/pin ~/.local/bin/pin
+pin ~/.pin/examples/hello.pn
+```
+
+</details>
+
 ```php
 function squares(int $n): list<int> {   // returns a list the caller will own
     list<int> $out = [];
@@ -47,26 +79,7 @@ echo total(squares(10)), "\n";          // 385
 Messages are written for agents trained on PHP: reaching for `class`, `try`, `switch`, `null`,
 `array()`, closures or `include` gets "not in Pin v0.1 — write this instead", not a parse error.
 
-## Quick start
-
-You need **Python 3.10+** and **clang**.
-
-- macOS: `xcode-select --install`
-- Ubuntu / Debian: `sudo apt install clang python3`
-- Windows: not supported yet (WSL with Ubuntu should work but is untested).
-
-```bash
-git clone https://github.com/pin-language/pin.git
-cd pin
-./pin examples/hello.pn
-```
-
-Put `pin` on your PATH (no sudo needed; `~/.local/bin` is on the PATH of most setups — if `pin -v`
-then says "command not found", add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`):
-
-```bash
-mkdir -p ~/.local/bin && ln -sf "$PWD/pin" ~/.local/bin/pin && pin -v
-```
+## Commands
 
 | command | what it does |
 |---|---|
@@ -76,10 +89,10 @@ mkdir -p ~/.local/bin && ln -sf "$PWD/pin" ~/.local/bin/pin && pin -v
 | `pin check file.pn` | type- and ownership-check only |
 | `pin version` | print the version |
 
-**Editor:** VS Code syntax highlighting is in [`editors/vscode`](editors/vscode/) — from the repository,
-`cd editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`.
+**Editor:** VS Code syntax highlighting is in [`editors/vscode`](editors/vscode/) — after installing,
+`cd ~/.pin/editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`.
 
-Start with [`examples/`](examples/): `hello`, `fizzbuzz`, `wordcount`, `ownership`, `primes`, and
+Start with [`examples/`](examples/) (installed in `~/.pin/examples`): `hello`, `fizzbuzz`, `wordcount`, `ownership`, `primes`, and
 `api` (a small JSON server). The full guide is the [language guide](https://github.com/pin-language/docs/blob/HEAD/language.md);
 all documentation lives in [pin-language/docs](https://github.com/pin-language/docs).
 

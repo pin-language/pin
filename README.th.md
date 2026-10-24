@@ -15,26 +15,29 @@ compile (คล้าย Rust แต่ย่อให้ง่าย) และ
 
 หลักการออกแบบ: **memory safety > ความเร็ว > อ่านง่าย > เหมือน PHP**
 
-## เริ่มใช้งาน
+## ติดตั้ง
 
-ต้องมี **Python 3.10+** และ **clang**
-
-- macOS: `xcode-select --install`
-- Ubuntu / Debian: `sudo apt install clang python3`
-- Windows: ยังไม่รองรับ (WSL + Ubuntu น่าจะใช้ได้ แต่ยังไม่ได้ทดสอบ)
+macOS หรือ Linux คำสั่งเดียวจบ (ไม่ต้องใช้ sudo สคริปต์จะเช็คว่ามี Python 3.10+ และ clang, เก็บ Pin ไว้ที่
+`~/.pin`, ใส่คำสั่ง `pin` ไว้ใน `~/.local/bin` แล้วรัน hello ให้ดูว่าใช้ได้):
 
 ```bash
-git clone https://github.com/pin-language/pin.git
-cd pin
-./pin examples/hello.pn
+curl -fsSL https://raw.githubusercontent.com/pin-language/pin/HEAD/install.sh | sh
 ```
 
-ใส่ `pin` ลง PATH (ไม่ต้องใช้ sudo ถ้า `pin -v` ขึ้นว่า command not found ให้เพิ่ม
-`export PATH="$HOME/.local/bin:$PATH"` ใน `~/.zshrc`):
+ถ้าบอกว่าไม่มี clang: macOS ใช้ `xcode-select --install`, Ubuntu/Debian ใช้ `sudo apt install clang`
+ถ้าติดตั้งเสร็จแล้วพิมพ์ `pin` แล้วขึ้น command not found สคริปต์จะบอกบรรทัดที่ต้องเพิ่มใน config ของ shell
+Windows: ใช้ WSL + Ubuntu (ยังไม่ได้ทดสอบ)
+
+เช็คว่าใช้ได้ แล้วลองโปรแกรมแรก:
 
 ```bash
-mkdir -p ~/.local/bin && ln -sf "$PWD/pin" ~/.local/bin/pin && pin -v
+pin -v
+printf '%s\n' 'echo "สวัสดีจาก Pin\n";' > hello.pn && pin hello.pn
 ```
+
+อัปเดต: รันคำสั่ง `curl … | sh` เดิมซ้ำ · ถอนการติดตั้ง: `rm -rf ~/.pin ~/.local/bin/pin`
+
+## คำสั่ง
 
 | คำสั่ง | ทำอะไร |
 |---|---|
@@ -45,7 +48,7 @@ mkdir -p ~/.local/bin && ln -sf "$PWD/pin" ~/.local/bin/pin && pin -v
 | `pin version` | ดูเวอร์ชัน |
 
 **VS Code:** มีสีตาม syntax ใน [`editors/vscode`](editors/vscode/) ติดตั้งด้วย
-`cd editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`
+`cd ~/.pin/editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`
 
 ตัวอย่างอยู่ใน [`examples/`](examples/) และคู่มือภาษาเต็ม (ภาษาอังกฤษ) อยู่ที่ [language.md](https://github.com/pin-language/docs/blob/HEAD/language.md) (เอกสารทั้งหมดอยู่ที่ [pin-language/docs](https://github.com/pin-language/docs))
 

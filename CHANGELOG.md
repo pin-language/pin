@@ -29,6 +29,8 @@ Pin is aimed at AI coding agents: `ai-guide.md` (pin-language/docs) is the whole
   previously produce a buffer smaller than the list claimed (heap overflow).
 
 ### Tools
+- One-command install: `curl -fsSL https://raw.githubusercontent.com/pin-language/pin/HEAD/install.sh | sh`
+  (checks Python and clang, installs into `~/.pin`, links `pin` into `~/.local/bin`, no sudo).
 - VS Code extension in `editors/vscode`: syntax highlighting, comment toggling, brackets, auto-indent.
 - `pin` command: `pin FILE.pn` (runs it), `pin run`, `pin build`, `pin check`, `pin version` / `-v`; `--json` for machine-readable
   errors. A missing file, a non-UTF-8 file or a missing clang gives a one-line message.
