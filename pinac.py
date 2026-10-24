@@ -547,7 +547,7 @@ declare ptr @pn_json_map(ptr)
 declare ptr @pn_json_str(ptr)
 declare ptr @pn_json_float(double)
 declare void @pn_http_status(i64)
-declare void @pn_serve(i64)
+declare void @pn_serve(i64, ptr)
 declare double @llvm.sqrt.f64(double)
 """
 
@@ -1390,7 +1390,7 @@ class FuncGen:
             if self.mod.handler and self.mod.handler != h.val:
                 raise CompileError("only one serve() handler per program", e.line)
             self.mod.handler = h.val
-            self.call("void", "@pn_serve", f"i64 {port}")
+            self.call("void", "@pn_serve", f"i64 {port}", "ptr @pn_user_handler")
             return None, "void", False
         raise CompileError(f"{name}() cannot be used with these arguments", e.line)
 

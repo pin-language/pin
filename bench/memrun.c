@@ -16,6 +16,10 @@ int main(int argc, char **argv) {
     int status;
     struct rusage ru;
     wait4(pid, &status, 0, &ru);
+#ifdef __APPLE__
+    fprintf(stderr, "%ld\n", ru.ru_maxrss / 1024);   // macOS reports bytes, Linux reports KB
+#else
     fprintf(stderr, "%ld\n", ru.ru_maxrss);
+#endif
     return WEXITSTATUS(status);
 }

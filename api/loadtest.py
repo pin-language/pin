@@ -2,8 +2,12 @@
 """Load-test the four API servers (all pinned to CPU 0) with wrk pinned to CPU 1.
 
 Usage: loadtest.py <path-to-wrk>   -> prints a table and writes loadtest.json
+
+macOS has no taskset, so there wrk runs unpinned and results are less controlled.
 """
-import json, os, re, subprocess, sys, time
+import json, os, platform, re, subprocess, sys, time
+
+LINUX = platform.system() == "Linux"
 
 WRK = sys.argv[1]
 DURATION = os.environ.get("DURATION", "10s")
@@ -21,6 +25,10 @@ def rss_mb(names):
     for n in names:
         pids = subprocess.run(["pgrep", "-x", n], capture_output=True, text=True).stdout.split()
         for pid in pids:
+            if not LINUX:                                   # ps reports RSS in KB
+                rss = subprocess.run(["ps", "-o", "rss=", "-p", pid], capture_output=True, text=True).stdout
+                total += int(rss.strip() or 0)
+                continue
             try:
                 for line in open(f"/proc/{pid}/status"):
                     if line.startswith("VmRSS:"):
@@ -36,7 +44,8 @@ def to_ms(s):
 
 
 def wrk(url, duration):
-    out = subprocess.run(["taskset", "-c", "1", WRK, "-t1", "-c64", f"-d{duration}", "--latency", url],
+    pin = ["taskset", "-c", "1"] if LINUX else []
+    out = subprocess.run([*pin, WRK, "-t1", "-c64", f"-d{duration}", "--latency", url],
                          capture_output=True, text=True).stdout
     rps = float(re.search(r"Requests/sec:\s+([\d.]+)", out).group(1))
     p50 = to_ms(re.search(r"50%\s+(\S+)", out).group(1))

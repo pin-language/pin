@@ -3,7 +3,8 @@
 //   strings : {len, cap, data[]}          one allocation; cap < 0 means a compile-time literal (never freed)
 //   maps    : ordered hash map (insertion order, like PHP arrays), 8-byte value slots
 //   json    : json_encode for lists and maps
-//   http    : multi-threaded epoll HTTP/1.1 server with keep-alive (one thread per CPU core)
+//   http    : multi-threaded HTTP/1.1 server with keep-alive (one thread per CPU core),
+//             epoll on Linux, kqueue on macOS
 // The compiler guarantees every heap value has exactly one owner, so nothing here needs
 // reference counting or a garbage collector.
 #define _GNU_SOURCE
@@ -13,16 +14,20 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
-#include <sched.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <sys/event.h>
+#else
+#include <sched.h>
+#include <sys/epoll.h>
+#endif
 
 static void oom(void) { fprintf(stderr, "fatal: out of memory\n"); exit(2); }
 static void *xmalloc(size_t n) { void *p = malloc(n ? n : 1); if (!p) oom(); return p; }
@@ -496,13 +501,14 @@ void pn_print_float(double v) {
 
 // ============================================================================ http server
 
-extern Str *pn_user_handler(Str *method, Str *path, Str *body) __attribute__((weak));
+typedef Str *(*Handler)(Str *method, Str *path, Str *body);
+static Handler pn_user_handler;   // set by pn_serve(); the compiler passes the program's handler
 
 static __thread int64_t http_status = 200;
 void pn_http_status(int64_t s) { http_status = s; }
 
 typedef struct {
-    int fd, close_after, want_out;
+    int fd, close_after, want_out, dead;
     char *in; size_t in_len, in_cap;
     char *out; size_t out_len, out_off, out_cap;
 } Conn;
@@ -519,7 +525,9 @@ static const char *reason(int64_t s) {
 static void out_add(Conn *c, const char *p, size_t n) {
     if (c->out_len + n > c->out_cap) {
         c->out_cap = (c->out_len + n) * 2;
-        c->out = xrealloc(c->out, c->out_cap);
+        char *p = realloc(c->out, c->out_cap);
+        if (!p) oom();
+        c->out = p;
     }
     memcpy(c->out + c->out_len, p, n);
     c->out_len += n;
@@ -599,19 +607,98 @@ static int flush_out(Conn *c) {
     return 1;
 }
 
-static void conn_close(int ep, Conn *c) {
-    epoll_ctl(ep, EPOLL_CTL_DEL, c->fd, NULL);
-    close(c->fd);
-    free(c->in); free(c->out); free(c);
+// ---------------------------------------------------------------- event polling
+// One small interface over epoll (Linux) and kqueue (macOS). An event with c == NULL is the listener.
+
+typedef struct { Conn *c; int in, out, err; } PollEv;
+
+#ifdef __APPLE__
+static int poll_new(void) { return kqueue(); }
+
+static void kq_set(int p, int fd, int16_t filter, uint16_t flags, void *data) {
+    struct kevent k;
+    EV_SET(&k, fd, filter, flags, 0, 0, data);
+    kevent(p, &k, 1, NULL, 0, NULL);
+}
+
+static void poll_listen(int p, int fd) { kq_set(p, fd, EVFILT_READ, EV_ADD, NULL); }
+static void poll_add(int p, Conn *c) { kq_set(p, c->fd, EVFILT_READ, EV_ADD, c); }
+static void poll_want_out(int p, Conn *c, int on) { kq_set(p, c->fd, EVFILT_WRITE, on ? EV_ADD : EV_DELETE, c); }
+static void poll_del(int p, Conn *c) { (void)p; (void)c; }   // close() drops kqueue registrations
+
+static int poll_wait(int p, PollEv *out, int max) {
+    struct kevent ks[256];
+    int n = kevent(p, NULL, 0, ks, max < 256 ? max : 256, NULL);
+    for (int i = 0; i < n; i++) {
+        out[i].c = ks[i].udata;
+        out[i].in = ks[i].filter == EVFILT_READ;
+        out[i].out = ks[i].filter == EVFILT_WRITE;
+        out[i].err = (ks[i].flags & EV_ERROR) != 0;
+    }
+    return n;
+}
+#else
+static int poll_new(void) { return epoll_create1(0); }
+
+static void poll_listen(int p, int fd) {
+    struct epoll_event ev = {.events = EPOLLIN, .data.ptr = NULL};
+    epoll_ctl(p, EPOLL_CTL_ADD, fd, &ev);
+}
+
+static void poll_add(int p, Conn *c) {
+    struct epoll_event ev = {.events = EPOLLIN | EPOLLRDHUP, .data.ptr = c};
+    epoll_ctl(p, EPOLL_CTL_ADD, c->fd, &ev);
+}
+
+static void poll_want_out(int p, Conn *c, int on) {
+    struct epoll_event ev = {.events = EPOLLIN | EPOLLRDHUP | (on ? EPOLLOUT : 0), .data.ptr = c};
+    epoll_ctl(p, EPOLL_CTL_MOD, c->fd, &ev);
+}
+
+static void poll_del(int p, Conn *c) { epoll_ctl(p, EPOLL_CTL_DEL, c->fd, NULL); }
+
+static int poll_wait(int p, PollEv *out, int max) {
+    struct epoll_event evs[256];
+    int n = epoll_wait(p, evs, max < 256 ? max : 256, -1);
+    for (int i = 0; i < n; i++) {
+        uint32_t e = evs[i].events;
+        out[i].c = evs[i].data.ptr;
+        out[i].in = (e & (EPOLLIN | EPOLLHUP | EPOLLRDHUP)) != 0;
+        out[i].out = (e & EPOLLOUT) != 0;
+        out[i].err = (e & EPOLLERR) != 0;
+    }
+    return n;
+}
+#endif
+
+static int set_nonblock(int fd) { return fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); }
+
+static int accept_conn(int lfd) {
+#ifdef __APPLE__
+    int fd = accept(lfd, NULL, NULL);
+    if (fd >= 0) {
+        int one = 1;
+        set_nonblock(fd);
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    }
+    return fd;
+#else
+    return accept4(lfd, NULL, NULL, SOCK_NONBLOCK);
+#endif
 }
 
 static int listen_port;
+static int shared_listener = -1;   // macOS: SO_REUSEPORT does not spread connections, so threads share one
 
 static int open_listener(int port) {
-    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
+    if (fd < 0) { perror("serve: socket"); exit(1); }
+    set_nonblock(fd);
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+#ifndef __APPLE__
     setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof one);
+#endif
     struct sockaddr_in a = {0};
     a.sin_family = AF_INET; a.sin_port = htons((uint16_t)port); a.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || listen(fd, 4096) < 0) {
@@ -622,37 +709,41 @@ static int open_listener(int port) {
 }
 
 static void *worker(void *arg) {
-    int lfd = open_listener(listen_port);
-    int ep = epoll_create1(0);
-    struct epoll_event ev = {.events = EPOLLIN, .data.ptr = NULL};
-    epoll_ctl(ep, EPOLL_CTL_ADD, lfd, &ev);
-    struct epoll_event evs[256];
+    int lfd = shared_listener >= 0 ? shared_listener : open_listener(listen_port);
+    int ep = poll_new();
+    poll_listen(ep, lfd);
+    PollEv evs[256];
+    Conn *closed[256];
     (void)arg;
     for (;;) {
-        int n = epoll_wait(ep, evs, 256, -1);
+        int n = poll_wait(ep, evs, 256), nclosed = 0;
         for (int i = 0; i < n; i++) {
-            Conn *c = evs[i].data.ptr;
+            Conn *c = evs[i].c;
             if (!c) {                                         // new connections
                 for (;;) {
-                    int fd = accept4(lfd, NULL, NULL, SOCK_NONBLOCK);
+                    int fd = accept_conn(lfd);
                     if (fd < 0) break;
                     int one = 1;
                     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
                     Conn *nc = calloc(1, sizeof(Conn));
                     if (!nc) oom();
                     nc->fd = fd;
-                    nc->in_cap = 4096; nc->in = xmalloc(nc->in_cap);
-                    struct epoll_event cev = {.events = EPOLLIN | EPOLLRDHUP, .data.ptr = nc};
-                    epoll_ctl(ep, EPOLL_CTL_ADD, fd, &cev);
+                    nc->in_cap = 4096; nc->in = malloc(nc->in_cap);
+                    if (!nc->in) oom();
+                    poll_add(ep, nc);
                 }
                 continue;
             }
-            uint32_t e = evs[i].events;
-            int dead = 0, peer_done = 0;
-            if (e & EPOLLERR) dead = 1;
-            if (!dead && (e & (EPOLLIN | EPOLLHUP | EPOLLRDHUP))) {
+            if (c->dead) continue;                            // closed earlier in this batch (kqueue: read + write events)
+            int dead = evs[i].err, peer_done = 0;
+            if (!dead && evs[i].in) {
                 for (;;) {
-                    if (c->in_len == c->in_cap) { c->in_cap *= 2; c->in = xrealloc(c->in, c->in_cap); }
+                    if (c->in_len == c->in_cap) {
+                        c->in_cap *= 2;
+                        char *p = realloc(c->in, c->in_cap);
+                        if (!p) oom();
+                        c->in = p;
+                    }
                     ssize_t r = read(c->fd, c->in + c->in_len, c->in_cap - c->in_len);
                     if (r > 0) { c->in_len += (size_t)r; continue; }
                     if (r == 0) { peer_done = 1; break; }      // client finished sending: still answer it
@@ -666,25 +757,25 @@ static void *worker(void *arg) {
             if (!dead && c->out_len) {
                 int f = flush_out(c);
                 if (f < 0) dead = 1;
-                else if (f == 0 && !c->want_out) {
-                    c->want_out = 1;
-                    struct epoll_event cev = {.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP, .data.ptr = c};
-                    epoll_ctl(ep, EPOLL_CTL_MOD, c->fd, &cev);
-                } else if (f == 1 && c->want_out) {
-                    c->want_out = 0;
-                    struct epoll_event cev = {.events = EPOLLIN | EPOLLRDHUP, .data.ptr = c};
-                    epoll_ctl(ep, EPOLL_CTL_MOD, c->fd, &cev);
-                }
+                else if (f == 0 && !c->want_out) { c->want_out = 1; poll_want_out(ep, c, 1); }
+                else if (f == 1 && c->want_out) { c->want_out = 0; poll_want_out(ep, c, 0); }
             }
             if (!dead && c->close_after && c->out_len == 0) dead = 1;
-            if (dead) conn_close(ep, c);
+            if (dead) {
+                c->dead = 1;
+                poll_del(ep, c);
+                close(c->fd);
+                closed[nclosed++] = c;
+            }
         }
+        for (int i = 0; i < nclosed; i++) { free(closed[i]->in); free(closed[i]->out); free(closed[i]); }
     }
     return NULL;
 }
 
-void pn_serve(int64_t port) {
-    if (!pn_user_handler) panic_msg("serve(): no handler compiled in");
+void pn_serve(int64_t port, Handler handler) {
+    if (!handler) panic_msg("serve(): no handler compiled in");
+    pn_user_handler = handler;
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, NULL, _IOLBF, 0);
     listen_port = (int)port;
@@ -692,9 +783,17 @@ void pn_serve(int64_t port) {
     const char *env = getenv("PN_THREADS");
     if (env) threads = atoi(env);
     if (threads <= 0) {
+#ifdef __APPLE__
+        threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
+#else
         cpu_set_t set;
         threads = sched_getaffinity(0, sizeof set, &set) == 0 ? CPU_COUNT(&set) : 1;
+#endif
+        if (threads <= 0) threads = 1;
     }
+#ifdef __APPLE__
+    shared_listener = open_listener(listen_port);
+#endif
     fprintf(stderr, "listening on :%lld with %d thread(s)\n", (long long)port, threads);
     for (int i = 1; i < threads; i++) {
         pthread_t t;
