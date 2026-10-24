@@ -1,141 +1,170 @@
-# Pin: ภาษาหน้าตาคล้าย PHP ที่ compile เป็น native code
+# Pin
 
-ชื่อ **Pin** ไฟล์นามสกุล `.pn` (prototype ยังไม่ใช่ production) · หลักการออกแบบ: memory safety > ความเร็ว > อ่านง่าย > เหมือน PHP
+**PHP-like syntax, compiled to native code, no garbage collector.**
 
-```
-source (.pn) → lexer → parser → type checker + ownership checker → LLVM IR → clang -O2 → ไฟล์ binary ไฟล์เดียว
-```
+Pin looks familiar if you write PHP, but every variable has one type, memory is managed by
+compile-time ownership (like Rust, simplified), and a program compiles through LLVM into a single
+native binary — including a multi-threaded HTTP server.
 
-## ใช้งาน
-
-```bash
-python3 pinac.py tests/hello.pn      # ได้ไฟล์ tests/hello
-./tests/hello
-python3 pinac.py --emit-ll file.pn   # ดู LLVM IR ที่สร้าง
-```
-
-ต้องมี: Python 3, clang (ทดสอบกับ Apple clang 15 บน macOS และ clang 18–19 บน Linux)
-
-## ตัวอย่าง
+> **Status: v0.1 preview for early testers.** The language is small and still changing. Do not use it
+> in production, and do not expose its HTTP server to the internet (no TLS, no timeouts yet).
+> 🇹🇭 ภาษาไทย: [README.th.md](README.th.md)
 
 ```php
 <?php
-function sum(list<int> $xs): int {     // ยืม list มาอ่าน ไม่ได้เป็นเจ้าของ
-    $total = 0;                         // type อนุมานเอง = int
-    foreach ($xs as $x) { $total += $x; }
-    return $total;
-}
-
-function squares(int $n): list<int> {   // คืน list ที่ผู้เรียกเป็นเจ้าของ
+function squares(int $n): list<int> {   // returns a list the caller will own
     list<int> $out = [];
     for ($i = 1; $i <= $n; $i++) { $out[] = $i * $i; }
     return $out;
 }
 
-$name = "PinaTo";
-echo "Hello $name\n";
-echo sum(squares(10)), "\n";
+function total(list<int> $xs): int {    // borrows the list read-only: no copy
+    $sum = 0;
+    foreach ($xs as $x) { $sum += $x; }
+    return $sum;
+}
+
+$name = "world";
+echo "Hello, $name!\n";
+echo total(squares(10)), "\n";          // 385
 ```
 
-## กติกาของภาษา (ที่ต่างจาก PHP)
+## Quick start
 
-| เรื่อง | PHP | ภาษานี้ |
+You need **Python 3.10+** and **clang**.
+
+- macOS: `xcode-select --install`
+- Ubuntu / Debian: `sudo apt install clang python3`
+- Windows: not supported yet (WSL with Ubuntu should work but is untested).
+
+```bash
+git clone https://github.com/OWNER/pin.git   # TODO: replace with the public repository URL
+cd pin
+./pin run examples/hello.pn
+```
+
+Optional — put `pin` on your PATH:
+
+```bash
+ln -s "$PWD/pin" /usr/local/bin/pin
+```
+
+| command | what it does |
+|---|---|
+| `pin run file.pn` | compile and run (the binary is thrown away) |
+| `pin build file.pn [-o out]` | compile to a native binary |
+| `pin check file.pn` | type- and ownership-check only |
+| `pin version` | print the version |
+
+Start with [`examples/`](examples/): `hello`, `fizzbuzz`, `wordcount`, `ownership`, `primes`, and
+`api` (a small JSON server). The full guide is [docs/language.md](docs/language.md).
+
+## How Pin differs from PHP
+
+| | PHP | Pin |
 |---|---|---|
-| type ของตัวแปร | เปลี่ยนได้ตลอด | type เดียวตลอด อนุมานจากค่าแรก |
-| parameter / return | type ใส่หรือไม่ใส่ก็ได้ | ต้องใส่ |
-| array | ตัวเดียวเป็นทั้ง list และ map | แยกเป็น `list<int>` กับ `map<string,int>` (เรียงตามลำดับที่ใส่เหมือน PHP) |
-| string | ต่อด้วย `.` | เหมือน PHP: `.`, `.=`, `"Hello $name"`, `{$x}` |
-| อ่าน map ด้วย key ที่ไม่มี | warning แล้วได้ null | panic — ให้เช็ค `isset()` หรือใช้ `$m[$k] ?? 0` ก่อน |
-| `$m[$k] += 1` กับ key ใหม่ | warning แล้วนับต่อ | นับต่อจาก 0 ได้เลย ไม่มี warning |
-| json_encode ภาษาไทย | แปลงเป็น `\u0e44` | เก็บ UTF-8 ตามเดิม (เหมือน JSON_UNESCAPED_UNICODE) |
-| แก้ array ที่รับเป็น parameter | แก้สำเนาของตัวเอง (copy-on-write) | compile error — ต้อง `copy()` ก่อน |
-| เงื่อนไข `if ($n)` | แปลงเป็น bool ให้เอง | ต้องเป็น bool จริง เช่น `$n != 0` |
-| หน่วยความจำ | reference counting + GC ตอนรัน | ownership ตรวจตอน compile ไม่มี GC ตอนรัน |
-| index เกินขนาด | warning แล้วได้ null | หยุดโปรแกรมทันที (panic) ใน server ตอบ 500 แล้วทำงานต่อ |
-| int ล้น | กลายเป็น float | วนรอบแบบ 64-bit (ยังไม่ panic — รอให้เช็คได้โดยไม่ช้า) |
-| `intval("99999999999999999999")` | ได้ PHP_INT_MAX | panic |
+| variable types | can change at any time | one type per variable, inferred from the first value |
+| parameters / return | types optional | types required |
+| arrays | one `array` for lists and maps | `list<int>` and `map<string,int>` (maps keep insertion order like PHP) |
+| strings | `.`, `.=`, `"Hello $name"` | the same |
+| missing map key | warning, then `null` | panic — check with `isset()` or use `$m[$k] ?? 0` |
+| index out of range | warning, then `null` | panic |
+| `if ($n)` | truthy/falsy | the condition must be a `bool`: write `$n != 0` |
+| changing an array you were passed | changes a copy (copy-on-write) | compile error — `copy()` it first |
+| using a variable that may not be set | warning | compile error |
+| memory | reference counting + GC at run time | ownership checked at compile time, no GC |
+| int overflow | becomes a float | wraps around (64-bit) |
+| `json_encode` of Thai text | `ไ...` | UTF-8 as is (like `JSON_UNESCAPED_UNICODE`) |
 
-## Ownership (แบบ Rust แต่ย่อให้ง่าย)
+## Ownership in one minute
 
-1. list, map และ string มีเจ้าของคนเดียว เจ้าของจบฟังก์ชันเมื่อไหร่ก็คืนหน่วยความจำทันที
-2. list และ map: `$b = $a;` คือการ **ย้าย** หลังจากนั้นใช้ `$a` ไม่ได้
-3. string: `$b = $a;` คือการ **copy** แบบ PHP (string ที่เขียนไว้ในโค้ดไม่ถูก copy จริง เพราะไม่มีวันเปลี่ยน)
-4. ส่งค่าเข้าฟังก์ชัน = **ให้ยืมแบบอ่านอย่างเดียว** ผู้เรียกยังเป็นเจ้าของ (ใกล้ PHP ที่ฟังก์ชันแก้ array ของผู้เรียกไม่ได้)
-5. ของที่ยืมมา (parameter, ตัวแปรของ foreach) แก้หรือย้ายไม่ได้ ต้อง copy ก่อน
-6. ห้ามเพิ่มของใน list หรือแก้ map ระหว่างที่ `foreach` กำลังวนอยู่
-7. ไม่มีตัวแปร global ฟังก์ชันจึงใช้ข้อมูลร่วมกันไม่ได้ ทำให้ handler ของ HTTP server รันหลาย thread พร้อมกันได้โดยไม่ต้องมี lock
-
-compiler จับผิดให้ตั้งแต่ตอน compile ตัวอย่างใน `tests/errors/`:
-
-```
-use_after_move.pn:3: error: $a was moved on line 2 and can no longer be used here. Use copy($a) if you need two separate lists
-move_in_loop.pn:3: error: $a is moved inside a loop, so the next round would use a moved value. Move it after the loop, or use copy($a)
-append_while_iterating.pn:3: error: cannot append to $a while a foreach is looping over it
+```php
+$a = [1, 2, 3];
+echo total($a);      // passing to a function lends it read-only; $a is still yours
+$b = $a;             // lists and maps MOVE: $b owns it now
+echo count($a);      // compile error: $a was moved on line 3. Use copy($a) ...
+$c = copy($b);       // an explicit copy
+$s = "text";
+$t = $s;             // strings COPY, like PHP
 ```
 
-## Built-in
+Each list, map and string has exactly one owner and is freed when the owner goes away — no garbage
+collector, no reference counting. The compiler checks every path through your code separately, so a
+value moved in one `if` branch can still be used in the other branch. Errors explain the fix:
 
-- list/map: `count`, `fill($n, $v)`, `copy`, `isset($m[$k])`, `array_key_exists`, `unset($m[$k])`, `$m[$k] ?? $default`, `foreach ($m as $k => $v)`
-- string: `strlen`, `substr` (รองรับเลขติดลบแบบ PHP), `strpos` (**ไม่เจอคืน -1** ไม่ใช่ false), `str_contains`, `str_starts_with`, `str_ends_with`, `str_repeat`, `strtolower`, `strtoupper`, `trim`, `intval`, `strval`
-- อื่นๆ: `json_encode`, `sqrt`, `intdiv`, `wrapping_add`, `wrapping_sub`, `wrapping_mul`, cast `(int)` `(float)` `(string)`, `?:`
-- HTTP: `serve($port, "handler")`, `http_status($code)`
+```
+ownership.pn:21: error: $a was moved on line 19 and can no longer be used here. Use copy($a) if you need two separate values
+loop.pn:2: error: $last may be used before it is assigned: on some paths to this line it never gets a value (an if without else, or a loop that can run zero times). Give $last a value before the if/loop
+```
 
-## HTTP server
+## A web server in one file
 
 ```php
 function handle(string $method, string $path, string $body): string {
-    if ($path == "/hello") { return "{\"message\":\"hello world\"}"; }
+    if ($path == "/hello") { return json_encode(["message" => "hello"]); }
     http_status(404);
-    return "{\"error\":\"not found\"}";
+    return json_encode(["error" => "not found"]);
 }
 serve(8080, "handle");
 ```
 
-ได้ไฟล์เดียวที่เป็น web server เลย รัน 1 thread ต่อ 1 core (เปลี่ยนด้วย `PN_THREADS=4`) รองรับ HTTP/1.1 keep-alive และ pipelining ใช้ได้ทั้ง Linux (epoll) และ macOS (kqueue)
-ถ้า handler panic (เช่น key ไม่มี, index เกิน, int ล้น) server ตอบ 500 `{"error":"Internal Server Error"}` คืนหน่วยความจำของ request นั้นทั้งหมด แล้วรับ request ถัดไปต่อ
+`pin run` it and you get an HTTP/1.1 server with keep-alive and pipelining, one thread per CPU core
+(`PN_THREADS=4` to change), on Linux (epoll) and macOS (kqueue). There are no global variables, so
+handlers share nothing and need no locks. If a handler panics, that client gets
+`500 {"error":"Internal Server Error"}`, everything the request allocated is freed, and the server keeps
+serving.
 
-ตัวอย่างเต็มอยู่ที่ `api/server.pn` (3 endpoint) พร้อมตัวเดียวกันที่เขียนด้วย Go และ PHP
+## What is checked for you
 
-## ยังไม่มีใน prototype นี้
+- **At compile time:** types, ownership (use after move, moving inside a loop, changing a borrowed
+  value, changing a list while `foreach` walks it), and that every variable has a value on every path.
+- **At run time (always on, no flag to turn them off):** list bounds, missing map keys, division by zero,
+  `intdiv(PHP_INT_MIN, -1)`, `(int)` of NAN/INF/huge floats, `intval()` of numbers that do not fit, and
+  every allocation size (a huge `fill()` panics instead of producing a too-small buffer).
+- **Not checked yet:** `+ - *` on ints wrap around on overflow. Checking them cost up to 23% on integer
+  loops, so it is postponed until the compiler can skip the checks it can prove unnecessary.
 
-- class/object, null/nullable, `list<string>`, map ซ้อน map, `explode`
-- error handling (`throws` / `try` / `catch` — ออกแบบแล้วใน `docs/design/error-handling.md`)
-- `go` / `await` (ออกแบบแล้วใน `docs/design/concurrency.md`) ตอนนี้มีแค่ server ที่รันหลาย thread ให้เอง
-- HTTP: TLS, HTTP/2, header ของ request/response, timeout, จำกัดขนาด request
-- json_decode, database
+## Benchmarks
 
-## Benchmark: API server
+Same algorithm in every language, same output checked for all of them. Apple M2 (8 cores), macOS 14,
+best of 3 runs, peak memory. No CPU pinning on macOS, so treat small differences as noise.
 
-
-ทุก server รันบน CPU core 0 ส่วนตัวยิงโหลด (wrk, 64 connections, 10 วินาที) รันบน core 1 ทุก server ตอบ byte ตรงกันทุก endpoint
-
-| endpoint | ใหม่ | Go net/http | PHP FrankenPHP worker | PHP classic (php -S) |
-|---|---|---|---|---|
-| /hello | 132,268 req/s * | 41,696 | 10,439 | 4,703 |
-| /user/42 (JSON) | 94,897 | 37,999 | 10,887 | 4,441 |
-| /primes/20000 (CPU) | 17,019 | 14,295 | 3,518 | 2,324 |
-| หน่วยความจำ server | 2.3 MB | 13 MB | 102 MB | 96–102 MB |
-
-\* ตอน /hello server ใช้ CPU แค่ 80% ตัวยิงโหลดตันก่อน ความสามารถจริงสูงกว่านี้
-
-ข้อควรรู้:
-- server ของภาษาใหม่ทำงานน้อยกว่า Go net/http มาก (ไม่มี TLS, HTTP/2, timeout, header API) ส่วนต่างใน /hello กับ /user ส่วนหนึ่งมาจากตรงนี้
-- /primes วัดความเร็วของภาษาตรงที่สุด: เร็วกว่า Go 1.2 เท่า, เร็วกว่า PHP worker 4.8 เท่า
-- FrankenPHP ใช้ `opcache.jit=function` เพราะโหมด `tracing` ทำให้ FrankenPHP 1.13.2 / PHP 8.5.12 crash ที่ endpoint /primes
-- php -S ปิด connection ทุก request (ไม่มี keep-alive) และเป็น server สำหรับ dev จึงเป็นตัวแทนแบบ PHP-FPM ได้ไม่สมบูรณ์
-
-รันเอง: เปิด server ทั้ง 4 ตัวแล้ว `python3 api/loadtest.py <path-to-wrk>`
-
-## Benchmark: CPU
-
-ผลบนเครื่องทดสอบ (Linux 2 cores, เวลาดีสุดจาก 3 รอบ / หน่วยความจำสูงสุด) ทุกภาษาได้ผลลัพธ์ตรงกัน
-
-| benchmark | new | rust | go | php-jit | php | python |
+| benchmark | Pin | Rust 1.95 | Go 1.26 | PHP 8.5 + JIT | PHP 8.5 | Python 3.15 |
 |---|---|---|---|---|---|---|
-| fib | 0.02s / 2MB | 0.03s / 2MB | 0.04s / 2MB | 0.14s / 34MB | 0.41s / 31MB | 0.88s / 8MB |
-| sieve | 0.13s / 21MB | 0.14s / 21MB | 0.13s / 21MB | 1.26s / 339MB | 2.44s / 336MB | 4.67s / 161MB |
-| collatz | 0.17s / 2MB | 0.17s / 2MB | 0.25s / 2MB | 1.25s / 34MB | 2.66s / 31MB | 9.63s / 8MB |
-| pi | 0.13s / 2MB | 0.10s / 2MB | 0.12s / 2MB | 0.82s / 34MB | 1.76s / 31MB | 11.13s / 8MB |
-| listsum | 0.28s / 40MB | 0.27s / 40MB | 1.20s / 162MB | 1.75s / 239MB | 2.01s / 236MB | 7.31s / 312MB |
+| sieve (20M) | 0.047s / 20 MB | 0.047s / 20 MB | 0.046s / 23 MB | 0.640s / 330 MB | 1.351s / 326 MB | 4.412s / 165 MB |
+| collatz (1M) | 0.166s / 1 MB | 0.132s / 1 MB | 0.180s / 4 MB | 0.721s / 25 MB | 3.235s / 21 MB | 6.440s / 11 MB |
+| pi (100M terms) | 0.092s / 1 MB | 0.090s / 1 MB | 0.091s / 4 MB | 0.932s / 25 MB | 2.237s / 21 MB | 12.352s / 12 MB |
+| list build + sum | 0.104s / 59 MB | 0.135s / 399 MB | 0.182s / 124 MB | 0.494s / 230 MB | 1.170s / 175 MB | 4.869s / 104 MB |
 
-รันเอง: `python3 bench/run.py` ผลอยู่ที่ `bench/results.json`
+Caveats: these are small CPU loops, not real applications. `fib` is left out because clang optimises
+that recursion in ways that say little about the language. Pin's ints are not overflow-checked, while
+Rust's release build is not either and Go also wraps. Reproduce with `python3 bench/run.py` (needs all
+toolchains); raw numbers in `bench/results.json`.
+
+An earlier HTTP load test on a 2-core Linux container (each server pinned to one core, wrk with 64
+connections) gave Pin 132k req/s for a hello endpoint vs 42k for Go `net/http` and 10k for FrankenPHP.
+Pin's server does far less (no TLS, HTTP/2, header API or timeouts), so that gap is not a language
+comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP. Details:
+`api/loadtest.json`, `api/loadtest.py`.
+
+## Not there yet
+
+Classes, `null` / nullable types, `try`/`catch`, `list<string>` and nested containers, closures,
+modules/imports, request headers and query strings, `json_decode`, database access, `go`/`await`.
+Most of these are already designed (in Thai) in [`docs/design/`](docs/design/); see
+[CHANGELOG.md](CHANGELOG.md) for what changed.
+
+## Feedback wanted
+
+This preview exists to learn what PHP developers find natural or confusing. Please open an issue
+(TODO: link to the issue tracker once the repository is public) with:
+
+- code that you expected to work but got a compile error for (and whether the message helped),
+- anything that crashed instead of printing `panic:` — that is a bug we want to see,
+- what you would need before trying Pin for a real API.
+
+Run the test suite with `python3 tests/run_tests.py` (≈1 minute).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
