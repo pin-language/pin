@@ -45,7 +45,18 @@ Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang
 - ASAN+UBSAN clean on macOS and Linux (LeakSanitizer on Linux too): hello, strmap, arith, listsum, all panic tests, and both servers
   under load (pipelining, half-close, garbage, chunked bodies, ~1,450 panicking requests).
 
-## 2. Measured (owner's M-series Mac, best of 5, pin only)
+### AI-agent usability tests (2026-10-24)
+
+Two fresh agents that had never seen Pin got only `docs/ai-guide.md` and three tasks each:
+- Sonnet: order stats, word frequency top-3, JSON API (VAT, fizzbuzz map, 400/404). All correct, ≤2
+  check rounds per task.
+- Haiku: grades + self-written sort/median, satang ledger with rejected withdrawals, shop API with a
+  query string. All correct, 4–6 check rounds per task.
+No crash, hang or traceback in either. Their findings were fixed (messages for ternary types, float
+index, unset on lists, PHP functions; json_encode(380.0) printing 3.8e+02; guide idioms). Repeat this
+after each language change: it is the best signal for the main users.
+
+## 2. Measured (owner's Apple M2 Mac, best of 5, pin only; full comparison in README.md)
 
 | bench | original prototype | with overflow panics | now (panics removed) |
 |---|---|---|---|
