@@ -50,6 +50,7 @@ printf '%s\n' 'echo "สวัสดีจาก Pin\n";' > hello.pn && pin hell
 **VS Code:** มีสีตาม syntax ใน [`editors/vscode`](editors/vscode/) ติดตั้งด้วย
 `cd ~/.pin/editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`
 
+เริ่มเรียน: [Learn Pin](https://github.com/pin-language/docs/blob/HEAD/learn/README.md) (10 บทสั้นๆ ภาษาอังกฤษ) ·
 ตัวอย่างอยู่ใน [`examples/`](examples/) และคู่มือภาษาเต็ม (ภาษาอังกฤษ) อยู่ที่ [language.md](https://github.com/pin-language/docs/blob/HEAD/language.md) (เอกสารทั้งหมดอยู่ที่ [pin-language/docs](https://github.com/pin-language/docs))
 
 ## ตัวอย่าง
