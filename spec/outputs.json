@@ -43,5 +43,16 @@
  "query_param": "green tea|กทม||\n",
  "query_has": "yyn\n",
  "form_param": "Somchai K\n",
- "form_has": "yn\n"
+ "form_has": "yn\n",
+ "db_open": "0\n",
+ "db_exec": "1 -1 UNIQUE constraint failed: items.name\n",
+ "db_query": "cake x1 at 89.5\ntea x2 at 40\n",
+ "db_next": "no rows\n",
+ "db_int": "3 30\n",
+ "db_float": "89.5\n",
+ "db_string": "ชาเย็น 1\n",
+ "db_is_null": "qty is NULL\n",
+ "db_json": "[{\"id\":1,\"name\":\"tea\",\"qty\":2,\"price\":40.0},{\"id\":2,\"name\":\"cake \\\"special\\\"\",\"qty\":null,\"price\":null}]\n",
+ "db_last_id": "2\n",
+ "db_error": "refused: UNIQUE constraint failed: items.name\n"
 }

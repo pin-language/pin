@@ -62,4 +62,8 @@ case ":$PATH:" in
         say "  echo 'export PATH=\"$BIN:\$PATH\"' >> $RC"
         ;;
 esac
+if ! printf '#include <sqlite3.h>\n' | clang -E -x c - >/dev/null 2>&1; then
+    say "Optional: to use the database (db_* functions), install SQLite's development files:"
+    say "  sudo apt install libsqlite3-dev   (Fedora: sudo dnf install sqlite-devel)"
+fi
 say "For AI agents: https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md"

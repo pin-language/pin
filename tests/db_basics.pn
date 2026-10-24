@@ -1,0 +1,13 @@
+// SQLite basics: exec, constraint refusal (-1 + db_error), query by column, NULL, JSON types, Thai text
+$db = db_open(":memory:");
+db_exec($db, "CREATE TABLE orders (id INTEGER PRIMARY KEY, item TEXT NOT NULL UNIQUE, qty INTEGER, price REAL, note TEXT)", []);
+echo db_exec($db, "INSERT INTO orders (item, qty, price) VALUES (?, ?, ?)", ["tea", "2", "40.5"]), " ", db_last_id($db), "\n";
+db_exec($db, "INSERT INTO orders (item, qty, price, note) VALUES (?, ?, ?, ?)", ["ชาไทย \"x\"", "3", "55", "hot"]);
+echo db_exec($db, "INSERT INTO orders (item, qty) VALUES (?, ?)", ["tea", "1"]), " [", db_error($db), "]\n";
+$rows = db_query($db, "SELECT id, item, qty, price, note FROM orders WHERE qty >= ? ORDER BY id", ["2"]);
+while (db_next($rows)) {
+    echo db_int($rows, "id"), " ", db_string($rows, "item"), " ", db_int($rows, "qty") * 2, " ", db_float($rows, "price"), " null=", db_is_null($rows, "note") ? "y" : "n", "\n";
+}
+echo db_json($db, "SELECT * FROM orders", []), "\n";
+echo db_exec($db, "UPDATE orders SET qty = qty + 1", []), "\n";
+echo db_json($db, "SELECT count(*) AS n, sum(qty) AS total FROM orders WHERE item = " . "?", ["tea"]), "\n";

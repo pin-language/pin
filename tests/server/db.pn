@@ -1,0 +1,34 @@
+// SQLite in a server: every request opens its own connection (WAL lets them run in parallel).
+// /boom panics while a connection and a statement are open: they must be closed, the client gets a 500.
+function db(): db {
+    $db = db_open("server_db_test.db");
+    db_exec($db, "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, qty INTEGER NOT NULL)", []);
+    return $db;
+}
+
+function handle(string $method, string $path, string $body): string {
+    $route = url_path($path);
+    $db = db();
+    if ($method == "POST" && $route == "/items") {
+        $n = db_exec($db, "INSERT INTO items (name, qty) VALUES (?, ?)", [json_string($body, "name"), strval(json_int($body, "qty"))]);
+        if ($n < 0) { http_status(409); return json_encode(["error" => db_error($db)]); }
+        http_status(201);
+        return "{\"id\":" . db_last_id($db) . "}";
+    }
+    if ($route == "/items") { return db_json($db, "SELECT id, name, qty FROM items ORDER BY id", []); }
+    if ($route == "/total") {
+        $r = db_query($db, "SELECT qty FROM items", []);
+        $t = 0;
+        while (db_next($r)) { $t += db_int($r, "qty"); }
+        return "{\"total\":" . $t . "}";
+    }
+    if ($route == "/boom") {
+        $r = db_query($db, "SELECT name FROM items", []);
+        db_next($r);
+        map<string,int> $m = [];
+        return "{\"x\":" . $m["missing"] . "}";
+    }
+    http_status(404);
+    return "{\"error\":\"not found\"}";
+}
+serve(8086, "handle");

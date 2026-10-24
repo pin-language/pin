@@ -207,5 +207,79 @@ f("form_param", H, "form_param(string $body, string $key): string", 'One value f
 f("form_has", H, "form_has(string $body, string $key): bool", "Whether a form body has `$key`.",
   r'''echo form_has("a=1&b=", "b") ? "y" : "n", form_has("a=1", "c") ? "y" : "n", "\n";''')
 
+# ----------------------------------------------------------------------------------------- database
+D = "database"
+SETUP = ('$db = db_open(":memory:");\n'
+         'db_exec($db, "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT UNIQUE, qty INTEGER, price REAL)", []);\n')
+f("db_open", D, "db_open(string $path): db", "Open (or create) an SQLite database file.",
+  r'''$db = db_open(":memory:");          // a file name like "shop.db", or ":memory:" for a temporary one
+echo db_exec($db, "CREATE TABLE t (x INTEGER)", []), "\n";''',
+  ["The connection closes by itself when `$db` goes out of scope — at the end of the function, or when a "
+   "handler panics.",
+   "Open one per request in a server: opening SQLite is fast, and WAL mode lets requests read and write in "
+   "parallel. Writers wait up to 5 seconds for each other.",
+   "A file that cannot be opened panics. Foreign keys are enforced.",
+   "`db` values move like lists; pass `$db` to functions (they borrow it)."],
+  php="Pin's version of `new PDO('sqlite:shop.db')`. PostgreSQL is planned with the same functions.")
+f("db_exec", D, "db_exec(db $db, string $sql, list $params): int",
+  "Run INSERT, UPDATE, DELETE or CREATE; returns the rows changed.",
+  SETUP + r'''echo db_exec($db, "INSERT INTO items (name, qty) VALUES (?, ?)", ["tea", "2"]), " ";
+echo db_exec($db, "INSERT INTO items (name, qty) VALUES (?, ?)", ["tea", "5"]), " ", db_error($db), "\n";''',
+  ["The SQL must be a string literal in your code; every value goes in a `?` placeholder and in the list "
+   "(`list<string>`, `list<int>` or `list<float>`). SQL built from variables does not compile, so a client "
+   "cannot inject SQL.",
+   "Returns -1 when a constraint (UNIQUE, NOT NULL, CHECK, FOREIGN KEY) refuses the change — `db_error($db)` "
+   "says which. Any other error (bad SQL, wrong number of values) is a bug and panics.",
+   'One statement per call. Numbers can be passed as strings: SQLite stores `"2"` in an INTEGER column as 2.'])
+f("db_query", D, "db_query(db $db, string $sql, list $params): rows", "Run a SELECT and get the rows one at a time.",
+  SETUP + r'''db_exec($db, "INSERT INTO items (name, qty, price) VALUES (?, ?, ?)", ["tea", "2", "40"]);
+db_exec($db, "INSERT INTO items (name, qty, price) VALUES (?, ?, ?)", ["cake", "1", "89.5"]);
+$rows = db_query($db, "SELECT name, qty, price FROM items WHERE qty >= ? ORDER BY name", ["1"]);
+while (db_next($rows)) {
+    echo db_string($rows, "name"), " x", db_int($rows, "qty"), " at ", db_float($rows, "price"), "\n";
+}''',
+  ["Same SQL rules as `db_exec`. Read columns by name with `db_int`, `db_float`, `db_string`, `db_is_null` "
+   "after `db_next` returns true.",
+   "`rows` close by themselves when they go out of scope; they may outlive the `$db` they came from."],
+  php="Like `$pdo->prepare($sql)->execute($params)` followed by a `fetch()` loop.")
+f("db_next", D, "db_next(rows $rows): bool", "Move to the next row; false when there are no more.",
+  SETUP + r'''$rows = db_query($db, "SELECT name FROM items", []);
+echo db_next($rows) ? "a row" : "no rows", "\n";''')
+f("db_int", D, "db_int(rows $rows, string $column): int", "An integer column of the current row (NULL gives 0).",
+  SETUP + r'''db_exec($db, "INSERT INTO items (name, qty) VALUES (?, ?)", ["tea", "3"]);
+$rows = db_query($db, "SELECT qty, qty * 10 AS big FROM items", []);
+while (db_next($rows)) { echo db_int($rows, "qty"), " ", db_int($rows, "big"), "\n"; }''',
+  ["A column name the query does not have, or reading before `db_next`, panics. Use `AS name` for computed "
+   "columns."])
+f("db_float", D, "db_float(rows $rows, string $column): float", "A numeric column of the current row (NULL gives 0.0).",
+  SETUP + r'''db_exec($db, "INSERT INTO items (name, price) VALUES (?, ?)", ["cake", "89.5"]);
+$rows = db_query($db, "SELECT price FROM items", []);
+while (db_next($rows)) { echo db_float($rows, "price"), "\n"; }''')
+f("db_string", D, "db_string(rows $rows, string $column): string",
+  'A column of the current row as text (NULL gives `""`).',
+  SETUP + r'''db_exec($db, "INSERT INTO items (name, qty) VALUES (?, ?)", ["ชาเย็น", "1"]);
+$rows = db_query($db, "SELECT name, qty FROM items", []);
+while (db_next($rows)) { echo db_string($rows, "name"), " ", db_string($rows, "qty"), "\n"; }''')
+f("db_is_null", D, "db_is_null(rows $rows, string $column): bool", "Whether a column of the current row is NULL.",
+  SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
+$rows = db_query($db, "SELECT name, qty FROM items", []);
+while (db_next($rows)) { echo db_is_null($rows, "qty") ? "qty is NULL" : "qty set", "\n"; }''',
+  ['Pin has no `null` yet, so check this before trusting a 0 or `""` from a nullable column.'])
+f("db_json", D, "db_json(db $db, string $sql, list $params): string",
+  "Run a SELECT and get all rows as a JSON array of objects.",
+  SETUP + r'''db_exec($db, "INSERT INTO items (name, qty, price) VALUES (?, ?, ?)", ["tea", "2", "40"]);
+db_exec($db, "INSERT INTO items (name) VALUES (?)", ["cake \"special\""]);
+echo db_json($db, "SELECT id, name, qty, price FROM items ORDER BY id", []), "\n";''',
+  ["Column names become keys; INTEGER, REAL, TEXT and NULL become JSON numbers, strings and `null`.",
+   "The easiest way to answer an API request with query results — no loop, no string building."])
+f("db_last_id", D, "db_last_id(db $db): int", "The id of the last row inserted on this connection.",
+  SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
+db_exec($db, "INSERT INTO items (name) VALUES (?)", ["cake"]);
+echo db_last_id($db), "\n";''')
+f("db_error", D, "db_error(db $db): string", 'Why the last `db_exec` returned -1, or `""`.',
+  SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
+if (db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]) < 0) { echo "refused: ", db_error($db), "\n"; }''')
+
 CATEGORIES = [{"id": S, "title": "Strings"}, {"id": L, "title": "Lists and maps"}, {"id": N, "title": "Numbers"},
-              {"id": V, "title": "Conversions"}, {"id": J, "title": "JSON"}, {"id": H, "title": "HTTP"}]
+              {"id": V, "title": "Conversions"}, {"id": J, "title": "JSON"}, {"id": H, "title": "HTTP"},
+              {"id": "database", "title": "Database (SQLite)"}]

@@ -1,0 +1,24 @@
+// rows that outlive their db, rows returned from a function, moves, loops: must be memory-safe
+function open_orders(): rows {
+    $db = db_open(":memory:");
+    db_exec($db, "CREATE TABLE t (n INTEGER)", []);
+    for ($i = 0; $i < 5; $i++) { db_exec($db, "INSERT INTO t VALUES (?)", [$i]); }
+    return db_query($db, "SELECT n FROM t ORDER BY n", []);     // $db is closed here; rows keep it alive
+}
+function count_rows(rows $r): int {
+    $n = 0;
+    while (db_next($r)) { $n += db_int($r, "n"); }
+    return $n;
+}
+$total = 0;
+for ($k = 0; $k < 300; $k++) {
+    $r = open_orders();
+    $total += count_rows($r);
+    $db = db_open(":memory:");
+    $j = db_json($db, "SELECT 1 AS a, 'x' AS b, NULL AS c, 2.5 AS d", []);
+    $total += strlen($j);
+    $r2 = db_query($db, "SELECT 1 AS a", []);
+    $moved = $r2;
+    db_next($moved);
+}
+echo $total, "\n";

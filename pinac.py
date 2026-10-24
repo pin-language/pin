@@ -87,7 +87,7 @@ class Node:
         return f"{self.kind}({ {k: v for k, v in self.__dict__.items() if k not in ('kind', 'line')} })"
 
 
-TYPE_NAMES = {"int", "float", "bool", "string", "list", "map", "void"}
+TYPE_NAMES = {"int", "float", "bool", "string", "list", "map", "void", "db", "rows"}
 ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'", "$": "$", "0": "\0"}
 INTERP_RE = re.compile(r"(?<!\\)(\{\$[A-Za-z_]\w*\}|\$[A-Za-z_]\w*)")
 
@@ -475,7 +475,7 @@ def is_map(t):
 
 
 def is_heap(t):
-    return t == "string" or is_list(t) or is_map(t)
+    return t in ("string", "db", "rows") or is_list(t) or is_map(t)
 
 
 def elem_of(t):
@@ -490,6 +490,10 @@ def map_kv(t):
 def free_fn(t):
     if t == "string":
         return "@pn_str_free"
+    if t == "db":
+        return "@pn_db_close"
+    if t == "rows":
+        return "@pn_rows_free"
     if is_list(t):
         return "@pn_list_free_str" if elem_of(t) == "string" else "@pn_list_free"
     return "@pn_map_free"
@@ -581,7 +585,9 @@ BUILTINS = {"count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strp
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
-            "url_path", "query_param", "form_param", "query_has", "form_has", "floatval", "json_has", "json_string", "json_int", "json_float",
+            "url_path", "query_param", "form_param", "query_has", "form_has", "floatval", "json_has",
+            "db_open", "db_exec", "db_query", "db_json", "db_next", "db_int", "db_float", "db_string",
+            "db_is_null", "db_last_id", "db_error", "json_string", "json_int", "json_float",
             "json_bool"}
 
 RUNTIME_DECLS = """
@@ -600,6 +606,19 @@ declare ptr @pn_url_path(ptr)
 declare ptr @pn_query_param(ptr, ptr)
 declare ptr @pn_form_param(ptr, ptr)
 declare i64 @pn_jget_has(ptr, ptr)
+declare ptr @pn_db_open(ptr)
+declare void @pn_db_close(ptr)
+declare void @pn_rows_free(ptr)
+declare i64 @pn_db_exec(ptr, ptr, ptr, i64)
+declare ptr @pn_db_query(ptr, ptr, ptr, i64)
+declare ptr @pn_db_json(ptr, ptr, ptr, i64)
+declare i64 @pn_db_next(ptr)
+declare i64 @pn_db_int(ptr, ptr)
+declare double @pn_db_float(ptr, ptr)
+declare ptr @pn_db_string(ptr, ptr)
+declare i64 @pn_db_is_null(ptr, ptr)
+declare i64 @pn_db_last_id(ptr)
+declare ptr @pn_db_error(ptr)
 declare double @pn_str_to_float(ptr)
 declare i64 @pn_query_has(ptr, ptr)
 declare i64 @pn_form_has(ptr, ptr)
@@ -830,9 +849,10 @@ class FuncGen:
         if name in self.moved:
             how = "may have been moved" if name in self.flow.maybe else "was moved"
             where = " (on one path of an if or loop)" if name in self.flow.maybe else ""
+            fix = (f"Pass {name} to functions instead of assigning it (functions borrow it), or open another one"
+                   if self.vars[name] in ("db", "rows") else f"Use copy({name}) if you need two separate values")
             raise CompileError(
-                f"{name} {how} on line {self.moved[name]}{where} and can no longer be used here. "
-                f"Use copy({name}) if you need two separate values", line)
+                f"{name} {how} on line {self.moved[name]}{where} and can no longer be used here. {fix}", line)
         t = self.vars[name]
         r = self.tmp()
         self.emit(f"{r} = load {llty(t)}, ptr {self.slot(name)}")
@@ -1180,7 +1200,8 @@ class FuncGen:
         if e.kind == "call" and e.name in self.mod.funcs:
             return self.mod.funcs[e.name][1]
         if e.kind == "call" and e.name in ("strval", "substr", "trim", "strtolower", "strtoupper", "json_encode",
-                                           "implode", "url_path", "query_param", "form_param", "json_string"):
+                                           "implode", "url_path", "query_param", "form_param", "json_string",
+                                           "db_json", "db_string", "db_error"):
             return "string"
         return "int"
 
@@ -1422,6 +1443,69 @@ class FuncGen:
         self.emit("unreachable")
         self.place_label(ok)
 
+    def typed_arg(self, e, i, want):
+        v, t = self.borrow(e.args[i])
+        if t != want:
+            raise CompileError(f"{e.name}() argument {i + 1} must be {want} but got {t}"
+                               + (" — open one with $db = db_open(\"app.db\");" if want == "db" else ""), e.line)
+        return v
+
+    def sql_arg(self, e):
+        """The SQL must be written in the program; values go through ? placeholders. That rules out SQL
+        injection: nothing a client sends can become part of the SQL text."""
+        def literal(n):
+            return n.kind == "str" or (n.kind == "bin" and n.op == "." and literal(n.l) and literal(n.r))
+        if not literal(e.args[1]):
+            raise CompileError(
+                f"{e.name}(): write the SQL as a string literal in the code and pass values with ? placeholders, "
+                f'e.g. {e.name}($db, "SELECT * FROM t WHERE id = ?", [strval($id)]). SQL built from variables could '
+                f"let a client inject SQL", e.line)
+        return self.str_arg(e, 1)
+
+    def params_arg(self, e, i):
+        v, t = self.borrow(e.args[i], "list<string>")
+        if not is_list(t) or elem_of(t) == "bool":
+            raise CompileError(f"{e.name}() argument {i + 1} must be a list of values for the ? placeholders "
+                               f'(list<string>, list<int> or list<float>), e.g. ["tea", "2"]; got {t}', e.line)
+        return v, KIND[elem_of(t)]
+
+    def db_builtin(self, e):
+        name = e.name
+        if name == "db_open":
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_db_open", f"ptr {self.str_arg(e, 0)}"), "db", True
+        if name in ("db_exec", "db_query", "db_json"):
+            self.argc(e, 3)
+            d = self.typed_arg(e, 0, "db")
+            sql = self.sql_arg(e)
+            ps, kind = self.params_arg(e, 2)
+            fn = f"@pn_{name}"
+            if name == "db_exec":
+                return self.call("i64", fn, f"ptr {d}", f"ptr {sql}", f"ptr {ps}", f"i64 {kind}"), "int", False
+            ret = "rows" if name == "db_query" else "string"
+            return self.call("ptr", fn, f"ptr {d}", f"ptr {sql}", f"ptr {ps}", f"i64 {kind}"), ret, True
+        if name == "db_next":
+            self.argc(e, 1)
+            return self.i64_to_bool(self.call("i64", "@pn_db_next", f"ptr {self.typed_arg(e, 0, 'rows')}")), "bool", False
+        if name in ("db_int", "db_float", "db_string", "db_is_null"):
+            self.argc(e, 2)
+            r, col = self.typed_arg(e, 0, "rows"), self.str_arg(e, 1)
+            fn = f"@pn_{name}"
+            if name == "db_int":
+                return self.call("i64", fn, f"ptr {r}", f"ptr {col}"), "int", False
+            if name == "db_float":
+                return self.call("double", fn, f"ptr {r}", f"ptr {col}"), "float", False
+            if name == "db_string":
+                return self.call("ptr", fn, f"ptr {r}", f"ptr {col}"), "string", True
+            return self.i64_to_bool(self.call("i64", fn, f"ptr {r}", f"ptr {col}")), "bool", False
+        if name in ("db_last_id", "db_error"):
+            self.argc(e, 1)
+            d = self.typed_arg(e, 0, "db")
+            if name == "db_last_id":
+                return self.call("i64", "@pn_db_last_id", f"ptr {d}"), "int", False
+            return self.call("ptr", "@pn_db_error", f"ptr {d}"), "string", True
+        raise CompileError(f"unknown function {name}()", e.line)
+
     def int_arg(self, e, i):
         v, t = self.borrow(e.args[i])
         if t != "int":
@@ -1588,6 +1672,8 @@ class FuncGen:
             if name == "json_int":
                 return self.call("i64", fn, f"ptr {src}", f"ptr {key}"), "int", False
             return self.i64_to_bool(self.call("i64", fn, f"ptr {src}", f"ptr {key}")), "bool", False
+        if name.startswith("db_"):
+            return self.db_builtin(e)
         if name == "json_encode":
             self.argc(e, 1)
             v, t = self.borrow(args[0])
@@ -2145,7 +2231,7 @@ def compile_source(src):
     return "\n".join(mod.header() + out) + "\n" + TBAA
 
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 
@@ -2203,10 +2289,16 @@ def link(ir, out):
         ll = os.path.join(d, "prog.ll")
         with open(ll, "w") as f:
             f.write(ir)
+        db = ["-DPIN_SQLITE", "-lsqlite3"] if "@pn_db_" in ir else []
         r = subprocess.run(["clang", "-O2", "-pthread", "-Wno-override-module", ll, os.path.join(HERE, "runtime.c"),
-                            "-lm", "-o", out], capture_output=True, text=True)
+                            "-lm", *db, "-o", out], capture_output=True, text=True)
     if r.returncode:
-        print(r.stderr, file=sys.stderr)
+        if db and ("sqlite3.h" in r.stderr or "lsqlite3" in r.stderr):
+            print("error: this program uses the database, which needs SQLite's development files. "
+                  "Ubuntu/Debian: sudo apt install libsqlite3-dev · Fedora: sudo dnf install sqlite-devel "
+                  "(macOS has them already)", file=sys.stderr)
+        else:
+            print(r.stderr, file=sys.stderr)
         sys.exit(2)
 
 

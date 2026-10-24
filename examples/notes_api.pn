@@ -1,0 +1,24 @@
+// A notes API that stores data in SQLite (notes.db next to where you run it):
+//   pin examples/notes_api.pn
+//   curl -X POST -d '{"text":"buy milk"}' localhost:8080/notes
+//   curl 'localhost:8080/notes?limit=5'
+// Linux needs SQLite's development files to build it: sudo apt install libsqlite3-dev
+function handle(string $method, string $path, string $body): string {
+    $db = db_open("notes.db");
+    db_exec($db, "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, text TEXT NOT NULL)", []);
+    $route = url_path($path);
+    if ($method == "POST" && $route == "/notes") {
+        $text = json_string($body, "text");
+        if ($text == "") { http_status(400); return "{\"error\":\"text is required\"}"; }
+        db_exec($db, "INSERT INTO notes (text) VALUES (?)", [$text]);
+        http_status(201);
+        return "{\"id\":" . db_last_id($db) . "}";
+    }
+    if ($method == "GET" && $route == "/notes") {
+        $limit = query_has($path, "limit") ? intval(query_param($path, "limit")) : 20;
+        return db_json($db, "SELECT id, text FROM notes ORDER BY id DESC LIMIT ?", [$limit]);
+    }
+    http_status(404);
+    return "{\"error\":\"not found\"}";
+}
+serve(8080, "handle");

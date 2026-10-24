@@ -115,6 +115,8 @@ function handle(string $method, string $path, string $body): string {
 serve(8080, "handle");
 ```
 
+เก็บข้อมูลใน SQLite ได้ด้วย `db_open`, `db_exec`, `db_query`, `db_json` (SQL ต้องเขียนตรงๆ ในโค้ดและใช้ `?` จึงเขียน SQL
+injection ไม่ได้เลย) ·
 อ่าน request ได้ด้วย `url_path`, `query_param`, `form_param` และ `json_string` / `json_int` / `json_has` …
 ได้ HTTP/1.1 server ที่รองรับ keep-alive และ pipelining ใช้ 1 thread ต่อ 1 core (`PN_THREADS=4` เพื่อเปลี่ยน)
 ใช้ได้ทั้ง Linux และ macOS ไม่มีตัวแปร global จึงไม่ต้องมี lock ถ้า handler panic client ได้ 500 หน่วยความจำของ
@@ -148,7 +150,7 @@ macOS ล็อก CPU core ไม่ได้ ส่วนต่างต่ำ
 ## ยังไม่มี
 
 class, `null`, `try`/`catch`, container ซ้อนกัน (list ใน list, map ของ list), closure, module/import, header ของ
-request, `json_decode` เต็มรูปแบบ (ตอนนี้อ่าน key ชั้นบนสุดได้ด้วย `json_string` / `json_int` / …), database, `go`/`await` · ส่วนใหญ่ออกแบบไว้แล้วใน [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/)
+request, `json_decode` เต็มรูปแบบ (ตอนนี้อ่าน key ชั้นบนสุดได้ด้วย `json_string` / `json_int` / …), PostgreSQL (SQLite มีแล้ว), `go`/`await` · ส่วนใหญ่ออกแบบไว้แล้วใน [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/)
 
 ## อยากได้ feedback
 

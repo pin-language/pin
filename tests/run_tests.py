@@ -280,5 +280,78 @@ if "--no-server" not in sys.argv:
             proc.terminate()
             proc.wait(timeout=5)
 
+
+def open_fds(pid):
+    if platform.system() == "Linux":
+        return len(os.listdir(f"/proc/{pid}/fd"))
+    out = subprocess.run(["lsof", "-p", str(pid)], capture_output=True, text=True).stdout
+    return len(out.splitlines())
+
+
+def http(port, method, path, body=None):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=body.encode() if body else None,
+                                 method=method)
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        return resp.status, resp.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+    except Exception as e:  # noqa: BLE001
+        return None, repr(e)
+
+
+if "--no-server" not in sys.argv:
+    print("database server (tests/server/db.pn on :8086, SQLite)")
+    out = os.path.join(BUILD, "server_db")
+    b = build(os.path.join(ROOT, "tests", "server", "db.pn"), out)
+    if b.returncode:
+        fail("tests/server/db.pn", "build failed: " + b.stderr[-400:])
+    else:
+        for f in glob.glob(os.path.join(BUILD, "server_db_test.db*")):
+            os.remove(f)
+        proc = subprocess.Popen([out], cwd=BUILD, env=dict(os.environ, PN_THREADS="4"),
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        try:
+            for _ in range(50):
+                try:
+                    socket.create_connection(("127.0.0.1", 8086), timeout=0.2).close()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            for (m, path, body), want in [
+                    (("POST", "/items", '{"name":"tea","qty":2}'), (201, '{"id":1}')),
+                    (("POST", "/items", '{"name":"tea","qty":5}'), (409, '{"error":"UNIQUE constraint failed: items.name"}')),
+                    (("GET", "/items", None), (200, '[{"id":1,"name":"tea","qty":2}]')),
+                    (("GET", "/boom", None), (500, '{"error":"Internal Server Error"}')),
+                    (("GET", "/total", None), (200, '{"total":2}'))]:
+                got = http(8086, m, path, body)
+                (ok if got == want else lambda n: fail(n, f"want {want}\n        got  {got}"))(f"{m} {path}")
+            for _ in range(20):
+                http(8086, "GET", "/boom")
+            before = open_fds(proc.pid)
+            bad = [r for r in (http(8086, "GET", "/boom") for _ in range(300)) if r[0] != 500]
+            grew = open_fds(proc.pid) - before
+            if bad or grew > 5:
+                fail("300 panics with an open connection and statement", f"bad {bad[:2]}, open files grew by {grew}")
+            else:
+                ok(f"300 panics with an open connection and statement (open files grew by {grew})")
+            import threading  # noqa: E402
+            results = []
+            def insert(i):
+                results.append(http(8086, "POST", "/items", '{"name":"item%d","qty":1}' % i)[0])
+            ts = [threading.Thread(target=insert, args=(i,)) for i in range(200)]
+            for th in ts:
+                th.start()
+            for th in ts:
+                th.join()
+            total = http(8086, "GET", "/total")
+            if results.count(201) == 200 and total == (200, '{"total":202}'):
+                ok("200 parallel inserts on 4 threads, all stored")
+            else:
+                fail("200 parallel inserts", f"statuses {sorted(set(results))}, total {total}")
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
 print(f"\n{passed} passed, {len(failed)} failed")
 sys.exit(1 if failed else 0)

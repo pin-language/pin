@@ -1,0 +1,7 @@
+1 1
+-1 [UNIQUE constraint failed: orders.item]
+1 tea 4 40.5 null=y
+2 ชาไทย "x" 6 55 null=n
+[{"id":1,"item":"tea","qty":2,"price":40.5,"note":null},{"id":2,"item":"ชาไทย \"x\"","qty":3,"price":55.0,"note":"hot"}]
+2
+[{"n":1,"total":3}]

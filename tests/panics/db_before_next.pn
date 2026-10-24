@@ -1,0 +1,3 @@
+$db = db_open(":memory:");
+$rows = db_query($db, "SELECT 1 AS a", []);
+echo db_int($rows, "a");

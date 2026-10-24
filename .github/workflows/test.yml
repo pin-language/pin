@@ -18,14 +18,14 @@ jobs:
           python-version: "3.12"
       - name: Install clang (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y clang
+        run: sudo apt-get update && sudo apt-get install -y clang libsqlite3-dev
       - name: clang version
         run: clang --version
       - name: Test suite
         run: python3 tests/run_tests.py
       - name: Sanitizers (ASAN + UBSAN; leaks too on Linux)
         run: >
-          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn tests/strings_list.pn tests/json_hostile.pn
+          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn
           examples/wordcount.pn examples/ownership.pn tests/bench/listsum.pn
       - name: Installer (install.sh from this checkout into a temp folder)
         run: |

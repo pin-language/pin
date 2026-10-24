@@ -147,7 +147,8 @@ function handle(string $method, string $path, string $body): string {
 serve(8080, "handle");
 ```
 
-Read requests with `url_path($path)`, `query_param($path, "k")`, `form_param($body, "k")` and
+Store data in SQLite with `db_open`, `db_exec`, `db_query` and `db_json` — the SQL must be a string literal with
+`?` placeholders, so SQL injection does not compile ([example](examples/notes_api.pn)). Read requests with `url_path($path)`, `query_param($path, "k")`, `form_param($body, "k")` and
 `json_string($body, "k")` / `json_int` / `json_float` / `json_bool` / `json_has`. `pin run` it and you get an HTTP/1.1 server with keep-alive and pipelining, one thread per CPU core
 (`PN_THREADS=4` to change), on Linux (epoll) and macOS (kqueue). There are no global variables, so
 handlers share nothing and need no locks. If a handler panics, that client gets
@@ -192,7 +193,7 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 
 Classes, `null` / nullable types, `try`/`catch`, nested containers (lists of lists, maps of lists), closures,
 modules/imports, request headers, a full `json_decode` (nested JSON; top-level keys can already be read with
-`json_string` / `json_int` / …), database access, `go`/`await`.
+`json_string` / `json_int` / …), PostgreSQL (SQLite is there), `go`/`await`.
 Most of these are already designed (in Thai) in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
 [CHANGELOG.md](CHANGELOG.md) for what changed.
 

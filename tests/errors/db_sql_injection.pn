@@ -1,0 +1,3 @@
+$db = db_open(":memory:");
+$id = "1 OR 1=1";
+$rows = db_query($db, "SELECT * FROM users WHERE id = $id", []);

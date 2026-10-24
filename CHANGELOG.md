@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 — 2026-10-24
+
+SQLite: a Pin API can now store data.
+
+- `db_open`, `db_exec`, `db_query` + `db_next` + `db_int` / `db_float` / `db_string` / `db_is_null`,
+  `db_json` (a whole result as a JSON array), `db_last_id`, `db_error`.
+- **SQL injection does not compile:** the SQL must be a string literal; values go in `?` placeholders.
+- `db` and `rows` are owned values: they close when they go out of scope, move on `=`, are lent to
+  functions, and are closed before the 500 when a handler panics (300 panicking requests left 0 extra open
+  files). Connections use WAL and a 5-second busy timeout; 200 parallel inserts on 4 threads all landed.
+- Constraint violations make `db_exec` return -1 with `db_error`; other SQL errors panic with SQLite's
+  message. One statement per call.
+- Programs link SQLite only if they use it. Linux needs `libsqlite3-dev`; `install.sh` says so.
+- Docs: `reference/database.md`, Learn chapter 11, `examples/notes_api.pn`.
+
 ## 0.2.0 — 2026-10-24
 
 Writing a real JSON API no longer needs hand-written parsing loops.

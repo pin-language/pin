@@ -1,0 +1,1 @@
+panic: db_int(): no current row: read columns only after db_next($rows) returned true
