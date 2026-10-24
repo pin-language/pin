@@ -134,7 +134,9 @@ r = subprocess.run(PIN + ["check", "--json", os.path.join(ROOT, "examples", "hel
 (ok if r.returncode == 0 and json.loads(r.stdout)["ok"] else
  lambda n: fail(n, r.stdout + r.stderr))("check --json on a good file")
 
-print("editor support (editors/vscode must be valid JSON and name every built-in)")
+print("built-in reference (spec/pin_builtins.py: matches the compiler, every example prints its recorded output)")
+r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "gen_docs.py")], capture_output=True, text=True)
+(ok if r.returncode == 0 else lambda n: fail(n, r.stdout + r.stderr))("tools/gen_docs.py --check")
 try:
     gram = json.load(open(os.path.join(ROOT, "editors", "vscode", "syntaxes", "pin.tmLanguage.json")))
     for f in ("package.json", "language-configuration.json"):
@@ -143,13 +145,9 @@ try:
     import pinac  # noqa: E402
     listed = gram["repository"]["builtin-calls"]["match"]
     missing = [b for b in sorted(pinac.BUILTINS) if b not in listed]
-    (ok if not missing else lambda n: fail(n, f"builtins missing from the grammar: {missing}"))("vscode grammar")
+    (ok if not missing else lambda n: fail(n, f"builtins missing from the grammar (run tools/gen_docs.py --docs ...): {missing}"))("vscode grammar")
 except (OSError, ValueError, KeyError) as e:
     fail("vscode grammar", repr(e))
-
-r = subprocess.run(PIN + [os.path.join(ROOT, "examples", "hello.pn")], capture_output=True, text=True)
-(ok if r.returncode == 0 and r.stdout.startswith("Hello, world!") else
- lambda n: fail(n, f"exit {r.returncode}: {r.stdout!r} {r.stderr!r}"))("pin FILE.pn runs the program")
 
 print("examples (examples/*.pn: must compile; programs without serve() must run and exit 0)")
 for src in sorted(glob.glob(os.path.join(ROOT, "examples", "*.pn"))):

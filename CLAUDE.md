@@ -84,6 +84,11 @@ Changing any of these = change of project direction → ask first.
   (`Conn`) use plain malloc on purpose — they outlive requests.
 - New panics call `die()` (not `exit`) so they become a 500 inside handlers.
 - Add a test for every feature (`tests/*.pn` + expected) and every new compile error (`tests/errors/`).
+- **Every built-in is described once, in `spec/pin_builtins.py`** (signature, summary, notes, PHP difference,
+  runnable example). After adding or changing one: `python3 tools/gen_docs.py --record` (review
+  `spec/outputs.json`), then `python3 tools/gen_docs.py --docs ../pin-docs` to regenerate the reference
+  pages, the AI guide's built-in list and the VS Code grammar, and commit both repositories. run_tests.py
+  fails if the spec and the compiler disagree or an example's output changes.
 
 ## Working on this repository
 

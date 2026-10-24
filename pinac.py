@@ -1483,7 +1483,7 @@ class FuncGen:
             if hint and is_list(hint) and elem_of(hint) == "float":
                 v, vt = self.coerce(v, vt, "float", e.line, "fill()"), "float"
             if vt not in ELEM_SIZE:
-                raise CompileError(f"fill() value must be int, float or bool but got {vt}", e.line)
+                raise CompileError(f"fill() value must be int, float, bool or string but got {vt}", e.line)
             if vt == "string":
                 return self.call("ptr", "@pn_list_fill_str", f"i64 {n}", f"ptr {v}"), "list<string>", True
             r = self.call("ptr", "@pn_list_fill", f"i64 {n}", f"i64 {ELEM_SIZE[vt]}", f"i64 {self.to_bits(v, vt)}")

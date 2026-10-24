@@ -93,7 +93,8 @@ Messages are written for agents trained on PHP: reaching for `class`, `try`, `sw
 `cd ~/.pin/editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`.
 
 Start with [`examples/`](examples/) (installed in `~/.pin/examples`): `hello`, `fizzbuzz`, `wordcount`, `ownership`, `primes`, and
-`api` (a small JSON server). The full guide is the [language guide](https://github.com/pin-language/docs/blob/HEAD/language.md);
+`api` (a small JSON server). Every built-in function with examples: the [reference](https://github.com/pin-language/docs/blob/HEAD/reference/README.md).
+The full guide is the [language guide](https://github.com/pin-language/docs/blob/HEAD/language.md);
 all documentation lives in [pin-language/docs](https://github.com/pin-language/docs).
 
 ## How Pin differs from PHP
