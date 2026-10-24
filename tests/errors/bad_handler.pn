@@ -1,0 +1,2 @@
+function h(string $path): string { return $path; }
+serve(8080, "h");

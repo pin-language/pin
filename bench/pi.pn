@@ -1,0 +1,7 @@
+$sum = 0.0;
+$sign = 1.0;
+for ($k = 0; $k < 100000000; $k++) {
+    $sum += $sign / (2 * $k + 1);
+    $sign = -$sign;
+}
+echo 4.0 * $sum, "\n";

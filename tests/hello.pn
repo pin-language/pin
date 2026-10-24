@@ -1,0 +1,43 @@
+<?php
+// PHP-like syntax, compiled to native code
+function fib(int $n): int {
+    if ($n < 2) { return $n; }
+    return fib($n - 1) + fib($n - 2);
+}
+
+function sum(list<int> $xs): int {     // borrows the list
+    $total = 0;                         // type inferred: int
+    foreach ($xs as $x) { $total += $x; }
+    return $total;
+}
+
+function squares(int $n): list<int> {   // returns an owned list
+    list<int> $out = [];
+    for ($i = 1; $i <= $n; $i++) { $out[] = $i * $i; }
+    return $out;
+}
+
+$name = "PinaTo";
+echo "Hello $name\n";
+echo "fib(20) = ", fib(20), "\n";
+$sq = squares(10);
+echo "sum of squares = ", sum($sq), "\n";
+$sq[0] = 100;
+$sq[1] += 5;
+echo "first two: ", $sq[0], " ", $sq[1], " count=", count($sq), "\n";
+$avg = (float)sum($sq) / count($sq);
+echo "avg = ", $avg, "\n";
+echo "sqrt(2) = ", sqrt(2.0), "\n";
+$flags = fill(5, false);
+$flags[2] = true;
+echo "flag2=", $flags[2], " flag3=[", $flags[3], "] ", 7 / 2, " ", 7 % 3, " ", 1.5 * 2, "\n";
+$ok = $avg > 30.0 && count($sq) == 10;
+if ($ok) { echo "ok\n"; } elseif (count($sq) > 5) { echo "mid\n"; } else { echo "no\n"; }
+$i = 0;
+while (true) { $i++; if ($i >= 3) { break; } }
+echo "i=$i\n";
+$b = $sq;           // move
+echo "moved count=", count($b), "\n";
+$c = copy($b);
+$c[] = 1;
+echo count($b), " ", count($c), " ", sum(squares(3)), "\n";

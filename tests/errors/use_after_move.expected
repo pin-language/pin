@@ -1,0 +1,1 @@
+$a was moved on line 2 and can no longer be used here. Use copy($a) if you need two separate values

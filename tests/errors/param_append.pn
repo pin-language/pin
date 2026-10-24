@@ -1,0 +1,3 @@
+function add(list<int> $xs): void {
+    $xs[] = 1;
+}

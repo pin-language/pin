@@ -1,0 +1,3 @@
+$a = fill(3, 0);
+$b = $a;
+echo count($a);

@@ -1,0 +1,15 @@
+<?php
+function steps(int $n): int {
+    $s = 0;
+    while ($n != 1) {
+        if ($n % 2 == 0) { $n = intdiv($n, 2); } else { $n = 3 * $n + 1; }
+        $s++;
+    }
+    return $s;
+}
+$best = 0; $arg = 0;
+for ($i = 1; $i < 1000000; $i++) {
+    $s = steps($i);
+    if ($s > $best) { $best = $s; $arg = $i; }
+}
+echo $arg, " ", $best, "\n";

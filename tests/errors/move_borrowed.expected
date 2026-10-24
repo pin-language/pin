@@ -1,0 +1,1 @@
+$xs is a parameter lent to this code, so it cannot be moved or returned. Work on a copy instead: $copy = copy($xs);

@@ -1,0 +1,2 @@
+function half(float $x): float { return $x / 2; }
+echo half([1, 2]);

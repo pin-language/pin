@@ -1,0 +1,3 @@
+function keep(list<int> $xs): list<int> {
+    return $xs;
+}

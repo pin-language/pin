@@ -1,0 +1,14 @@
+build/
+*.ll
+*.o
+__pycache__/
+bench/*.gobin
+bench/*.rsbin
+bench/memrun
+bench/fib
+bench/sieve
+bench/collatz
+bench/pi
+bench/listsum
+api/server
+api/server-go

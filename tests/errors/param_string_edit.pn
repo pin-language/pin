@@ -1,0 +1,4 @@
+function shout(string $s): string {
+    $s .= "!";
+    return $s;
+}
