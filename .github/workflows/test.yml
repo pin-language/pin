@@ -25,5 +25,5 @@ jobs:
         run: python3 tests/run_tests.py
       - name: Sanitizers (ASAN + UBSAN; leaks too on Linux)
         run: >
-          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn
+          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn
           examples/wordcount.pn examples/ownership.pn bench/listsum.pn
