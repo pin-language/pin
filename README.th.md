@@ -5,7 +5,7 @@
 
 ทุกวันนี้โค้ดส่วนใหญ่เขียนโดย AI และ AI รู้จัก PHP ดีอยู่แล้ว Pin ใช้ syntax เดียวกัน แต่ย้ายความผิดพลาดจาก
 production มาจับตอน compile ทุก error บอกวิธีแก้ และออกเป็น JSON ได้ (`pin check --json`) ให้ AI วน
-แก้เองได้ · คู่มือสำหรับ AI: [docs/ai-guide.md](docs/ai-guide.md)
+แก้เองได้ · คู่มือสำหรับ AI: [ai-guide.md](https://github.com/pin-language/docs/blob/HEAD/ai-guide.md)
 
 คนที่เขียน PHP อ่าน Pin ได้ทันที แต่ตัวแปรแต่ละตัวมี type เดียว หน่วยความจำจัดการด้วย ownership ที่เช็คตอน
 compile (คล้าย Rust แต่ย่อให้ง่าย) และ compile ผ่าน LLVM ออกมาเป็น binary ไฟล์เดียว รวมถึง HTTP server แบบหลาย thread
@@ -47,7 +47,7 @@ mkdir -p ~/.local/bin && ln -sf "$PWD/pin" ~/.local/bin/pin && pin -v
 **VS Code:** มีสีตาม syntax ใน [`editors/vscode`](editors/vscode/) ติดตั้งด้วย
 `cd editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`
 
-ตัวอย่างอยู่ใน [`examples/`](examples/) และคู่มือภาษาเต็ม (ภาษาอังกฤษ) อยู่ที่ [docs/language.md](docs/language.md)
+ตัวอย่างอยู่ใน [`examples/`](examples/) และคู่มือภาษาเต็ม (ภาษาอังกฤษ) อยู่ที่ [language.md](https://github.com/pin-language/docs/blob/HEAD/language.md) (เอกสารทั้งหมดอยู่ที่ [pin-language/docs](https://github.com/pin-language/docs))
 
 ## ตัวอย่าง
 
@@ -143,7 +143,7 @@ macOS ล็อก CPU core ไม่ได้ ส่วนต่างเล็
 ## ยังไม่มี
 
 class, `null`, `try`/`catch`, `list<string>` และ container ซ้อนกัน, closure, module/import, header ของ request,
-`json_decode`, database, `go`/`await` · ส่วนใหญ่ออกแบบไว้แล้วใน [`docs/design/`](docs/design/)
+`json_decode`, database, `go`/`await` · ส่วนใหญ่ออกแบบไว้แล้วใน [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/)
 
 ## อยากได้ feedback
 

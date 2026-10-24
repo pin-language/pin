@@ -35,10 +35,10 @@ echo total(squares(10)), "\n";          // 385
 
 ## Using Pin with an AI coding agent
 
-1. Point the agent at [docs/ai-guide.md](docs/ai-guide.md) — the whole v0.1 language on one page, with
+1. Point the agent at the [AI guide](https://github.com/pin-language/docs/blob/HEAD/ai-guide.md) — the whole v0.1 language on one page, with
    idioms, a PHP → Pin table and an error → fix table. For example, add this line to your project's
-   `AGENTS.md` / `CLAUDE.md`: *"This project is written in Pin. Read `<path to pin>/docs/ai-guide.md`
-   before writing code, and run `pin check --json` after every change."*
+   `AGENTS.md` / `CLAUDE.md`: *"This project is written in Pin. Read
+   https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md before writing code, and run `pin check --json` after every change."*
 2. Let it loop on `pin check --json file.pn`: one JSON object per error
    (`{"file","line","severity","message"}`), `{"file","ok":true}` when clean, exit code 1 on error.
 3. Run with `pin run file.pn`. Run-time errors print `panic: ...` with the line and exit 1 (inside an
@@ -80,7 +80,8 @@ mkdir -p ~/.local/bin && ln -sf "$PWD/pin" ~/.local/bin/pin && pin -v
 `cd editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`.
 
 Start with [`examples/`](examples/): `hello`, `fizzbuzz`, `wordcount`, `ownership`, `primes`, and
-`api` (a small JSON server). The full guide is [docs/language.md](docs/language.md).
+`api` (a small JSON server). The full guide is the [language guide](https://github.com/pin-language/docs/blob/HEAD/language.md);
+all documentation lives in [pin-language/docs](https://github.com/pin-language/docs).
 
 ## How Pin differs from PHP
 
@@ -174,7 +175,7 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 
 Classes, `null` / nullable types, `try`/`catch`, `list<string>` and nested containers, closures,
 modules/imports, request headers and query strings, `json_decode`, database access, `go`/`await`.
-Most of these are already designed (in Thai) in [`docs/design/`](docs/design/); see
+Most of these are already designed (in Thai) in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
 [CHANGELOG.md](CHANGELOG.md) for what changed.
 
 ## Feedback wanted

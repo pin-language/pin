@@ -174,7 +174,7 @@ class Parser:
     def type_(self):
         t = self.cur
         if t.val == "?":
-            raise CompileError("nullable types (?T) are not in Pin v0.1 yet (designed: docs/design/null.md)", t.line)
+            raise CompileError("nullable types (?T) are not in Pin v0.1 yet (designed: pin-language/docs design/null.md)", t.line)
         name = self.eat(kind="IDENT").val
         if name not in TYPE_NAMES:
             raise CompileError(f"unknown type '{name}'", t.line)
@@ -405,7 +405,7 @@ class Parser:
                 self.eat()
                 return Node("bool", t.line, val=t.val == "true")
             if t.val == "null":
-                raise CompileError("null is not in Pin v0.1 yet (designed: docs/design/null.md); use a value "
+                raise CompileError("null is not in Pin v0.1 yet (designed: pin-language/docs design/null.md); use a value "
                                    "that means 'none', e.g. -1, \"\" or an empty list", t.line)
             if t.val in CONSTANTS:
                 self.eat()
@@ -510,7 +510,7 @@ def flatten_concat(e):
 
 # PHP functions an agent will try; what to do in Pin v0.1 instead
 PHP_FUNCTION_HINTS = {
-    "explode": "no explode() yet: walk the string with strpos() and substr() (see docs/ai-guide.md, idioms)",
+    "explode": "no explode() yet: walk the string with strpos() and substr() (see the idioms in the AI guide, github.com/pin-language/docs)",
     "implode": "no implode() yet: join in a loop with .=",
     "str_split": "no str_split() yet: use substr($s, $i, 1) in a loop",
     "sort": "no sort() yet: write the loop (e.g. pick the max, remember it, repeat)",
@@ -549,11 +549,11 @@ PHP_FUNCTION_HINTS = {
 
 # PHP words a newcomer (or an AI trained on PHP) will reach for, and what to do instead in Pin v0.1
 NOT_IN_PIN = {
-    "class": "classes are not in Pin v0.1 yet (designed in docs/design/ownership-v2.md); use functions and maps",
+    "class": "classes are not in Pin v0.1 yet (designed: pin-language/docs design/ownership-v2.md); use functions and maps",
     "new": "objects are not in Pin v0.1 yet; use functions and maps",
     "interface": "interfaces are not in Pin v0.1", "trait": "traits are not in Pin v0.1",
     "enum": "enums are not in Pin v0.1; use int or string constants", "abstract": "classes are not in Pin v0.1",
-    "try": "try/catch is not in Pin v0.1 yet (designed: docs/design/error-handling.md); check values before "
+    "try": "try/catch is not in Pin v0.1 yet (designed: pin-language/docs design/error-handling.md); check values before "
            "using them, e.g. isset($m[$k]) or $m[$k] ?? default",
     "catch": "try/catch is not in Pin v0.1 yet", "throw": "throw is not in Pin v0.1 yet; return an error value",
     "finally": "try/catch is not in Pin v0.1 yet",
@@ -1407,7 +1407,7 @@ class FuncGen:
         if name not in self.mod.funcs:
             hint = PHP_FUNCTION_HINTS.get(name)
             raise CompileError(f"unknown function {name}()" + (f": {hint}" if hint else
-                               ". See the built-in list in docs/ai-guide.md"), e.line)
+                               ". See the built-in list in the AI guide, github.com/pin-language/docs"), e.line)
         ptypes, ret = self.mod.funcs[name]
         if len(args) != len(ptypes):
             raise CompileError(f"{name}() takes {len(ptypes)} argument(s) but got {len(args)}", e.line)

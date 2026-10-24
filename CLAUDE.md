@@ -8,7 +8,7 @@ A new programming language for PinaTo Co., Ltd. that **looks like PHP** but comp
 LLVM, with **Rust-style ownership instead of a garbage collector**. Target use: web APIs / backends.
 Name **Pin** (was "pina"), file extension `.pn`. It is a prototype, not production.
 Owner's rule for every design decision: **memory safety > speed > clarity > looking like PHP**.
-Agreed design specs live in `docs/design/` (most not implemented yet — see HANDOFF.md §4).
+Agreed design specs live in `design/` in the pin-language/docs repo (local clone: ../pin-docs) (most not implemented yet — see HANDOFF.md §4).
 
 ```
 .pn source → pinac.py (lexer → parser → type+ownership checker → LLVM IR) → clang -O2 + runtime.c → one native binary
@@ -61,16 +61,16 @@ gcc -g -fsanitize=address,undefined runtime.c X.o -lm -pthread -o X_asan && ./X_
    **panic** = print + `exit(1)`; inside an HTTP handler a panic frees the request's blocks and answers
    500 instead. Bounds checks and overflow checks are never optional (no unsafe, no flag).
 7. int `+ - *` wrap around (64-bit, defined behaviour). Overflow panics were built and then taken out on
-   the owner's request because they cost up to 23% (see docs/design/int-overflow.md); bring them back only
+   the owner's request because they cost up to 23% (see pin-language/docs design/int-overflow.md); bring them back only
    with check elision. Write `wrapping_add/sub/mul()` where wrapping is intended so that code stays right
    when checks return. Every allocation size that comes from a program value goes through
    `checked_size()` in `runtime.c` — that one is memory safety and stays.
 8. Syntax should stay as close to PHP as the rules above allow (PHP likeness is the lowest priority). When unsure, do what PHP 8 does.
 
 Owner decisions so far (in Thai conversation): 1A web API focus · 2C ownership like Rust · 5B LLVM backend ·
-3A concurrency **revised 2026-10-24** to structured `go` + `await` (`docs/design/concurrency.md`) ·
+3A concurrency **revised 2026-10-24** to structured `go` + `await` (`pin-language/docs design/concurrency.md`) ·
 4 errors **answered 2026-10-24**: Swift/Zig-style `throws`/`try`/`catch` compiled to return values
-(`docs/design/error-handling.md`) · null, strings, int overflow, ownership v2: see `docs/design/`.
+(`pin-language/docs design/error-handling.md`) · null, strings, int overflow, ownership v2: see `design/` in the pin-language/docs repo (local clone: ../pin-docs).
 Changing any of these = change of project direction → ask first.
 
 ## Codegen conventions (pinac.py)

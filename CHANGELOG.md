@@ -2,7 +2,7 @@
 
 ## 0.1.0 — 2026-10-24 (first preview for testers)
 
-Pin is aimed at AI coding agents: `docs/ai-guide.md` is the whole language on one page, and
+Pin is aimed at AI coding agents: `ai-guide.md` (pin-language/docs) is the whole language on one page, and
 `pin check --json` gives machine-readable errors.
 
 ### Language

@@ -1,12 +1,12 @@
 # HANDOFF — state as of 2026-10-24 (v0.1.0 preview)
 
 **Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
-`docs/ai-guide.md` complete and correct for every release: it is what agents read. Error messages should
+`ai-guide.md` (pin-language/docs) complete and correct for every release: it is what agents read. Error messages should
 say what to write instead; `pin check --json` is the agent loop.
 
 The language is **Pin** (was "Pina"), extension `.pn`. Entry point for users: `./pin` (run/build/check);
 the compiler itself is still `pinac.py`. **v0.1.0 is prepared for outside testers** (README.md in English,
-README.th.md, docs/language.md, docs/ai-guide.md, examples/, LICENSE MIT, CHANGELOG.md, CI workflow) and
+README.th.md, docs (now github.com/pin-language/docs), examples/, LICENSE MIT, CHANGELOG.md, CI workflow) and
 tag `v0.1.0`. **Not published yet**: creating the public repository was blocked by Claude Code's
 permission check. Plan (owner, 2026-10-24: use an organisation, not the personal account): the owner
 creates the GitHub organisation `pin-language` (free plan, web UI only); then the repo `pin` is created
@@ -18,7 +18,7 @@ Owner's rule for every design decision, in order: **memory safety > speed > clar
 The owner has said "decide for me, just go": make design calls by that rule, write them down, and only
 ask when the rule cannot decide or a decision would change project direction.
 
-Design specs (agreed with the owner, not all implemented): `docs/design/` — ownership-v2, error-handling,
+Design specs (agreed with the owner, not all implemented): `design/` in the pin-language/docs repo (local clone: ../pin-docs) — ownership-v2, error-handling,
 int-overflow, null, strings, concurrency.
 
 ## 1. What works (verified)
@@ -51,7 +51,7 @@ Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang
 
 ### AI-agent usability tests (2026-10-24)
 
-Two fresh agents that had never seen Pin got only `docs/ai-guide.md` and three tasks each:
+Two fresh agents that had never seen Pin got only `ai-guide.md` (pin-language/docs) and three tasks each:
 - Sonnet: order stats, word frequency top-3, JSON API (VAT, fizzbuzz map, 400/404). All correct, ≤2
   check rounds per task.
 - Haiku: grades + self-written sort/median, satang ledger with rejected withdrawals, shop API with a
