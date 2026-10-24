@@ -1,14 +1,10 @@
-// Strings and ordered maps. A missing key in `$m[$k] += 1` starts at 0, like PHP but without the warning.
+// Strings, lists of strings and ordered maps.
+// A missing key in `$m[$k] += 1` starts at 0, like PHP but without the warning.
 function count_words(string $text): map<string,int> {
     map<string,int> $counts = [];
-    $start = 0;
-    $len = strlen($text);
-    while ($start < $len) {
-        $sp = strpos(substr($text, $start), " ");      // strpos gives -1 when not found
-        $end = $sp < 0 ? $len : $start + $sp;
-        $word = strtolower(trim(substr($text, $start, $end - $start)));
+    foreach (explode(" ", $text) as $w) {             // explode($separator, $string), like PHP
+        $word = strtolower(trim($w));
         if (strlen($word) > 0) { $counts[$word] += 1; }
-        $start = $end + 1;
     }
     return $counts;                                    // the caller becomes the owner
 }
@@ -19,3 +15,8 @@ foreach ($counts as $word => $n) {
 }
 echo json_encode($counts), "\n";
 echo "missing: ", $counts["cat"] ?? 0, "\n";             // ?? instead of a panic for missing keys
+
+list<string> $words = [];
+foreach ($counts as $word => $n) { $words[] = $word; }
+sort($words);                                          // sorts a list you own, in place
+echo implode(", ", $words), "\n";

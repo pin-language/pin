@@ -1,4 +1,4 @@
-# HANDOFF — state as of 2026-10-24 (v0.1.0 preview)
+# HANDOFF — state as of 2026-10-24 (v0.2.0)
 
 **Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
 `ai-guide.md` (pin-language/docs) complete and correct for every release: it is what agents read. Error messages should
@@ -23,7 +23,7 @@ int-overflow, null, strings, concurrency.
 
 ## 1. What works (verified)
 
-`python3 tests/run_tests.py` → **57 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
+`python3 tests/run_tests.py` → **64 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
 Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang python3`).
 
 - Everything from the first prototype (functions, int/float/bool/string, `list<T>`, ordered `map<K,V>`,
@@ -97,7 +97,8 @@ overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
 3. **Strings** (strings.md): UTF-8 validation at the edges (invalid request → 400), `substr` boundary
    panic, `mb_*`, `grapheme_*`.
 4. **Null** (null.md) together with **class** (ownership-v2 R1–R7).
-5. **`list<string>` and nested containers**.
+5. ~~`list<string>`~~ done in 0.2.0 (plus explode/implode/sort, query/form/JSON request helpers).
+   Nested containers (list of lists, map of lists) still to do.
 6. **Request headers + query string + timeouts** (B5) — needed before any real deployment.
 7. **json_decode, database driver** — design not written yet; decide by the owner's rule when reached.
 8. **Concurrency** (concurrency.md) — needs 1, 2 and the request allocator (B10).

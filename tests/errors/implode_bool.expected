@@ -1,0 +1,1 @@
+implode() needs a list<string>, list<int> or list<float> but got list<bool>

@@ -145,7 +145,8 @@ function handle(string $method, string $path, string $body): string {
 serve(8080, "handle");
 ```
 
-`pin run` it and you get an HTTP/1.1 server with keep-alive and pipelining, one thread per CPU core
+Read requests with `url_path($path)`, `query_param($path, "k")`, `form_param($body, "k")` and
+`json_string($body, "k")` / `json_int` / `json_float` / `json_bool` / `json_has`. `pin run` it and you get an HTTP/1.1 server with keep-alive and pipelining, one thread per CPU core
 (`PN_THREADS=4` to change), on Linux (epoll) and macOS (kqueue). There are no global variables, so
 handlers share nothing and need no locks. If a handler panics, that client gets
 `500 {"error":"Internal Server Error"}`, everything the request allocated is freed, and the server keeps
@@ -187,8 +188,9 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 
 ## Not there yet
 
-Classes, `null` / nullable types, `try`/`catch`, `list<string>` and nested containers, closures,
-modules/imports, request headers and query strings, `json_decode`, database access, `go`/`await`.
+Classes, `null` / nullable types, `try`/`catch`, nested containers (lists of lists, maps of lists), closures,
+modules/imports, request headers, a full `json_decode` (nested JSON; top-level keys can already be read with
+`json_string` / `json_int` / …), database access, `go`/`await`.
 Most of these are already designed (in Thai) in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
 [CHANGELOG.md](CHANGELOG.md) for what changed.
 

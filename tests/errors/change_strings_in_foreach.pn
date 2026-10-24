@@ -1,0 +1,5 @@
+$xs = ["a", "b"];
+foreach ($xs as $x) {
+    $xs[0] = "changed";
+    echo $x;
+}

@@ -1,17 +1,18 @@
-// A JSON API in one file. Build it, run it, then:  curl localhost:8080/hello
-//   pin run examples/api.pn
+// A JSON API in one file:  pin examples/api.pn   then, in another terminal:
+//   curl localhost:8080/menu
+//   curl 'localhost:8080/quote?item=cake&qty=3'
+//   curl -X POST -d '{"item":"tea","qty":2}' localhost:8080/orders
 // Each request runs on one of the server threads (one per CPU core). There are no global variables,
 // so handlers share nothing and need no locks. If a handler panics (missing key, index out of range)
 // the client gets a 500 and the server keeps going.
 // Prototype server: no TLS, no request headers, no timeouts — do not expose it to the internet.
 
-function menu(): string {
-    $price = ["coffee" => 55, "tea" => 40, "cake" => 89];
-    return json_encode($price);
+function prices(): map<string,int> {
+    return ["coffee" => 55, "tea" => 40, "cake" => 89];
 }
 
-function order(string $item, int $qty): string {
-    $price = ["coffee" => 55, "tea" => 40, "cake" => 89];
+function quote(string $item, int $qty): string {
+    $price = prices();
     if (!isset($price[$item])) {
         http_status(404);
         return json_encode(["error" => "no such item"]);
@@ -25,13 +26,17 @@ function order(string $item, int $qty): string {
 }
 
 function handle(string $method, string $path, string $body): string {
-    if ($path == "/hello") { return json_encode(["message" => "hello from Pin"]); }
-    if ($path == "/menu") { return menu(); }
-    if (str_starts_with($path, "/order/")) {            // /order/coffee/2
-        $rest = substr($path, 7);
-        $slash = strpos($rest, "/");
-        if ($slash < 0) { return order($rest, 1); }
-        return order(substr($rest, 0, $slash), intval(substr($rest, $slash + 1)));
+    $route = url_path($path);                              // drop "?item=..."
+    if ($method == "GET" && $route == "/menu") { return json_encode(prices()); }
+    if ($method == "GET" && $route == "/quote") {
+        return quote(query_param($path, "item"), intval(query_param($path, "qty")));
+    }
+    if ($method == "POST" && $route == "/orders") {      // body: {"item":"tea","qty":2}
+        if (!json_has($body, "item")) {
+            http_status(400);
+            return json_encode(["error" => "send JSON like {\"item\":\"tea\",\"qty\":2}"]);
+        }
+        return quote(json_string($body, "item"), json_int($body, "qty"));
     }
     http_status(404);
     return json_encode(["error" => "not found"]);

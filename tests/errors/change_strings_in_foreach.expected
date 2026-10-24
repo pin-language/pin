@@ -1,0 +1,1 @@
+cannot change $xs while a foreach is looping over it

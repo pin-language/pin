@@ -182,8 +182,8 @@ class Parser:
             self.eat("<")
             inner = self.type_()
             self.eat(">")
-            if inner not in ("int", "float", "bool"):
-                raise CompileError(f"list<{inner}> is not supported yet (int, float, bool only)", t.line)
+            if inner not in ("int", "float", "bool", "string"):
+                raise CompileError(f"list<{inner}> is not supported yet (int, float, bool, string only)", t.line)
             return f"list<{inner}>"
         if name == "map":
             self.eat("<")
@@ -457,8 +457,9 @@ class Parser:
 # ----------------------------------------------------------------------------- types
 
 KIND = {"int": 0, "float": 1, "bool": 2, "string": 3}
-ELEM_LL = {"int": "i64", "float": "double", "bool": "i8"}
-ELEM_SIZE = {"int": 8, "float": 8, "bool": 1}
+ELEM_LL = {"int": "i64", "float": "double", "bool": "i8", "string": "ptr"}
+ELEM_SIZE = {"int": 8, "float": 8, "bool": 1, "string": 8}   # list<string> holds owned Str pointers
+ELEM_TBAA = {"int": "!3", "float": "!4", "bool": "!5"}
 
 
 def llty(t):
@@ -487,7 +488,11 @@ def map_kv(t):
 
 
 def free_fn(t):
-    return "@pn_str_free" if t == "string" else ("@pn_list_free" if is_list(t) else "@pn_map_free")
+    if t == "string":
+        return "@pn_str_free"
+    if is_list(t):
+        return "@pn_list_free_str" if elem_of(t) == "string" else "@pn_list_free"
+    return "@pn_map_free"
 
 
 def mentions(node, name):
@@ -510,12 +515,9 @@ def flatten_concat(e):
 
 # PHP functions an agent will try; what to do in Pin v0.1 instead
 PHP_FUNCTION_HINTS = {
-    "explode": "no explode() yet: walk the string with strpos() and substr() (see the idioms in the AI guide, github.com/pin-language/docs)",
-    "implode": "no implode() yet: join in a loop with .=",
     "str_split": "no str_split() yet: use substr($s, $i, 1) in a loop",
-    "sort": "no sort() yet: write the loop (e.g. pick the max, remember it, repeat)",
-    "rsort": "no rsort() yet: write the loop", "usort": "no usort() yet: write the loop",
-    "ksort": "no ksort() yet: maps keep insertion order; write the loop",
+    "usort": "no usort() yet: sort($xs) / rsort($xs) sort lists of int, float, bool or string",
+    "ksort": "no ksort() yet: maps keep insertion order; collect the keys in a list and sort() it",
     "asort": "no asort() yet: write the loop", "arsort": "no arsort() yet: write the loop",
     "array_map": "no array_map() yet: use a for/foreach loop into a new list",
     "array_filter": "no array_filter() yet: use a foreach loop into a new list",
@@ -578,7 +580,9 @@ CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int",
 BUILTINS = {"count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
-            "wrapping_add", "wrapping_sub", "wrapping_mul"}
+            "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
+            "url_path", "query_param", "form_param", "json_has", "json_string", "json_int", "json_float",
+            "json_bool"}
 
 RUNTIME_DECLS = """
 declare ptr @pn_list_new(i64)
@@ -586,6 +590,20 @@ declare ptr @pn_list_fill(i64, i64, i64)
 declare void @pn_list_push(ptr, i64, i64)
 declare ptr @pn_list_copy(ptr, i64)
 declare void @pn_list_free(ptr)
+declare void @pn_list_free_str(ptr)
+declare ptr @pn_list_copy_str(ptr)
+declare ptr @pn_list_fill_str(i64, ptr)
+declare ptr @pn_explode(ptr, ptr)
+declare ptr @pn_implode(ptr, ptr, i64)
+declare void @pn_list_sort(ptr, i64, i64)
+declare ptr @pn_url_path(ptr)
+declare ptr @pn_query_param(ptr, ptr)
+declare ptr @pn_form_param(ptr, ptr)
+declare i64 @pn_jget_has(ptr, ptr)
+declare ptr @pn_jget_string(ptr, ptr)
+declare i64 @pn_jget_int(ptr, ptr)
+declare double @pn_jget_float(ptr, ptr)
+declare i64 @pn_jget_bool(ptr, ptr)
 declare void @pn_list_grow(ptr, i64) cold
 declare void @pn_oob(i64, i64) noreturn cold
 declare void @pn_divzero(i32) noreturn cold
@@ -1007,6 +1025,8 @@ class FuncGen:
         r = self.call("ptr", "@pn_list_new", f"i64 {ELEM_SIZE[et]}")
         for v, t in vals:
             v = self.coerce(v, t, et, e.line, "list item")
+            if et == "string":
+                v = self.dup_str(v)             # the list owns its strings
             self.call("void", "@pn_list_push", f"ptr {r}", f"i64 {ELEM_SIZE[et]}", f"i64 {self.to_bits(v, et)}")
         return r, f"list<{et}>", True
 
@@ -1016,6 +1036,8 @@ class FuncGen:
         r = self.tmp()
         if et == "float":
             self.emit(f"{r} = bitcast double {v} to i64")
+        elif et == "string":
+            self.emit(f"{r} = ptrtoint ptr {v} to i64")
         else:
             self.emit(f"{r} = zext i1 {v} to i64")
         return r
@@ -1040,8 +1062,8 @@ class FuncGen:
 
     def load_elem(self, p, et):
         r = self.tmp()
-        tb = {"int": "!3", "float": "!4", "bool": "!5"}[et]
-        self.emit(f"{r} = load {ELEM_LL[et]}, ptr {p}, !tbaa {tb}")
+        tb = f", !tbaa {ELEM_TBAA[et]}" if et in ELEM_TBAA else ""
+        self.emit(f"{r} = load {ELEM_LL[et]}, ptr {p}{tb}")
         if et == "bool":
             b = self.tmp()
             self.emit(f"{b} = icmp ne i8 {r}, 0")
@@ -1049,12 +1071,12 @@ class FuncGen:
         return r
 
     def store_elem(self, p, v, et):
-        tb = {"int": "!3", "float": "!4", "bool": "!5"}[et]
+        tb = f", !tbaa {ELEM_TBAA[et]}" if et in ELEM_TBAA else ""
         if et == "bool":
             z = self.tmp()
             self.emit(f"{z} = zext i1 {v} to i8")
             v = z
-        self.emit(f"store {ELEM_LL[et]} {v}, ptr {p}, !tbaa {tb}")
+        self.emit(f"store {ELEM_LL[et]} {v}, ptr {p}{tb}")
 
     # --- maps: values live in 8-byte slots
     def map_key(self, m_t, key_e, line):
@@ -1152,7 +1174,8 @@ class FuncGen:
             return self.vars[e.name]
         if e.kind == "call" and e.name in self.mod.funcs:
             return self.mod.funcs[e.name][1]
-        if e.kind == "call" and e.name in ("strval", "substr", "trim", "strtolower", "strtoupper", "json_encode"):
+        if e.kind == "call" and e.name in ("strval", "substr", "trim", "strtolower", "strtoupper", "json_encode",
+                                           "implode", "url_path", "query_param", "form_param", "json_string"):
             return "string"
         return "int"
 
@@ -1456,12 +1479,16 @@ class FuncGen:
                 v, vt = self.coerce(v, vt, "float", e.line, "fill()"), "float"
             if vt not in ELEM_SIZE:
                 raise CompileError(f"fill() value must be int, float or bool but got {vt}", e.line)
+            if vt == "string":
+                return self.call("ptr", "@pn_list_fill_str", f"i64 {n}", f"ptr {v}"), "list<string>", True
             r = self.call("ptr", "@pn_list_fill", f"i64 {n}", f"i64 {ELEM_SIZE[vt]}", f"i64 {self.to_bits(v, vt)}")
             return r, f"list<{vt}>", True
         if name == "copy":
             self.argc(e, 1)
             v, t = self.borrow(args[0])
             if is_list(t):
+                if elem_of(t) == "string":
+                    return self.call("ptr", "@pn_list_copy_str", f"ptr {v}"), t, True
                 return self.call("ptr", "@pn_list_copy", f"ptr {v}", f"i64 {ELEM_SIZE[elem_of(t)]}"), t, True
             if is_map(t):
                 return self.call("ptr", "@pn_map_copy", f"ptr {v}"), t, True
@@ -1504,6 +1531,48 @@ class FuncGen:
         if name == "trim":
             self.argc(e, 1)
             return self.call("ptr", "@pn_str_trim", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "explode":
+            self.argc(e, 2)
+            sep, s = self.str_arg(e, 0), self.str_arg(e, 1)
+            return self.call("ptr", "@pn_explode", f"ptr {sep}", f"ptr {s}"), "list<string>", True
+        if name == "implode":
+            self.argc(e, 2)
+            g = self.str_arg(e, 0)
+            v, t = self.borrow(args[1])
+            if not is_list(t) or elem_of(t) == "bool":
+                raise CompileError(f"implode() needs a list<string>, list<int> or list<float> but got {t}", e.line)
+            return self.call("ptr", "@pn_implode", f"ptr {g}", f"ptr {v}", f"i64 {KIND[elem_of(t)]}"), "string", True
+        if name in ("sort", "rsort"):
+            self.argc(e, 1)
+            a = args[0]
+            if a.kind != "var":
+                raise CompileError(f"{name}() sorts a list variable in place, e.g. {name}($xs);", e.line)
+            v, t = self.use_var(a.name, e.line)
+            if not is_list(t):
+                raise CompileError(f"{name}() needs a list but {a.name} is {t}", e.line)
+            self.check_writable(a.name, e.line, "sorted")
+            if a.name in self.iterating:
+                raise CompileError(f"cannot sort {a.name} while a foreach is looping over it", e.line)
+            self.call("void", "@pn_list_sort", f"ptr {v}", f"i64 {KIND[elem_of(t)]}", f"i64 {int(name == 'rsort')}")
+            return None, "void", False
+        if name == "url_path":
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_url_path", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name in ("query_param", "form_param"):
+            self.argc(e, 2)
+            src, key = self.str_arg(e, 0), self.str_arg(e, 1)
+            return self.call("ptr", f"@pn_{name}", f"ptr {src}", f"ptr {key}"), "string", True
+        if name in ("json_has", "json_string", "json_int", "json_float", "json_bool"):
+            self.argc(e, 2)
+            src, key = self.str_arg(e, 0), self.str_arg(e, 1)
+            fn = "@pn_jget_" + name[5:]
+            if name == "json_string":
+                return self.call("ptr", fn, f"ptr {src}", f"ptr {key}"), "string", True
+            if name == "json_float":
+                return self.call("double", fn, f"ptr {src}", f"ptr {key}"), "float", False
+            if name == "json_int":
+                return self.call("i64", fn, f"ptr {src}", f"ptr {key}"), "int", False
+            return self.i64_to_bool(self.call("i64", fn, f"ptr {src}", f"ptr {key}")), "bool", False
         if name == "json_encode":
             self.argc(e, 1)
             v, t = self.borrow(args[0])
@@ -1719,7 +1788,10 @@ class FuncGen:
             if not is_list(st):
                 raise CompileError(f"{name} is {st}; $a[] = value appends to lists only", s.line)
             et = elem_of(st)
-            v, t = self.borrow(s.val)
+            if et == "string":
+                v, t = self.owned_value(s.val, et, s.line)    # the list owns what it holds
+            else:
+                v, t = self.borrow(s.val)
             v = self.coerce(v, t, et, s.line, f"appending to {name}")
             lst, _ = self.use_var(name, s.line)
             ln, cp, capp, full = self.tmp(), self.tmp(), self.tmp(), self.tmp()
@@ -1739,6 +1811,27 @@ class FuncGen:
             return
         # $x[$i] op= value — the value is computed first, so no pointer into the container is held
         # while other code runs
+        if is_list(st) and elem_of(st) == "string":
+            if name in self.iterating:
+                raise CompileError(f"cannot change {name} while a foreach is looping over it", s.line)
+            if op not in ("=", ".="):
+                raise CompileError(f"'{op}' needs numbers; {name} is {st}", s.line)
+            v, t = self.owned_value(s.val, "string", s.line) if op == "=" else self.borrow(s.val)
+            if t != "string":
+                raise CompileError(f"storing into {name}: expected string but got {t}", s.line)
+            lst, _ = self.use_var(name, s.line)
+            iv, it = self.borrow(tg.idx)
+            if it != "int":
+                raise CompileError(f"list index must be int but got {it}", s.line)
+            self.list_bounds(lst, iv, s.line)
+            p = self.list_elem_ptr(lst, "string", iv)
+            cur = self.load_elem(p, "string")
+            if op == "=":
+                self.call("void", "@pn_str_free", f"ptr {cur}")
+                self.store_elem(p, v, "string")
+            else:
+                self.store_elem(p, self.call("ptr", "@pn_str_add_str", f"ptr {cur}", f"ptr {v}"), "string")
+            return
         if is_list(st):
             et = elem_of(st)
             if op == ".=":
@@ -2037,7 +2130,7 @@ def compile_source(src):
     return "\n".join(mod.header() + out) + "\n" + TBAA
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 

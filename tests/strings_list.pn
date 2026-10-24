@@ -1,0 +1,27 @@
+// list<string>, explode/implode/sort/rsort, and the request helpers (url_path, query_param, form_param, json_*)
+$parts = explode(",", "b,a,,c");
+echo count($parts), " ", json_encode($parts), "\n";
+sort($parts);
+echo implode("|", $parts), "\n";
+rsort($parts);
+echo json_encode($parts), "\n";
+list<string> $names = [];
+$names[] = "ไทย";
+$names[] = "x" . 1;
+$names[0] .= "!";
+$names[1] = "y";
+$copy = copy($names);
+$copy[0] = "changed";
+echo json_encode($names), json_encode($copy), " ", $names[5] ?? "none", "\n";
+foreach ($names as $i => $n) { echo "$i=$n "; }
+echo "\n";
+$xs = [3, 1, 2]; sort($xs); echo implode(",", $xs), "\n";
+$fs = [2.5, -1.0]; rsort($fs); echo implode(" ", $fs), "\n";
+$w = fill(3, "ab"); $w[1] = "c"; echo implode("", $w), "\n";
+$lit = ["one", "two"]; $first = $lit[0]; $lit[0] = "uno"; echo $first, " ", $lit[0], "\n";
+$path = "/order?item=c%C3%A1ke+x&qty=3&flag";
+echo url_path($path), "|", query_param($path, "item"), "|", query_param($path, "qty"), "|", query_param($path, "flag"), "|", query_param($path, "nope"), "|\n";
+echo form_param("a=1&b=two%20words", "b"), "\n";
+$j = "{\"name\": \"Somchai \\u0e01\\\"q\\\"\", \"qty\": 3, \"price\": 12.5, \"ok\": true, \"tags\": [1, {\"x\": 2}], \"neg\": -7}";
+echo json_string($j, "name"), " ", json_int($j, "qty"), " ", json_float($j, "price"), " ", json_bool($j, "ok"), " ", json_has($j, "tags"), " ", json_has($j, "x"), " ", json_int($j, "neg"), " ", json_int($j, "price"), "[", json_string($j, "missing"), "]\n";
+echo json_string("{bad", "a"), json_int("[1]", "a"), json_has("", "a"), "|\n";

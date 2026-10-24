@@ -591,6 +591,317 @@ Str *pn_json_map(Map *m) {
 Str *pn_json_str(Str *s) { return json_string(NULL, s->data, s->len); }
 Str *pn_json_float(double v) { return json_float(NULL, v); }
 
+// ============================================================================ list<string>, explode, implode, sort
+
+// list<string> elements are owned Str pointers (8 bytes); literals (cap < 0) are never freed.
+void pn_list_free_str(List *l) {
+    if (!l) return;
+    Str **d = l->data;
+    for (int64_t i = 0; i < l->len; i++) pn_str_free(d[i]);
+    pn_list_free(l);
+}
+
+List *pn_list_copy_str(List *src) {
+    List *l = pn_list_copy(src, 8);
+    Str **d = l->data;
+    for (int64_t i = 0; i < l->len; i++) d[i] = pn_str_dup(d[i]);
+    return l;
+}
+
+List *pn_list_fill_str(int64_t n, Str *s) {
+    List *l = pn_list_fill(n, 8, 0);
+    Str **d = l->data;
+    for (int64_t i = 0; i < n; i++) d[i] = pn_str_dup(s);
+    return l;
+}
+
+// explode($sep, $s): PHP order; an empty separator panics like PHP's ValueError
+List *pn_explode(Str *sep, Str *s) {
+    if (sep->len == 0) panic_msg("explode(): the separator cannot be empty");
+    List *l = pn_list_new(8);
+    const char *p = s->data, *e = s->data + s->len;
+    for (;;) {
+        const char *hit = memmem(p, (size_t)(e - p), sep->data, (size_t)sep->len);
+        const char *end = hit ? hit : e;
+        Str *part = str_from(p, end - p);
+        if (l->len == l->cap) pn_list_grow(l, 8);
+        ((Str **)l->data)[l->len++] = part;
+        if (!hit) break;
+        p = hit + sep->len;
+    }
+    return l;
+}
+
+// implode($glue, $list): kind 0 int, 1 float, 3 string
+Str *pn_implode(Str *glue, List *l, int64_t kind) {
+    Str *r = str_alloc(16);
+    for (int64_t i = 0; i < l->len; i++) {
+        if (i) r = pn_str_add_str(r, glue);
+        if (kind == 3) r = pn_str_add_str(r, ((Str **)l->data)[i]);
+        else if (kind == 1) r = pn_str_add_float(r, ((double *)l->data)[i]);
+        else r = pn_str_add_int(r, ((int64_t *)l->data)[i]);
+    }
+    return r;
+}
+
+static int cmp_int(const void *a, const void *b) {
+    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+    return (x > y) - (x < y);
+}
+static int cmp_float(const void *a, const void *b) {     // NAN sorts last
+    double x = *(const double *)a, y = *(const double *)b;
+    if (isnan(x) || isnan(y)) return isnan(x) - isnan(y);
+    return (x > y) - (x < y);
+}
+static int cmp_str(const void *a, const void *b) { return (int)pn_str_cmp(*(Str *const *)a, *(Str *const *)b); }
+static int cmp_bool(const void *a, const void *b) { return *(const unsigned char *)a - *(const unsigned char *)b; }
+
+// sort / rsort in place: kind 0 int, 1 float, 2 bool, 3 string (byte order)
+void pn_list_sort(List *l, int64_t kind, int64_t reverse) {
+    if (l->len < 2) return;
+    size_t es = kind == 2 ? 1 : 8;
+    int (*cmp)(const void *, const void *) = kind == 0 ? cmp_int : kind == 1 ? cmp_float : kind == 2 ? cmp_bool : cmp_str;
+    qsort(l->data, (size_t)l->len, es, cmp);
+    if (reverse) {
+        char tmp[8], *d = l->data;
+        for (int64_t i = 0, j = l->len - 1; i < j; i++, j--) {
+            memcpy(tmp, d + i * es, es); memcpy(d + i * es, d + j * es, es); memcpy(d + j * es, tmp, es);
+        }
+    }
+}
+
+// ============================================================================ request helpers
+// Everything here reads untrusted client input: every read is bounded by an explicit end pointer.
+
+// url_path("/a/b?x=1") -> "/a/b"
+Str *pn_url_path(Str *path) {
+    const char *q = memchr(path->data, '?', (size_t)path->len);
+    return str_from(path->data, q ? q - path->data : path->len);
+}
+
+static int hexval(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// Find `key` in "a=1&b=2" (application/x-www-form-urlencoded); returns the decoded value or "".
+static Str *form_lookup(const char *p, const char *e, Str *key) {
+    while (p < e) {
+        const char *amp = memchr(p, '&', (size_t)(e - p));
+        const char *end = amp ? amp : e;
+        const char *eq = memchr(p, '=', (size_t)(end - p));
+        const char *kend = eq ? eq : end;
+        // compare the decoded name with key
+        Str *name = str_alloc(kend - p);
+        for (const char *c = p; c < kend; c++) {
+            char ch = *c;
+            if (ch == '+') ch = ' ';
+            else if (ch == '%' && kend - c > 2 && hexval(c[1]) >= 0 && hexval(c[2]) >= 0) {
+                ch = (char)(hexval(c[1]) * 16 + hexval(c[2])); c += 2;
+            }
+            name->data[name->len++] = ch;
+        }
+        name->data[name->len] = 0;
+        int match = pn_str_eq(name, key);
+        pn_str_free(name);
+        if (match) {
+            Str *v = str_alloc(eq ? end - eq - 1 : 0);
+            for (const char *c = eq ? eq + 1 : end; c < end; c++) {
+                char ch = *c;
+                if (ch == '+') ch = ' ';
+                else if (ch == '%' && end - c > 2 && hexval(c[1]) >= 0 && hexval(c[2]) >= 0) {
+                    ch = (char)(hexval(c[1]) * 16 + hexval(c[2])); c += 2;
+                }
+                v->data[v->len++] = ch;
+            }
+            v->data[v->len] = 0;
+            return v;
+        }
+        p = amp ? amp + 1 : e;
+    }
+    return str_alloc(0);
+}
+
+Str *pn_query_param(Str *path, Str *key) {
+    const char *q = memchr(path->data, '?', (size_t)path->len);
+    if (!q) return str_alloc(0);
+    return form_lookup(q + 1, path->data + path->len, key);
+}
+
+Str *pn_form_param(Str *body, Str *key) { return form_lookup(body->data, body->data + body->len, key); }
+
+// --- a minimal JSON reader for the top level of an object: {"key": value, ...}
+static const char *jws(const char *p, const char *e) {
+    while (p < e && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+    return p;
+}
+
+// end of the string starting at p (p points at the opening quote), or NULL if unterminated
+static const char *jstr_end(const char *p, const char *e) {
+    for (p++; p < e; p++) {
+        if (*p == '\\') { p++; continue; }
+        if (*p == '"') return p + 1;
+    }
+    return NULL;
+}
+
+// skip one value; NULL if malformed. depth guards against stack exhaustion on hostile input.
+static const char *jskip(const char *p, const char *e, int depth) {
+    p = jws(p, e);
+    if (p >= e || depth > 64) return NULL;
+    if (*p == '"') return jstr_end(p, e);
+    if (*p == '{' || *p == '[') {
+        char close = *p == '{' ? '}' : ']';
+        p = jws(p + 1, e);
+        if (p < e && *p == close) return p + 1;
+        for (;;) {
+            if (close == '}') {
+                p = jws(p, e);
+                if (p >= e || *p != '"' || !(p = jstr_end(p, e))) return NULL;
+                p = jws(p, e);
+                if (p >= e || *p != ':') return NULL;
+                p++;
+            }
+            if (!(p = jskip(p, e, depth + 1))) return NULL;
+            p = jws(p, e);
+            if (p >= e) return NULL;
+            if (*p == ',') { p++; continue; }
+            if (*p == close) return p + 1;
+            return NULL;
+        }
+    }
+    static const char *lits[] = {"true", "false", "null"};
+    for (int i = 0; i < 3; i++) {
+        size_t n = strlen(lits[i]);
+        if ((size_t)(e - p) >= n && memcmp(p, lits[i], n) == 0) return p + n;
+    }
+    const char *s = p;           // a number
+    while (p < e && (*p == '-' || *p == '+' || *p == '.' || (*p >= '0' && *p <= '9') || *p == 'e' || *p == 'E')) p++;
+    return p > s && (*s == '-' || (*s >= '0' && *s <= '9')) ? p : NULL;
+}
+
+// append the UTF-8 for code point cp
+static Str *add_utf8(Str *d, uint32_t cp) {
+    char b[4]; int n;
+    if (cp < 0x80) { b[0] = (char)cp; n = 1; }
+    else if (cp < 0x800) { b[0] = (char)(0xC0 | cp >> 6); b[1] = (char)(0x80 | (cp & 0x3F)); n = 2; }
+    else if (cp < 0x10000) {
+        b[0] = (char)(0xE0 | cp >> 12); b[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); b[2] = (char)(0x80 | (cp & 0x3F)); n = 3;
+    } else {
+        b[0] = (char)(0xF0 | cp >> 18); b[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        b[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); b[3] = (char)(0x80 | (cp & 0x3F)); n = 4;
+    }
+    return str_add_bytes(d, b, n);
+}
+
+static int hex4(const char *p, const char *e, uint32_t *out) {
+    if (e - p < 4) return 0;
+    uint32_t v = 0;
+    for (int i = 0; i < 4; i++) { int h = hexval(p[i]); if (h < 0) return 0; v = v * 16 + (uint32_t)h; }
+    *out = v;
+    return 1;
+}
+
+// decode the JSON string starting at p (opening quote) up to q (just after the closing quote)
+static Str *jstr_decode(const char *p, const char *q) {
+    Str *d = str_alloc(q - p);
+    const char *e = q - 1;                  // closing quote
+    for (p++; p < e; p++) {
+        if (*p != '\\') { d = str_add_bytes(d, p, 1); continue; }
+        if (++p >= e) break;
+        char c = *p, out = 0;
+        switch (c) {
+        case 'n': out = '\n'; break; case 't': out = '\t'; break; case 'r': out = '\r'; break;
+        case 'b': out = '\b'; break; case 'f': out = '\f'; break;
+        case 'u': {
+            uint32_t cp;
+            if (!hex4(p + 1, e, &cp)) { out = 'u'; break; }
+            p += 4;
+            if (cp >= 0xD800 && cp < 0xDC00 && e - p > 6 && p[1] == '\\' && p[2] == 'u') {
+                uint32_t lo;
+                if (hex4(p + 3, e, &lo) && lo >= 0xDC00 && lo < 0xE000) {
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); p += 6;
+                } else cp = 0xFFFD;
+            } else if (cp >= 0xD800 && cp < 0xE000) cp = 0xFFFD;   // lone surrogate
+            d = add_utf8(d, cp);
+            continue;
+        }
+        default: out = c;                  // \" \\ \/
+        }
+        d = str_add_bytes(d, &out, 1);
+    }
+    return d;
+}
+
+// pointer to the value of top-level `key` and its end, or 0
+static int jfind(Str *json, Str *key, const char **vs, const char **ve) {
+    const char *p = json->data, *e = json->data + json->len;
+    p = jws(p, e);
+    if (p >= e || *p != '{') return 0;
+    p = jws(p + 1, e);
+    if (p < e && *p == '}') return 0;
+    for (;;) {
+        p = jws(p, e);
+        if (p >= e || *p != '"') return 0;
+        const char *ks = p, *kq = jstr_end(p, e);
+        if (!kq) return 0;
+        p = jws(kq, e);
+        if (p >= e || *p != ':') return 0;
+        const char *v = jws(p + 1, e), *vend = jskip(v, e, 0);
+        if (!vend) return 0;
+        Str *k = jstr_decode(ks, kq);
+        int match = pn_str_eq(k, key);
+        pn_str_free(k);
+        if (match) { *vs = v; *ve = vend; return 1; }
+        p = jws(vend, e);
+        if (p >= e || *p != ',') return 0;
+        p++;
+    }
+}
+
+int64_t pn_jget_has(Str *json, Str *key) { const char *s, *e; return jfind(json, key, &s, &e); }
+
+Str *pn_jget_string(Str *json, Str *key) {
+    const char *s, *e;
+    if (!jfind(json, key, &s, &e) || *s != '"') return str_alloc(0);
+    return jstr_decode(s, e);
+}
+
+int64_t pn_jget_int(Str *json, Str *key) {
+    const char *s, *e;
+    if (!jfind(json, key, &s, &e)) return 0;
+    const char *p = s;
+    int neg = 0;
+    if (p < e && *p == '-') { neg = 1; p++; }
+    if (p >= e || *p < '0' || *p > '9') return 0;
+    uint64_t v = 0, limit = neg ? (uint64_t)INT64_MAX + 1 : (uint64_t)INT64_MAX;
+    for (; p < e && *p >= '0' && *p <= '9'; p++) {
+        uint64_t d = (uint64_t)(*p - '0');
+        if (v > (limit - d) / 10) panic_msg("json_int(): number does not fit in an int");
+        v = v * 10 + d;
+    }
+    if (p != e) return 0;                  // 1.5, 1e3: not an int
+    return neg ? (int64_t)(0 - v) : (int64_t)v;
+}
+
+double pn_jget_float(Str *json, Str *key) {
+    const char *s, *e;
+    if (!jfind(json, key, &s, &e) || e - s > 63 || !(*s == '-' || (*s >= '0' && *s <= '9'))) return 0.0;
+    char buf[64];
+    memcpy(buf, s, (size_t)(e - s));
+    buf[e - s] = 0;
+    char *end;
+    double v = strtod(buf, &end);
+    return *end || !isfinite(v) ? 0.0 : v;     // 1e999 is not a usable float
+}
+
+int64_t pn_jget_bool(Str *json, Str *key) {
+    const char *s, *e;
+    return jfind(json, key, &s, &e) && e - s == 4 && memcmp(s, "true", 4) == 0;
+}
+
 // ============================================================================ printing
 
 void pn_print_int(int64_t v) { printf("%lld", (long long)v); }

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 — 2026-10-24
+
+Writing a real JSON API no longer needs hand-written parsing loops.
+
+- `list<string>`: lists own their strings (freed, copied and JSON-encoded correctly). Changing a string
+  element or sorting while a `foreach` walks the list is a compile error, since the loop variable borrows it.
+- `explode($sep, $s)`, `implode($glue, $list)`, `sort($xs)`, `rsort($xs)` (int, float, bool, string).
+- Request helpers: `url_path($path)`, `query_param($path, $key)`, `form_param($body, $key)` (URL-decoded),
+  and `json_has` / `json_string` / `json_int` / `json_float` / `json_bool` for top-level keys of a JSON
+  body. Malformed or hostile input gives the default value; nesting deeper than 64 levels is rejected.
+  `tests/json_hostile.pn` runs these parsers on broken input under ASAN in CI.
+- `examples/api.pn` handles GET with a query string and POST with a JSON body; `examples/wordcount.pn`
+  uses `explode`, `list<string>` and `sort`.
+- Documentation moved to github.com/pin-language/docs; benchmarks to github.com/pin-language/benchmarks.
+- `pin FILE.pn` runs the program; `pin -v`; one-command installer (`install.sh`).
+
 ## 0.1.0 — 2026-10-24 (first preview for testers)
 
 Pin is aimed at AI coding agents: `ai-guide.md` (pin-language/docs) is the whole language on one page, and
