@@ -7,9 +7,10 @@ say what to write instead; `pin check --json` is the agent loop.
 The language is **Pin** (was "Pina"), extension `.pn`. Entry point for users: `./pin` (run/build/check);
 the compiler itself is still `pinac.py`. **v0.1.0 is prepared for outside testers** (README.md in English,
 README.th.md, docs/language.md, docs/ai-guide.md, examples/, LICENSE MIT, CHANGELOG.md, CI workflow) and
-**public at https://github.com/hugo8xx/pin-lang**, tag `v0.1.0`. The published branch is
-`release/v0.1.0` (the owner's rule is never to push to `main` without saying so); GitHub uses it as the
-default branch. The owner can rename it to `main` in the repository settings.
+tag `v0.1.0`. **Not published yet**: creating the public repository was blocked by Claude Code's
+permission check, so the owner does it. The READMEs already point at https://github.com/hugo8xx/pin-lang
+(clone URL, issues, CI badge). Planned push: branch `release/v0.1.0` + tag `v0.1.0` (the owner's rule is
+never to push to `main` without saying so), then check that the first CI run is green.
 
 Owner's rule for every design decision, in order: **memory safety > speed > clarity > looking like PHP.**
 The owner has said "decide for me, just go": make design calls by that rule, write them down, and only
