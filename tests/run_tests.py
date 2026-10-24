@@ -5,8 +5,8 @@
   tests/panics/*.pn     compile + run, must exit 1 and stderr must contain tests/panics/<name>.expected
   tests/errors/*.pn     must FAIL to compile; stderr must contain tests/errors/<name>.expected
   examples/*.pn         compile; the ones without serve() must run and exit 0
-  bench/*.pn            compile + run, output must match the known answer
-  api/server.pn         start the HTTP server, check 5 endpoints (status + body)
+  tests/bench/*.pn      the benchmark programs: compile + run, output must match the known answer
+  tests/server/api.pn   start the HTTP server, check 5 endpoints (status + body)
   tests/server/panics.pn  handler panics must give 500, free the request's memory, and keep serving
 
 Flags:  --update   rewrite expected files from current output (review the diff before committing!)
@@ -168,9 +168,9 @@ for src in sorted(glob.glob(os.path.join(ROOT, "examples", "*.pn"))):
     else:
         ok(rel(src))
 
-print("benchmarks (bench/*.pn)")
+print("benchmark programs (tests/bench/*.pn; the comparisons live in pin-language/benchmarks)")
 for name, answer in BENCH_ANSWERS.items():
-    src = os.path.join(ROOT, "bench", name + ".pn")
+    src = os.path.join(ROOT, "tests", "bench", name + ".pn")
     out = os.path.join(BUILD, "bench_" + name)
     b = build(src, out)
     if b.returncode:
@@ -183,11 +183,11 @@ for name, answer in BENCH_ANSWERS.items():
         ok(rel(src))
 
 if "--no-server" not in sys.argv:
-    print("http server (api/server.pn on :8081)")
+    print("http server (tests/server/api.pn on :8081)")
     out = os.path.join(BUILD, "api_server")
-    b = build(os.path.join(ROOT, "api", "server.pn"), out)
+    b = build(os.path.join(ROOT, "tests", "server", "api.pn"), out)
     if b.returncode:
-        fail("api/server.pn", "build failed: " + b.stderr[-400:])
+        fail("tests/server/api.pn", "build failed: " + b.stderr[-400:])
     else:
         env = dict(os.environ, PN_THREADS="2")
         proc = subprocess.Popen([out], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

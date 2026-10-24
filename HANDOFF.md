@@ -112,6 +112,6 @@ Linux container, update this file.
 - Sanitizers: see CLAUDE.md. On macOS use clang for the link step; LeakSanitizer only works on Linux.
 - Server memory on macOS: use `footprint -p <pid>` (phys_footprint). RSS hides leaks because macOS
   compresses idle pages.
-- Benchmarks vs other languages: `python3 bench/run.py` (needs rust, go, php, python). Load test:
-  `python3 api/loadtest.py <wrk>` — on macOS there is no CPU pinning, say so next to any numbers.
-- Raw results from the Linux container: `bench/results.json`, `api/loadtest.json`.
+- Benchmarks vs other languages and the HTTP load test live in github.com/pin-language/benchmarks
+  (`python3 cpu/run.py`, `python3 http/loadtest.py <wrk>`). On macOS there is no CPU pinning and peak
+  memory for listsum varies 2x between runs — say so next to any numbers.

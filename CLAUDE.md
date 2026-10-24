@@ -22,8 +22,6 @@ python3 tests/run_tests.py --no-server  # skip the HTTP server check
 python3 tests/run_tests.py --update     # regenerate expected outputs — only after reviewing the diff
 python3 pinac.py file.pn [-o out]       # compile; writes file.ll next to the source
 python3 pinac.py --emit-ll file.pn      # IR only (used for compile-error tests)
-python3 bench/run.py                    # CPU benchmarks vs Rust/Go/PHP/Python (needs all 5 toolchains)
-python3 api/loadtest.py <wrk>           # API load test; start the 4 servers first (see HANDOFF.md)
 ```
 
 Needs: Python 3.10+ (tested 3.13), clang (tested 18). No Python packages.
@@ -44,8 +42,8 @@ gcc -g -fsanitize=address,undefined runtime.c X.o -lm -pthread -o X_asan && ./X_
 | `pinac.py` | whole compiler, one file (~1850 lines). `Parser` → AST `Node`s; `FuncGen` does type checking, ownership checking and IR emission in one pass |
 | `runtime.c` | allocator (16-byte block header, per-request tracking), lists, strings, ordered hash maps, json_encode, printing, panics, HTTP/1.1 server (epoll on Linux, kqueue on macOS) |
 | `tests/` | `*.pn` + `expected/*.out`; `errors/*.pn` must fail to compile; `panics/*.pn` must exit 1; `server/panics.pn` = handler panics give 500 |
-| `bench/` | same 5 programs in pn/rust/go/php/python + `run.py`, `memrun.c` |
-| `api/` | same 3-endpoint JSON API in `server.pn`, `server.go`, PHP (FrankenPHP worker + classic) + `loadtest.py` |
+| `tests/bench/`, `tests/server/api.pn` | the benchmark programs and the JSON API, kept as tests |
+| — | comparisons with Rust/Go/PHP/Python and the HTTP load test: github.com/pin-language/benchmarks (local clone ../pin-benchmarks); docs: github.com/pin-language/docs (../pin-docs) |
 
 ## Language invariants — do not break these without the owner's OK
 

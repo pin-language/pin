@@ -127,17 +127,17 @@ request นั้นถูกคืนทั้งหมด แล้ว server 
 ## Benchmark
 
 อัลกอริทึมเดียวกันทุกภาษา output ตรงกันทุกภาษา · Apple M2 (8 core), macOS 14, ดีที่สุดจาก 3 รอบ ·
-macOS ล็อก CPU core ไม่ได้ ส่วนต่างเล็กๆ ถือเป็น noise
+macOS ล็อก CPU core ไม่ได้ ส่วนต่างต่ำกว่า ~20% ถือเป็น noise · ตัวเลขหน่วยความจำและวิธีวัดอยู่ใน repo benchmarks
 
 | benchmark | Pin | Rust 1.95 | Go 1.26 | PHP 8.5 + JIT | PHP 8.5 | Python 3.15 |
 |---|---|---|---|---|---|---|
-| sieve (20M) | 0.047s / 20 MB | 0.047s / 20 MB | 0.046s / 23 MB | 0.640s / 330 MB | 1.351s / 326 MB | 4.412s / 165 MB |
-| collatz (1M) | 0.166s / 1 MB | 0.132s / 1 MB | 0.180s / 4 MB | 0.721s / 25 MB | 3.235s / 21 MB | 6.440s / 11 MB |
-| pi (100M) | 0.092s / 1 MB | 0.090s / 1 MB | 0.091s / 4 MB | 0.932s / 25 MB | 2.237s / 21 MB | 12.352s / 12 MB |
-| list build + sum | 0.104s / 59 MB | 0.135s / 399 MB | 0.182s / 124 MB | 0.494s / 230 MB | 1.170s / 175 MB | 4.869s / 104 MB |
+| sieve (20M) | 0.048s | 0.074s | 0.046s | 0.642s | 1.385s | 4.420s |
+| collatz (1M) | 0.163s | 0.133s | 0.174s | 0.715s | 3.223s | 6.370s |
+| pi (100M terms) | 0.098s | 0.096s | 0.093s | 0.943s | 2.260s | 13.265s |
+| list build + sum | 0.116s | 0.141s | 0.178s | 0.459s | 1.210s | 5.280s |
 
 ข้อควรรู้: เป็น loop CPU เล็กๆ ไม่ใช่แอปจริง · ตัด `fib` ออกเพราะ clang optimize recursion จนไม่ได้บอกอะไรเรื่องภาษา ·
-ผล load test ของ HTTP server (Linux 2 core) อยู่ใน `api/loadtest.json` server ของ Pin ทำงานน้อยกว่า Go
+ผล load test ของ HTTP server (Linux 2 core) อยู่ใน [pin-language/benchmarks](https://github.com/pin-language/benchmarks) server ของ Pin ทำงานน้อยกว่า Go
 `net/http` มาก (ไม่มี TLS, HTTP/2, header, timeout) ตัวเลขนั้นจึงไม่ใช่การเทียบภาษาตรงๆ
 
 ## ยังไม่มี
