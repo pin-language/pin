@@ -36,6 +36,9 @@ cd pin
 | `pin check file.pn` | เช็ค type และ ownership อย่างเดียว |
 | `pin version` | ดูเวอร์ชัน |
 
+**VS Code:** มีสีตาม syntax ใน [`editors/vscode`](editors/vscode/) ติดตั้งด้วย
+`cd editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`
+
 ตัวอย่างอยู่ใน [`examples/`](examples/) และคู่มือภาษาเต็ม (ภาษาอังกฤษ) อยู่ที่ [docs/language.md](docs/language.md)
 
 ## ตัวอย่าง

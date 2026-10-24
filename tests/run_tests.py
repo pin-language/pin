@@ -134,6 +134,19 @@ r = subprocess.run(PIN + ["check", "--json", os.path.join(ROOT, "examples", "hel
 (ok if r.returncode == 0 and json.loads(r.stdout)["ok"] else
  lambda n: fail(n, r.stdout + r.stderr))("check --json on a good file")
 
+print("editor support (editors/vscode must be valid JSON and name every built-in)")
+try:
+    gram = json.load(open(os.path.join(ROOT, "editors", "vscode", "syntaxes", "pin.tmLanguage.json")))
+    for f in ("package.json", "language-configuration.json"):
+        json.load(open(os.path.join(ROOT, "editors", "vscode", f)))
+    sys.path.insert(0, ROOT)
+    import pinac  # noqa: E402
+    listed = gram["repository"]["builtin-calls"]["match"]
+    missing = [b for b in sorted(pinac.BUILTINS) if b not in listed]
+    (ok if not missing else lambda n: fail(n, f"builtins missing from the grammar: {missing}"))("vscode grammar")
+except (OSError, ValueError, KeyError) as e:
+    fail("vscode grammar", repr(e))
+
 print("examples (examples/*.pn: must compile; programs without serve() must run and exit 0)")
 for src in sorted(glob.glob(os.path.join(ROOT, "examples", "*.pn"))):
     name = os.path.splitext(os.path.basename(src))[0]

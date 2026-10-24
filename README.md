@@ -74,6 +74,9 @@ ln -s "$PWD/pin" /usr/local/bin/pin
 | `pin check file.pn` | type- and ownership-check only |
 | `pin version` | print the version |
 
+**Editor:** VS Code syntax highlighting is in [`editors/vscode`](editors/vscode/) — from the repository,
+`cd editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.1.0.vsix`.
+
 Start with [`examples/`](examples/): `hello`, `fizzbuzz`, `wordcount`, `ownership`, `primes`, and
 `api` (a small JSON server). The full guide is [docs/language.md](docs/language.md).
 

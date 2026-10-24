@@ -1,0 +1,379 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Pin",
+  "scopeName": "source.pin",
+  "fileTypes": [
+    "pn"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#open-tag"
+    },
+    {
+      "include": "#function-declaration"
+    },
+    {
+      "include": "#generic-type"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#cast"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#variables"
+    },
+    {
+      "include": "#builtin-calls"
+    },
+    {
+      "include": "#function-calls"
+    },
+    {
+      "include": "#return-type"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.pin",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.pin"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.pin"
+            }
+          }
+        },
+        {
+          "name": "comment.line.double-slash.pin",
+          "begin": "//",
+          "end": "$",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.pin"
+            }
+          }
+        },
+        {
+          "name": "comment.line.number-sign.pin",
+          "begin": "#",
+          "end": "$",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.pin"
+            }
+          }
+        }
+      ]
+    },
+    "open-tag": {
+      "match": "<\\?php\\b",
+      "name": "comment.line.ignored-open-tag.pin"
+    },
+    "function-declaration": {
+      "match": "\\b(function)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "storage.type.function.pin"
+        },
+        "2": {
+          "name": "entity.name.function.pin"
+        }
+      }
+    },
+    "generic-type": {
+      "begin": "\\b(list|map)\\s*(<)",
+      "beginCaptures": {
+        "1": {
+          "name": "support.type.pin"
+        },
+        "2": {
+          "name": "punctuation.definition.generic.begin.pin"
+        }
+      },
+      "end": ">",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.generic.end.pin"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#types"
+        },
+        {
+          "match": ",",
+          "name": "punctuation.separator.comma.pin"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.pin",
+          "match": "\\b(if|elseif|else|while|for|foreach|as|break|continue|return)\\b"
+        },
+        {
+          "name": "keyword.other.echo.pin",
+          "match": "\\becho\\b"
+        }
+      ]
+    },
+    "cast": {
+      "match": "(\\()\\s*(int|float|string)\\s*(\\))",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.cast.begin.pin"
+        },
+        "2": {
+          "name": "support.type.cast.pin"
+        },
+        "3": {
+          "name": "punctuation.definition.cast.end.pin"
+        }
+      }
+    },
+    "types": {
+      "name": "support.type.pin",
+      "match": "\\b(int|float|bool|string|void|list|map)\\b"
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.pin",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.pin",
+          "match": "\\b(PHP_INT_MAX|PHP_INT_MIN|PHP_EOL)\\b"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.pin",
+          "begin": "\"",
+          "end": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.pin"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.pin"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.pin",
+              "match": "\\\\(?:[nrtv0\\\\\"$]|u\\{[0-9A-Fa-f]+\\}|x[0-9A-Fa-f]{1,2})"
+            },
+            {
+              "name": "meta.interpolation.pin",
+              "begin": "\\{(?=\\$)",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": {
+                  "name": "punctuation.section.interpolation.begin.pin"
+                }
+              },
+              "endCaptures": {
+                "0": {
+                  "name": "punctuation.section.interpolation.end.pin"
+                }
+              },
+              "patterns": [
+                {
+                  "include": "#variables"
+                },
+                {
+                  "include": "#numbers"
+                },
+                {
+                  "include": "#single-quoted"
+                },
+                {
+                  "include": "#punctuation"
+                }
+              ]
+            },
+            {
+              "name": "variable.other.interpolated.pin",
+              "match": "\\$[A-Za-z_][A-Za-z0-9_]*"
+            }
+          ]
+        },
+        {
+          "include": "#single-quoted"
+        }
+      ]
+    },
+    "single-quoted": {
+      "name": "string.quoted.single.pin",
+      "begin": "'",
+      "end": "'",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.pin"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.pin"
+        }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.pin",
+          "match": "\\\\['\\\\]"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.pin",
+          "match": "\\b\\d+\\.\\d+(?:[eE][+-]?\\d+)?\\b|\\b\\d+[eE][+-]?\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.pin",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "variables": {
+      "match": "(\\$)([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "0": {
+          "name": "variable.other.pin"
+        },
+        "1": {
+          "name": "punctuation.definition.variable.pin"
+        }
+      }
+    },
+    "builtin-calls": {
+      "match": "\\b(count|fill|copy|isset|unset|array_key_exists|json_encode|strlen|substr|strpos|str_contains|str_starts_with|str_ends_with|str_repeat|strtolower|strtoupper|trim|intval|strval|sqrt|intdiv|wrapping_add|wrapping_sub|wrapping_mul|serve|http_status)\\s*(?=\\()",
+      "captures": {
+        "1": {
+          "name": "support.function.builtin.pin"
+        }
+      }
+    },
+    "function-calls": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "captures": {
+        "1": {
+          "name": "entity.name.function.call.pin"
+        }
+      }
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.pin",
+          "match": "===|!==|==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.assignment.compound.pin",
+          "match": "\\+=|-=|\\*=|/=|%=|\\.="
+        },
+        {
+          "name": "keyword.operator.null-coalescing.pin",
+          "match": "\\?\\?"
+        },
+        {
+          "name": "keyword.operator.logical.pin",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.increment-decrement.pin",
+          "match": "\\+\\+|--"
+        },
+        {
+          "name": "keyword.operator.key.pin",
+          "match": "=>"
+        },
+        {
+          "name": "keyword.operator.assignment.pin",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arithmetic.pin",
+          "match": "[-+*/%]"
+        },
+        {
+          "name": "keyword.operator.string.pin",
+          "match": "\\."
+        },
+        {
+          "name": "keyword.operator.ternary.pin",
+          "match": "\\?|:"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.terminator.statement.pin",
+          "match": ";"
+        },
+        {
+          "name": "punctuation.separator.comma.pin",
+          "match": ","
+        },
+        {
+          "name": "punctuation.section.brackets.pin",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.section.block.pin",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.section.parens.pin",
+          "match": "[()]"
+        }
+      ]
+    },
+    "return-type": {
+      "match": "(?<=\\))\\s*(:)\\s*(?=[A-Za-z])",
+      "captures": {
+        "1": {
+          "name": "punctuation.separator.return-type.pin"
+        }
+      }
+    }
+  }
+}
