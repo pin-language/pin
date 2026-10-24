@@ -15,7 +15,7 @@ function oob(): string {
 function handle(string $method, string $path, string $body): string {
     if ($path == "/boom") { return boom(); }
     if ($path == "/oob") { return oob(); }
-    if ($path == "/overflow") { return "{\"n\":" . (intval(substr($path, 1, 0) . "9223372036854775807") + 1) . "}"; }
+    if ($path == "/overflow") { return "{\"n\":" . intdiv(intval("-9223372036854775808"), intval("-1")) . "}"; }
     return "{\"ok\":true}";
 }
 

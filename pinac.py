@@ -517,9 +517,6 @@ declare void @pn_divzero(i32) noreturn cold
 declare void @pn_noreturn(i32) noreturn cold
 declare void @pn_overflow(i32) noreturn cold
 declare void @pn_float_to_int(i32) noreturn cold
-declare {i64, i1} @llvm.sadd.with.overflow.i64(i64, i64)
-declare {i64, i1} @llvm.ssub.with.overflow.i64(i64, i64)
-declare {i64, i1} @llvm.smul.with.overflow.i64(i64, i64)
 declare void @pn_map_missing(i32) noreturn cold
 declare void @pn_print_int(i64)
 declare void @pn_print_float(double)
@@ -819,7 +816,7 @@ class FuncGen:
                 self.emit(f"{r} = xor i1 {v}, true")
                 return r, "bool", False
             if t == "int":
-                return self.checked_int("-", "0", v, e.line), t, False
+                self.emit(f"{r} = sub i64 0, {v}")
             elif t == "float":
                 self.emit(f"{r} = fneg double {v}")
             else:
@@ -1259,7 +1256,10 @@ class FuncGen:
             return r, "bool", False
         if t == "int":
             if op in ("+", "-", "*"):
-                return self.checked_int(op, lv, rv, e.line), t, False
+                # 64-bit wrap-around (defined in LLVM: no nsw flag). Panicking on overflow was tried and
+                # cost up to 23% on integer loops, so it waits for check elision (int-overflow.md O3).
+                self.emit(f"{r} = {dict(zip('+-*', ('add', 'sub', 'mul')))[op]} i64 {lv}, {rv}")
+                return r, t, False
             z = self.tmp()
             self.emit(f"{z} = icmp eq i64 {rv}, 0")
             self.panic_if(z, "@pn_divzero", e.line)
@@ -1303,16 +1303,6 @@ class FuncGen:
         self.call("void", fn, f"i32 {line}")
         self.emit("unreachable")
         self.place_label(ok)
-
-    def checked_int(self, op, lv, rv, line):
-        """int + - * that panics on overflow instead of wrapping around."""
-        fn = {"+": "sadd", "-": "ssub", "*": "smul"}[op]
-        pair, r, o = self.tmp(), self.tmp(), self.tmp()
-        self.emit(f"{pair} = call {{i64, i1}} @llvm.{fn}.with.overflow.i64(i64 {lv}, i64 {rv})")
-        self.emit(f"{r} = extractvalue {{i64, i1}} {pair}, 0")
-        self.emit(f"{o} = extractvalue {{i64, i1}} {pair}, 1")
-        self.panic_if(o, "@pn_overflow", line)
-        return r
 
     def int_arg(self, e, i):
         v, t = self.borrow(e.args[i])

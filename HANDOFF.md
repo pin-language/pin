@@ -19,9 +19,10 @@ Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang
   control flow, ownership checker, ~20 PHP built-ins, HTTP/1.1 server with keep-alive + pipelining).
 - **macOS**: server uses kqueue (epoll on Linux) behind a small `poll_*` interface in `runtime.c`. On
   macOS all threads share one listener (SO_REUSEPORT does not spread load there).
-- **Int overflow panics** in every build (`+ - *`, unary `-`, `intdiv(INT_MIN, -1)`), `x % -1` is 0,
-  `(int)` of NAN/INF/huge float panics, `intval()` of a too-big number panics.
-  `wrapping_add/sub/mul()` wrap on purpose.
+- **Int arithmetic**: `+ - *` wrap around (64-bit, defined). Overflow panics were built, cost up to 23%,
+  and were **taken out on the owner's request** ("if something made the scores drop, cut it first").
+  Kept because they cost nothing: `intdiv(INT_MIN, -1)` panics (was UB / x86 crash), `x % -1` is 0,
+  `(int)` of NAN/INF/huge float panics, `intval()` of a too-big number panics. `wrapping_*()` exist.
 - **Allocation sizes are checked** (`checked_size()`): `fill(2^61)` used to be a real heap overflow
   (ASAN-confirmed on the old runtime); now it panics.
 - **Handler panics answer 500** and the server keeps going. Every heap block has a 16-byte header;
@@ -39,12 +40,12 @@ Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang
 
 ## 2. Measured (owner's M-series Mac, best of 5, pin only)
 
-| bench | before overflow checks | now | |
+| bench | original prototype | with overflow panics | now (panics removed) |
 |---|---|---|---|
-| sieve 20M | 0.049s | 0.054s | +10% |
-| collatz 1M | 0.161s | 0.198s | +23% (`3*$n+1` and step counter must be checked) |
-| pi 100M | 0.091s | 0.090s | 0% (float) |
-| listsum | 0.135–0.145s | 0.117–0.123s | faster after the allocator header change (not investigated) |
+| sieve 20M | 0.049s | 0.054s | 0.045–0.050s |
+| collatz 1M | 0.161s | 0.198s | 0.162s |
+| pi 100M | 0.091s | 0.090s | 0.089s |
+| listsum | 0.135–0.145s | 0.117–0.123s | 0.100–0.104s (faster since the allocator header change; not investigated) |
 
 The Linux-container numbers in README.md (vs Rust/Go/PHP) are from before these changes. HTTP req/s was
 not re-measured (no `wrk` on the Mac: `brew install wrk`).
@@ -56,7 +57,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | B5 | No request headers, query string, timeouts (slowloris), per-connection limits | server | security |
 | B6 | `maplit` key type comes from a heuristic `expr_type_probe` | `pinac.py` | low |
 | B8 | `.ll` files are written next to sources | `pinac.py main()` | cosmetic |
-| B9 | Overflow checks cost up to ~23% on integer-heavy loops; no check elision yet (int-overflow.md O3) | codegen | perf |
+| B9 | `+ - *` wrap silently (overflow panics removed for speed until check elision exists, int-overflow.md O3) | codegen | correctness |
 | B10 | Request-block tracking is per thread. When `go`/`await` arrives, tasks must use the request's list (or their own) — revisit then | `runtime.c` allocator | design |
 | B11 | Panic outside a request still `exit(1)` (correct for CLI programs) | runtime | by design |
 

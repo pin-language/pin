@@ -52,7 +52,7 @@ echo sum(squares(10)), "\n";
 | เงื่อนไข `if ($n)` | แปลงเป็น bool ให้เอง | ต้องเป็น bool จริง เช่น `$n != 0` |
 | หน่วยความจำ | reference counting + GC ตอนรัน | ownership ตรวจตอน compile ไม่มี GC ตอนรัน |
 | index เกินขนาด | warning แล้วได้ null | หยุดโปรแกรมทันที (panic) ใน server ตอบ 500 แล้วทำงานต่อ |
-| int ล้น | กลายเป็น float | panic (ใช้ `wrapping_add/sub/mul()` ถ้าตั้งใจให้วนรอบ) |
+| int ล้น | กลายเป็น float | วนรอบแบบ 64-bit (ยังไม่ panic — รอให้เช็คได้โดยไม่ช้า) |
 | `intval("99999999999999999999")` | ได้ PHP_INT_MAX | panic |
 
 ## Ownership (แบบ Rust แต่ย่อให้ง่าย)
@@ -106,7 +106,6 @@ serve(8080, "handle");
 
 ## Benchmark: API server
 
-> ตัวเลขชุดนี้วัดบน Linux container ก่อนเพิ่ม overflow check — ตอนนี้ loop ที่คำนวณ int หนักๆ ช้าลงสูงสุด ~23% (ดู HANDOFF.md §2)
 
 ทุก server รันบน CPU core 0 ส่วนตัวยิงโหลด (wrk, 64 connections, 10 วินาที) รันบน core 1 ทุก server ตอบ byte ตรงกันทุก endpoint
 

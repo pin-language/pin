@@ -183,8 +183,7 @@ __attribute__((noreturn)) void pn_divzero(int32_t line) {
 
 __attribute__((noreturn)) void pn_overflow(int32_t line) {
     fflush(stdout);
-    fprintf(stderr, "panic: integer overflow on line %d "
-                    "(use wrapping_add/wrapping_sub/wrapping_mul if wrapping around is intended)\n", line);
+    fprintf(stderr, "panic: integer overflow on line %d (intdiv(PHP_INT_MIN, -1) has no int answer)\n", line);
     die();
 }
 

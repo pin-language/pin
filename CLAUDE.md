@@ -56,11 +56,14 @@ gcc -g -fsanitize=address,undefined runtime.c X.o -lm -pthread -o X_asan && ./X_
    moved or returned. No mutation of a container while `foreach` walks it.
 4. **No global variables** — this is what lets `serve()` run handlers on many threads with no locks.
 5. Conditions must be `bool` (no truthiness). `/` always returns float (like PHP); `intdiv()` for ints.
-6. Runtime errors (index out of range, missing map key, div by zero, int overflow, size too large)
+6. Runtime errors (index out of range, missing map key, div by zero, `intdiv(INT_MIN,-1)`, size too large)
    **panic** = print + `exit(1)`; inside an HTTP handler a panic frees the request's blocks and answers
    500 instead. Bounds checks and overflow checks are never optional (no unsafe, no flag).
-7. int `+ - *` panic on overflow; `wrapping_add/sub/mul()` wrap on purpose. Every allocation size that
-   comes from a program value goes through `checked_size()` in `runtime.c`.
+7. int `+ - *` wrap around (64-bit, defined behaviour). Overflow panics were built and then taken out on
+   the owner's request because they cost up to 23% (see docs/design/int-overflow.md); bring them back only
+   with check elision. Write `wrapping_add/sub/mul()` where wrapping is intended so that code stays right
+   when checks return. Every allocation size that comes from a program value goes through
+   `checked_size()` in `runtime.c` — that one is memory safety and stays.
 8. Syntax should stay as close to PHP as the rules above allow (PHP likeness is the lowest priority). When unsure, do what PHP 8 does.
 
 Owner decisions so far (in Thai conversation): 1A web API focus · 2C ownership like Rust · 5B LLVM backend ·
