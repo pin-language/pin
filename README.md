@@ -61,10 +61,11 @@ cd pin
 ./pin run examples/hello.pn
 ```
 
-Optional — put `pin` on your PATH:
+Put `pin` on your PATH (no sudo needed; `~/.local/bin` is on the PATH of most setups — if `pin -v`
+then says "command not found", add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`):
 
 ```bash
-ln -s "$PWD/pin" /usr/local/bin/pin
+mkdir -p ~/.local/bin && ln -sf "$PWD/pin" ~/.local/bin/pin && pin -v
 ```
 
 | command | what it does |

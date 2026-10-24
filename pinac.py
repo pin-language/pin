@@ -2044,7 +2044,7 @@ USAGE = """pin — compile and run Pin programs (.pn)
   pin run FILE.pn            compile, then run it (the binary is thrown away)
   pin build FILE.pn [-o OUT] compile to a native binary (default: FILE without .pn)
   pin check FILE.pn          type- and ownership-check only, no binary
-  pin version
+  pin version                (also -v, --version)
 
   --json                     errors as JSON lines on stdout: {"file","line","severity","message"}
                              (pin check --json prints {"file","ok":true} on success)
@@ -2110,12 +2110,12 @@ def cli(argv):
     if not argv:
         print(USAGE)
         return 0
-    if argv[0] in ("run", "build", "check", "version", "help", "-h", "--help"):
+    if argv[0] in ("run", "build", "check", "version", "-v", "--version", "help", "-h", "--help"):
         cmd, rest = argv[0], argv[1:]
         if cmd in ("help", "-h", "--help"):
             print(USAGE)
             return 0
-        if cmd == "version":
+        if cmd in ("version", "-v", "--version"):
             print(f"pin {VERSION}")
             return 0
         if not rest:

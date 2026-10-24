@@ -29,6 +29,13 @@ cd pin
 ./pin run examples/hello.pn
 ```
 
+ใส่ `pin` ลง PATH (ไม่ต้องใช้ sudo ถ้า `pin -v` ขึ้นว่า command not found ให้เพิ่ม
+`export PATH="$HOME/.local/bin:$PATH"` ใน `~/.zshrc`):
+
+```bash
+mkdir -p ~/.local/bin && ln -sf "$PWD/pin" ~/.local/bin/pin && pin -v
+```
+
 | คำสั่ง | ทำอะไร |
 |---|---|
 | `pin run file.pn` | compile แล้วรันเลย |
