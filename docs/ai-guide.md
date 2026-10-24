@@ -46,7 +46,10 @@ so fix and re-check. Exit code 0 = ok, 1 = compile error or run-time panic, 2 = 
 12. **Missing map key / bad index panic.** Use `isset($m[$k])` or `$m[$k] ?? $default`.
 13. **A map literal has one value type.** `["a" => 1, "b" => 2.5]` becomes `map<string,float>`;
     `["a" => 1, "b" => "x"]` is an error — build mixed JSON objects as strings (idiom below).
-14. **`intval()` of text that is not a number gives 0; of a number too big for an int it panics** (in a
+14. **Both sides of `?:` and `??` have the same type.** `$n < 10 ? "0" . $n : strval($n)`, not `... : $n`.
+15. **`unset()` works on maps only.** To drop items from a list, build a new list without them.
+16. **`/` always gives a float** — for list indexes and counts use `intdiv($a, $b)`.
+17. **`intval()` of text that is not a number gives 0; of a number too big for an int it panics** (in a
     server: a 500). Validate input ranges after `intval()`.
 
 ## Idioms
@@ -74,7 +77,7 @@ function bump(list<int> $xs): list<int> {
     return $out;
 }
 
-// counting with a map (missing key starts at 0 for += -= *=)
+// counting with a map (a missing key starts at 0 for += -= *= ++ --)
 function tally(list<int> $xs): map<int,int> {
     map<int,int> $c = [];
     foreach ($xs as $x) { $c[$x] += 1; }
@@ -90,6 +93,39 @@ function find(list<int> $xs, int $want): int {
 // mixed JSON object: build the string; json_encode() a string to quote/escape it
 function user_json(int $id, string $name): string {
     return "{\"id\":" . $id . ",\"name\":" . json_encode($name) . "}";
+}
+```
+
+Sort a list (no `sort` yet): insertion sort on a copy — fine up to a few thousand items.
+
+```php
+function sorted(list<int> $xs): list<int> {
+    $a = copy($xs);
+    for ($i = 1; $i < count($a); $i++) {
+        $v = $a[$i];
+        $j = $i - 1;
+        while ($j >= 0 && $a[$j] > $v) { $a[$j + 1] = $a[$j]; $j--; }
+        $a[$j + 1] = $v;
+    }
+    return $a;
+}
+
+function median(list<int> $xs): float {     // assumes count($xs) > 0
+    $s = sorted($xs);
+    $n = count($s);
+    $mid = intdiv($n, 2);
+    return $n % 2 == 1 ? (float)$s[$mid] : ($s[$mid - 1] + $s[$mid]) / 2;
+}
+```
+
+Money: keep integer satang/cents; format with `intdiv` and `%` (no `sprintf` / `number_format` yet).
+
+```php
+function baht(int $satang): string {        // 123450 -> "1234.50", -5 -> "-0.05"
+    $sign = $satang < 0 ? "-" : "";
+    $abs = $satang < 0 ? -$satang : $satang;
+    $frac = $abs % 100;
+    return $sign . intdiv($abs, 100) . "." . ($frac < 10 ? "0" . $frac : strval($frac));
 }
 ```
 
@@ -206,6 +242,9 @@ Ints wrap around on overflow.
 | `expected int but got float` | the variable is int: use a new variable, `(int)`, or start it as `0.0` |
 | `cannot combine string and int` | join with `.`; convert with `intval()` / `strval()` |
 | `can reach its end without returning` | add a final `return` |
+| `both sides of ?: / ?? must have the same type` | convert one side with `strval()` / `intval()` / `(float)` |
+| `list index must be int but got float` | use `intdiv($a, $b)` instead of `/` |
+| `unset() works on maps` | build a new list without the items |
 | `… is not in Pin v0.1` | use the replacement in the message / the table above |
 | run time `panic: key not found` | `isset($m[$k])` or `$m[$k] ?? default` |
 | run time `panic: index N out of range` | check `$i < count($xs)` |

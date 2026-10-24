@@ -156,7 +156,8 @@ class Parser:
         params = []
         while not self.at(")"):
             if self.cur.kind == "VAR":
-                raise CompileError(f"parameter {self.cur.val} needs a type, e.g. int {self.cur.val}", self.cur.line)
+                raise CompileError(f"parameter {self.cur.val} needs a type, e.g. int {self.cur.val}, string "
+                                   f"{self.cur.val} or list<int> {self.cur.val}", self.cur.line)
             ptype = self.type_()
             pname = self.eat(kind="VAR").val
             params.append((ptype, pname))
@@ -1165,7 +1166,8 @@ class FuncGen:
         if is_list(st):
             iv, it = self.borrow(e.idx)
             if it != "int":
-                raise CompileError(f"list index must be int but got {it}", e.line)
+                raise CompileError(f"list index must be int but got {it}"
+                                   + (" (/ always gives a float: use intdiv($a, $b))" if it == "float" else ""), e.line)
             self.list_bounds(seq, iv, e.line)
             et = elem_of(st)
             return self.load_elem(self.list_elem_ptr(seq, et, iv), et), et, False
@@ -1201,7 +1203,8 @@ class FuncGen:
             vt = elem_of(st)
             iv, it = self.borrow(e.l.idx)
             if it != "int":
-                raise CompileError(f"list index must be int but got {it}", e.line)
+                raise CompileError(f"list index must be int but got {it}"
+                                   + (" (/ always gives a float: use intdiv($a, $b))" if it == "float" else ""), e.line)
             ln, c = self.tmp(), self.tmp()
             self.emit(f"{ln} = load i64, ptr {seq}, !tbaa !1")
             self.emit(f"{c} = icmp ult i64 {iv}, {ln}")
@@ -1233,6 +1236,9 @@ class FuncGen:
         mark = len(self.temps)
         v, t, owned = self.expr(e, want)
         if want is not None:
+            if t != want and not (t == "int" and want == "float"):
+                raise CompileError(f"both sides of ?: / ?? must have the same type (got {want} and {t}). "
+                                   f"Convert one side, e.g. strval($n) or intval($s)", line)
             v = self.coerce(v, t, want, line, "value")
             t = want
         if t == "string" and not owned:
@@ -1259,7 +1265,8 @@ class FuncGen:
         self.emit(f"br label %{merge}")
         self.place_label(merge)
         if ta != tb:
-            raise CompileError(f"both sides of ?: must have the same type (got {ta} and {tb})", e.line)
+            raise CompileError(f"both sides of ?: must have the same type (got {ta} and {tb}). "
+                               f"Convert one side, e.g. strval($n) or intval($s)", e.line)
         if ta == "void":
             raise CompileError("?: arms cannot be void", e.line)
         r = self.tmp()
@@ -1530,7 +1537,8 @@ class FuncGen:
             if is_list(st):
                 iv, it = self.borrow(key_e)
                 if it != "int":
-                    raise CompileError(f"list index must be int but got {it}", e.line)
+                    raise CompileError(f"list index must be int but got {it}"
+                                   + (" (/ always gives a float: use intdiv($a, $b))" if it == "float" else ""), e.line)
                 ln, c = self.tmp(), self.tmp()
                 self.emit(f"{ln} = load i64, ptr {seq}, !tbaa !1")
                 self.emit(f"{c} = icmp ult i64 {iv}, {ln}")
@@ -1544,7 +1552,8 @@ class FuncGen:
             mname = a.seq.name
             m, mt = self.use_var(mname, e.line)
             if not is_map(mt):
-                raise CompileError(f"unset() works on maps; {mname} is {mt}", e.line)
+                raise CompileError(f"unset() works on maps; {mname} is {mt}. To drop items from a list, "
+                                   f"build a new list without them in a loop", e.line)
             self.check_writable(mname, e.line)
             if mname in self.iterating:
                 raise CompileError(f"cannot change {mname} while a foreach is looping over it", e.line)
@@ -1738,7 +1747,8 @@ class FuncGen:
             lst, _ = self.use_var(name, s.line)
             iv, it = self.borrow(tg.idx)
             if it != "int":
-                raise CompileError(f"list index must be int but got {it}", s.line)
+                raise CompileError(f"list index must be int but got {it}"
+                                   + (" (/ always gives a float: use intdiv($a, $b))" if it == "float" else ""), s.line)
             self.list_bounds(lst, iv, s.line)
             p = self.list_elem_ptr(lst, et, iv)
             if op != "=":
