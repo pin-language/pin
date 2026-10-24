@@ -87,11 +87,9 @@ Changing any of these = change of project direction → ask first.
 - New panics call `die()` (not `exit`) so they become a 500 inside handlers.
 - Add a test for every feature (`tests/*.pn` + expected) and every new compile error (`tests/errors/`).
 
-## Working with the owner
+## Working on this repository
 
-The owner runs PinaTo and mostly uses AI instead of staff. Write to them **in Thai**, plain and short.
-- Act first, then report. Ask only when: irreversible, changes project direction, or needs info only they have.
-- Offer at most 3 options, always say which you recommend and why.
+(Notes about working with the owner are in `CLAUDE.local.md`, which is not committed.)
 - Never claim "first / nobody has done this / no competitor" without searching first.
 - Separate verified facts from guesses. If you change a previous recommendation, say what was wrong.
 - Benchmarks: always verify outputs match across languages, and state the caveats next to the numbers.
