@@ -173,7 +173,7 @@ class Parser:
     def type_(self):
         t = self.cur
         if t.val == "?":
-            raise CompileError("nullable types (?T) are not in this prototype yet", t.line)
+            raise CompileError("nullable types (?T) are not in Pin v0.1 yet (designed: docs/design/null.md)", t.line)
         name = self.eat(kind="IDENT").val
         if name not in TYPE_NAMES:
             raise CompileError(f"unknown type '{name}'", t.line)
@@ -366,7 +366,7 @@ class Parser:
                     raise CompileError("append needs a variable: $a[] = value", t.line)
                 e = Node("append", t.line, seq=e)
             elif t.kind == "OP" and t.val == "-" and self.peek().val == ">":
-                raise CompileError("objects (->) are not in this prototype yet", t.line)
+                raise CompileError("objects (->) are not in Pin v0.1 yet; use a map, e.g. $user[\"name\"]", t.line)
             else:
                 return e
 
@@ -404,7 +404,14 @@ class Parser:
                 self.eat()
                 return Node("bool", t.line, val=t.val == "true")
             if t.val == "null":
-                raise CompileError("null is not in this prototype yet", t.line)
+                raise CompileError("null is not in Pin v0.1 yet (designed: docs/design/null.md); use a value "
+                                   "that means 'none', e.g. -1, \"\" or an empty list", t.line)
+            if t.val in CONSTANTS:
+                self.eat()
+                kind, val = CONSTANTS[t.val]
+                return Node(kind, t.line, val=val)
+            if t.val in NOT_IN_PIN and not (t.val == "list" and self.peek().val == "<"):
+                raise CompileError(NOT_IN_PIN[t.val], t.line)
             self.eat()
             if not self.at("("):
                 raise CompileError(f"unknown name '{t.val}' (variables start with $)", t.line)
@@ -499,6 +506,34 @@ def flatten_concat(e):
         return list(e.parts)
     return [e]
 
+
+# PHP words a newcomer (or an AI trained on PHP) will reach for, and what to do instead in Pin v0.1
+NOT_IN_PIN = {
+    "class": "classes are not in Pin v0.1 yet (designed in docs/design/ownership-v2.md); use functions and maps",
+    "new": "objects are not in Pin v0.1 yet; use functions and maps",
+    "interface": "interfaces are not in Pin v0.1", "trait": "traits are not in Pin v0.1",
+    "enum": "enums are not in Pin v0.1; use int or string constants", "abstract": "classes are not in Pin v0.1",
+    "try": "try/catch is not in Pin v0.1 yet (designed: docs/design/error-handling.md); check values before "
+           "using them, e.g. isset($m[$k]) or $m[$k] ?? default",
+    "catch": "try/catch is not in Pin v0.1 yet", "throw": "throw is not in Pin v0.1 yet; return an error value",
+    "finally": "try/catch is not in Pin v0.1 yet",
+    "switch": "switch is not in Pin; use if / elseif / else", "match": "match is not in Pin; use if / elseif / else",
+    "do": "do/while is not in Pin; use while", "goto": "goto is not in Pin",
+    "include": "a Pin program is one file (no include/require yet)", "require": "a Pin program is one file",
+    "include_once": "a Pin program is one file", "require_once": "a Pin program is one file",
+    "use": "a Pin program is one file (no use/namespace yet)", "namespace": "a Pin program is one file",
+    "global": "Pin has no global variables, by design: pass values as parameters",
+    "static": "Pin has no static variables: pass values as parameters",
+    "const": "const is not in Pin v0.1; use a variable or a function that returns the value",
+    "define": "define() is not in Pin v0.1; use a variable or a function that returns the value",
+    "function": "anonymous functions (closures) are not in Pin v0.1; declare a named function",
+    "fn": "arrow functions are not in Pin v0.1; declare a named function",
+    "array": "array() is not in Pin: write [1, 2] for a list<int> or [\"k\" => 1] for a map<string,int>",
+    "list": "list() destructuring is not in Pin; assign each value separately",
+    "yield": "generators are not in Pin",
+}
+CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
+             "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
@@ -1887,6 +1922,9 @@ class FuncGen:
                 self.free_owned()
                 self.emit("ret void")
             else:
+                if self.flow.live:
+                    raise CompileError(f"{self.name}() can reach its end without returning {'an' if self.ret[0] in 'aeiou' else 'a'} {self.ret}. "
+                                       f"Add a return at the end (or in every branch)", self.line)
                 self.call("void", "@pn_noreturn", f"i32 {self.line}")
                 self.emit("unreachable")
         if self.is_main:

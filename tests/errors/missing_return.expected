@@ -1,0 +1,1 @@
+sign() can reach its end without returning an int. Add a return at the end (or in every branch)

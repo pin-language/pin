@@ -11,3 +11,4 @@ $h = 0;
 foreach ([104, 105] as $c) { $h = wrapping_mul(wrapping_add($h, $c), 1099511628211); }
 echo $h, "\n";
 echo $max + 1, " ", $min - 1, " ", $max * 2, "\n";    // + - * wrap around (not checked yet)
+echo PHP_INT_MAX === $max, " ", PHP_INT_MIN === $min, PHP_EOL;
