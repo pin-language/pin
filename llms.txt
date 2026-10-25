@@ -2,9 +2,10 @@
 
 > Pin is a small statically typed language with PHP 8 syntax, compiled to native code through LLVM, with
 > compile-time ownership instead of a garbage collector. It is meant to be written by AI coding agents.
-> Version 0.6 (preview, not for production). Not everything from PHP exists: read the AI guide before writing Pin.
+> Version 0.7 (preview, not for production). Not everything from PHP exists: read the AI guide before writing Pin.
 
-Has: functions; throws/try/catch errors; classes (no inheritance) with methods and & parameters; int, float, bool, string; list<T> and
+Has: functions; go/await tasks, a Hub for messages between requests, Server-Sent Events, an http://
+client and run(); throws/try/catch errors; classes (no inheritance) with methods and & parameters; int, float, bool, string; list<T> and
 ordered map<K,V>, nested freely; ownership checks; a multi-threaded
 JSON HTTP server (serve) with query/form/JSON-body helpers; SQLite (db_*) where SQL injection does not compile;
 modules (import/export, module::fn()); Git packages (pin get, pin.lock with sha256).
@@ -12,7 +13,7 @@ Not yet: inheritance/interfaces, null, finally, closures, default parameter valu
 
 - [AI guide](https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md): the complete language on one page — rules, idioms, PHP → Pin table, error → fix table
 - [Built-in reference](https://github.com/pin-language/docs/blob/HEAD/reference/README.md): every function with a tested example
-- [Learn Pin](https://github.com/pin-language/docs/blob/HEAD/learn/README.md): 13 short chapters for people
+- [Learn Pin](https://github.com/pin-language/docs/blob/HEAD/learn/README.md): 14 short chapters for people
 - [Language guide](https://github.com/pin-language/docs/blob/HEAD/language.md): the same language explained for people
 - [Examples](examples/): runnable programs, including JSON APIs with and without SQLite
 - Tooling: `pin check --json FILE.pn` (one JSON error per line), `pin FILE.pn` (compile and run), `pin build FILE.pn -o OUT`, `pin get HOST/OWNER/REPO@VERSION`

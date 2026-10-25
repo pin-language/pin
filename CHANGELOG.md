@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.0 — 2026-10-25
+
+Tasks and real time (design: concurrency.md): a program can wait for several things at once, and requests
+can talk to each other — what an agent board needs to wake agents without polling.
+
+- `go f(...)` / `await` / `await_all` / `await_timeout`, `Task<T>`, `sleep_ms`. Green threads with their own
+  stacks (guard page), switched in assembly; a task runs only on the thread that started it, so tasks cannot
+  race. Checked when compiling: every task is awaited before its function returns; its arguments cannot
+  change until then; `&` arguments are exclusive.
+- Every server request runs as a task: a handler that waits no longer blocks the others on its thread (3 ms
+  answers while another request waits). A panic in any task of a request answers 500 and frees all of them.
+- Hub: `hub_publish`, `hub_subscribe`, `hub_resume` (the last 100 messages per topic), `hub_next` (time limit
+  required), `hub_last_id` — across worker threads; slow readers are dropped instead of growing memory.
+- Server-Sent Events from a handler: `sse_start`, `sse_send`, `sse_send_id`, `sse_comment`; a client that
+  leaves cancels its request (499); reconnecting with `Last-Event-ID` resumes.
+- Calling out (http:// only — TLS later): `http_get`, `http_post`, `http_stream` + `stream_next` /
+  `stream_last_id`; `run($program, $args, $ms)` starts a program with no shell (nothing can be injected).
+- PHP's `sleep`, `usleep`, `exec`, `shell_exec`, `proc_open`, `curl_init`, `file_get_contents` point to the new
+  functions. Docs: Learn chapter 14, the AI guide's Tasks section, the language guide, three reference pages.
+- Fixed while building: a request with no header lines at all made the server try to allocate a huge block
+  (new code only; 0.6 was not affected).
+- HTTP throughput about the same as 0.6 (Linux container, wrk; run-to-run spread larger than the difference).
+
 ## 0.6.0 — 2026-10-25
 
 Errors you expect (`throws` / `try` / `catch`), and an HTTP server that reads headers and protects itself.

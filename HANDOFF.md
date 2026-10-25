@@ -1,4 +1,4 @@
-# HANDOFF — state as of 2026-10-25 (v0.6.0, released)
+# HANDOFF — state as of 2026-10-25 (v0.7.0)
 
 **Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
 `ai-guide.md` (pin-language/docs) complete and correct for every release: it is what agents read. Error messages should
@@ -101,7 +101,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | B6 | `maplit` key type comes from a heuristic `expr_type_probe` | `pinac.py` | low |
 | B8 | `.ll` files are written next to sources | `pinac.py main()` | cosmetic |
 | B9 | `+ - *` wrap silently (overflow panics removed for speed until check elision exists, int-overflow.md O3) | codegen | correctness |
-| B10 | Request-block tracking is per thread. When `go`/`await` arrives, tasks must use the request's list (or their own) — revisit then | `runtime.c` allocator | design |
+| B10 | ~~per-thread request blocks~~ done: `struct Req` per request, `cur_req` follows the running task | `runtime.c` | done |
 | B11 | Panic outside a request still `exit(1)` (correct for CLI programs) | runtime | by design |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int
@@ -131,7 +131,10 @@ overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
 7. ~~SQLite~~ done in 0.3.0 (`db_*`, literal-SQL rule, resources closed on panic). **PostgreSQL next**
    (owner, 2026-10-24: "SQLite first, then PostgreSQL") with the same `db_*` functions; then a full
    `json_decode`.
-8. **Concurrency** (concurrency.md) — needs 1, 2 and the request allocator (B10).
+8. ~~Concurrency~~ done in 0.7.0 (C1–C11; see concurrency.md status for what differs). Runtime: tasks +
+   scheduler + timer heap + wait_fds in runtime.c ("tasks"), Hub ("hub"), client ("HTTP client and run()").
+   Compiler: go_expr / await_expr / tasks_done / task_borrows in pinac.py. Next ideas: TLS (decide), loop-head
+   cancellation checks, stack-overflow → panic message, durable await (research first).
 9. ~~Modules/imports~~ done in 0.4.0: `import`/`export`/`mod::fn()`, packages via `pin get` + `pin.lock`
    (commit + sha256, checked every build). Not yet: transitive package resolution (a package's own package
    imports must be `pin get`-ed by the project), package versions by semver ranges, a package index.

@@ -14,7 +14,7 @@ LLVM into a single native binary, including a multi-threaded HTTP server.
 > **AI agents:** read [the AI guide](https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md) before
 > writing Pin — it is the complete language on one page — and loop on `pin check --json`. See also [AGENTS.md](AGENTS.md).
 
-> **Status: preview (0.6) for early testers.** The language is small and still changing. Do not use it
+> **Status: preview (0.7) for early testers.** The language is small and still changing. Do not use it
 > in production. Its HTTP server has timeouts and limits but no TLS: put a reverse proxy in front of it.
 > 🇹🇭 ภาษาไทย: [README.th.md](README.th.md)
 
@@ -96,7 +96,7 @@ Messages are written for agents trained on PHP: reaching for `extends`, `finally
 `cd ~/.pin/editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.5.0.vsix`.
 
 Start with [`examples/`](examples/) (installed in `~/.pin/examples`): `hello`, `fizzbuzz`, `wordcount`, `ownership`, `primes`, and
-`api` (a small JSON server). New to Pin? [Learn Pin](https://github.com/pin-language/docs/blob/HEAD/learn/README.md) — thirteen short chapters.
+`api` (a small JSON server). New to Pin? [Learn Pin](https://github.com/pin-language/docs/blob/HEAD/learn/README.md) — fourteen short chapters.
 Every built-in function with examples: the [reference](https://github.com/pin-language/docs/blob/HEAD/reference/README.md).
 The full guide is the [language guide](https://github.com/pin-language/docs/blob/HEAD/language.md);
 all documentation lives in [pin-language/docs](https://github.com/pin-language/docs).

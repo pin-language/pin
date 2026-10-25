@@ -491,7 +491,8 @@ class Parser:
         if e.kind == "go":
             raise CompileError("a task started with go must be awaited: $t = go f(...); ... await $t;", t.line)
         if e.kind not in ("call", "mcall", "try", "new", "await"):
-            raise CompileError("this expression does nothing on its own", t.line)
+            raise CompileError("this expression does nothing on its own. (In a catch block, the value it gives must be "
+                               "its last line, outside any if: catch ($e) { if (...) { return ...; } \"\"; })", t.line)
         return Node("exprstmt", t.line, expr=e)
 
     # lowest precedence first. PHP 8: '.' binds looser than + - but tighter than comparisons
@@ -4516,7 +4517,7 @@ def pin_get(spec):
     return 0
 
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 

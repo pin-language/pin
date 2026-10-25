@@ -200,8 +200,10 @@ static int64_t checked_add(int64_t a, int64_t b) {
 #  define PN_ASAN 1
 #endif
 #ifdef PN_ASAN
-#include <sanitizer/common_interface_defs.h>
-#include <sanitizer/asan_interface.h>
+// declared here: some clang packages (Debian) ship the sanitizer runtime but not its headers
+void __sanitizer_start_switch_fiber(void **fake_stack_save, const void *bottom, size_t size);
+void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_old, size_t *size_old);
+void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 #endif
 
 typedef struct { int64_t len, cap; void *data; } List;
@@ -692,7 +694,7 @@ int pn_run_main(int (*body)(void)) {
     Task *m = task_spawn(main_task, NULL, MAIN_STACK);
     for (;;) {
         run_ready();
-        if (m->state == T_DONE) return main_code;
+        if (m->state == T_DONE) { task_release(m); return main_code; }
         int64_t wait = timers_fire(now_ms());
         if (ready_head) continue;
         if (wait < 0 && !hub_has_subscribers() && !main_nwaits) {
