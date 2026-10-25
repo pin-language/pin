@@ -2,8 +2,11 @@
 
 ## 0. Next session (updated 2026-10-26, after the overnight run on the prerequisites)
 
-**Tack M1 can start** (design: pin-language/docs `design/tack.md`, branch `next` there). The owner creates the
-repository `pin-language/tack`; Claude pushes to it. Built overnight on `next` (pin and docs), CI green on Linux
+**Tack M1 is built** (2026-10-26): github.com/pin-language/tack, branch `next` (its default: the first push;
+the repository is **private**), local clone ../pin-tack. `tack` command (Python: reads routes/ with pinac's
+parser, writes the dispatcher as Pin), package `tack.pn`, `examples/shop`, `tests/run.py` (13 checks), CI on
+Linux and macOS against pin's `next`. Design and M1 decisions: docs `design/tack.md`. Next for Tack: M2
+(OpenAPI from the route types) or M3 (guards + auth on the P5 built-ins) — ask the owner which first. Built overnight on `next` (pin and docs), CI green on Linux
 and macOS for each push, ASAN suite (`run_tests.py --sanitize`) 216/216, not released:
 
 | P | what | state |
