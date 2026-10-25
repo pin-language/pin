@@ -450,6 +450,9 @@ class Parser:
             if t.val == "function":
                 raise CompileError("functions must be declared at the top level", t.line)
         s = self.simple()
+        if not self.at(";") and s.kind == "assign" and s.val.kind == "try" and getattr(s.val, "catch", False):
+            raise CompileError("a try ... catch that gives a value is an expression, so it ends with ; after its "
+                               "closing brace: $x = try f() catch ($e) { ...; } ;", self.cur.line)
         self.eat(";")
         return s
 
