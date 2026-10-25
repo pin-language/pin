@@ -41,7 +41,7 @@ TOKEN_RE = re.compile(r"""
   (?P<NL>\n)
  |(?P<WS>[ \t\r]+)
  |(?P<COMMENT>//[^\n]*|\#[^\n]*|/\*(?:.|\n)*?\*/)
- |(?P<OPEN><\?php)
+ |(?P<OPEN><\?(?:php|pin)?|\?>\s*\Z)
  |(?P<FLOAT>\d+\.\d+(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)
  |(?P<INT>\d+)
  |(?P<STRING>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')
