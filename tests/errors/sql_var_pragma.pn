@@ -1,0 +1,3 @@
+$db = db_open(":memory:");
+$s = "PRAGMA foreign_keys = OFF";
+db_exec($db, $s, []);

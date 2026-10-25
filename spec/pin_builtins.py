@@ -588,6 +588,12 @@ echo try run("sh", ["-c", "exit 3"], 2000) catch ($e) { "exit code " . $e->code;
 
 # ----------------------------------------------------------------------------------------- security
 SEC = "security"
+f("env", SEC, "env(string $name): string", "An environment variable, or `\"\"` when it is not set.",
+  r'''echo env("PIN_SURELY_NOT_SET") == "" ? "not set\n" : "set\n";''',
+  ["Read secrets from here (database URLs, API keys, signing keys), never from string literals: literals end "
+   "up in git and in the binary.",
+   "Read once per request is fine (it is cheap); a name containing a zero byte gives `\"\"`."],
+  php="`getenv('NAME')`, but `\"\"` instead of `false` when unset.")
 f("hash", SEC, 'hash(string $algo, string $data): string', "SHA-256 of a string, as 64 lowercase hex characters.",
   r'''echo hash("sha256", "abc"), "\n";''',
   ['`$algo` must be the literal `"sha256"`: MD5 and SHA-1 are broken, so they do not compile.',

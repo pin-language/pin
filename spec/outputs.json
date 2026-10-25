@@ -70,6 +70,7 @@
  "hub_next": "error 504\n",
  "hub_last_id": "b has id 2\n",
  "run": "hello world; rm -rf /\nexit code 3\n",
+ "env": "not set\n",
  "hash": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n",
  "hash_hmac": "64 valid\n",
  "hash_equals": "same differ\n",

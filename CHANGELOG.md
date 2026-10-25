@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **SQL from literals in a variable** (postgres.md G6): `$sql = "SELECT ... WHERE 1 = 1"; if ($q != "") { $sql .=
+  " AND name = ?"; $ps[] = $q; }` now compiles — a variable whose every write is literal pieces is accepted as SQL,
+  so search endpoints with optional filters and sorting need no SQL injection risk. Anything else still does not
+  compile, and the connection rule (K4) checks the variable's pieces too.
+- `env("NAME")`: an environment variable (`""` when unset), for secrets like database URLs.
 - **Parameter defaults** (P3, first half): `function page(string $q, int $limit = 20)`; literals only, last in the
   list, not on `&` parameters; works for functions, methods, constructors and `go`. In `json_decode()` a
   constructor parameter with a default is an optional field.

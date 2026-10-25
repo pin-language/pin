@@ -958,6 +958,7 @@ PHP_FUNCTION_HINTS = {
     "uniqid": "random_token(16) (uniqid is predictable; this is not)",
     "md5": "hash(\"sha256\", $s): MD5 is broken", "sha1": "hash(\"sha256\", $s): SHA-1 is broken",
     "crypt": "password_hash($password) / password_verify($password, $hash)",
+    "getenv": "env(\"NAME\") reads an environment variable (\"\" when it is not set)",
     "time": "no clock yet",
     "date": "no dates yet", "microtime": "no clock yet", "exit": "return from the top level instead",
     "die": "return from the top level instead",
@@ -1006,7 +1007,7 @@ BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_po
             "url_path", "query_param", "form_param", "query_has", "form_has", "floatval", "json_has",
             "db_open", "db_exec", "db_query", "db_json", "db_next", "db_int", "db_float", "db_string",
             "db_is_null", "db_last_id", "db_error", "db_pool", "hash", "hash_hmac", "hash_equals", "random_token",
-            "random_int", "password_hash", "password_verify", "json_decode", "__jd_doc", "__jd_object", "__jd_field",
+            "random_int", "password_hash", "password_verify", "env", "json_decode", "__jd_doc", "__jd_object", "__jd_field",
             "__jd_int", "__jd_float", "__jd_bool", "__jd_string", "__jd_first", "__jd_next", "__jd_mfirst",
             "__jd_key", "__jd_val", "__jd_mnext", "__jd_has", "json_string", "json_int", "json_float",
             "json_bool"}
@@ -1043,6 +1044,7 @@ declare i64 @pn_jd_val(ptr, i64)
 declare i64 @pn_jd_mnext(ptr, i64)
 declare i64 @pn_jd_has(ptr, i64, ptr)
 declare ptr @pn_hash_sha256(ptr)
+declare ptr @pn_env(ptr)
 declare ptr @pn_hash_hmac_sha256(ptr, ptr)
 declare i64 @pn_hash_equals(ptr, ptr)
 declare ptr @pn_random_token(i64)
@@ -1639,6 +1641,7 @@ class FuncGen:
                     elif st.kind == "decl":
                         x.kills.setdefault(st.name, []).append(st.order)
         walk(nodes)
+        self.trusted_sql = trusted_sql_vars(nodes, [n for _, n, _ in self.params])
 
     def live_use(self, name, at):
         """Line of a read of `name` that can happen after point `at`, or None."""
@@ -2785,16 +2788,30 @@ class FuncGen:
     def sql_arg(self, e):
         """The SQL must be written in the program; values go through ? placeholders. That rules out SQL
         injection: nothing a client sends can become part of the SQL text."""
+        trusted = getattr(self, "trusted_sql", set())
+
         def literal(n):
-            return n.kind == "str" or (n.kind == "bin" and n.op == "." and literal(n.l) and literal(n.r))
+            return n.kind == "str" or (n.kind == "var" and n.name in trusted) or \
+                (n.kind == "bin" and n.op == "." and literal(n.l) and literal(n.r))
         if not literal(e.args[1]):
             raise CompileError(
-                f"{e.name}(): write the SQL as a string literal in the code and pass values with ? placeholders, "
-                f'e.g. {e.name}($db, "SELECT * FROM t WHERE id = ?", [strval($id)]). SQL built from variables could '
-                f"let a client inject SQL", e.line)
-        def text(n):
-            return n.val if n.kind == "str" else text(n.l) + text(n.r)
-        why = session_sql(text(e.args[1]))
+                f"{e.name}(): write the SQL as string literals in the code and pass values with ? placeholders, "
+                f'e.g. {e.name}($db, "SELECT * FROM t WHERE id = ?", [strval($id)]). A variable works too when it is '
+                f'built only from literals: $sql = "SELECT ..."; if ($sort == "qty") {{ $sql .= " ORDER BY qty"; }}. '
+                f"SQL built from other values could let a client inject SQL", e.line)
+
+        def text(n):                            # the literal text; a variable's pieces are checked one by one below
+            if n.kind == "str":
+                return n.val
+            if n.kind == "var":
+                return ""
+            return text(n.l) + text(n.r)
+
+        def var_pieces(n):
+            if n.kind == "var":
+                return trusted[n.name]
+            return var_pieces(n.l) + var_pieces(n.r) if n.kind == "bin" else []
+        why = session_sql(text(e.args[1])) or next(filter(None, map(session_sql, var_pieces(e.args[1]))), None)
         if why:
             raise CompileError(f"{e.name}(): {why} changes the connection itself, and connections are reused by "
                                f"later requests (design/pool.md K4). Pin sets every connection up the same way "
@@ -3161,6 +3178,9 @@ class FuncGen:
                 return self.call("ptr", "@pn_hash_sha256", f"ptr {self.str_arg(e, 1)}"), "string", True
             return self.call("ptr", "@pn_hash_hmac_sha256", f"ptr {self.str_arg(e, 1)}",
                              f"ptr {self.str_arg(e, 2)}"), "string", True
+        if name == "env":
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_env", f"ptr {self.str_arg(e, 0)}"), "string", True
         if name == "hash_equals":
             self.argc(e, 2)
             return self.i64_to_bool(self.call("i64", "@pn_hash_equals", f"ptr {self.str_arg(e, 0)}",
@@ -4926,6 +4946,60 @@ PRAGMA_OK = {"table_info", "table_xinfo", "table_list", "index_info", "index_xin
              "foreign_key_list", "foreign_key_check", "integrity_check", "quick_check", "user_version",
              "application_id", "auto_vacuum", "incremental_vacuum", "page_size", "wal_checkpoint",
              "optimize", "data_version", "schema_version", "freelist_count", "page_count"}
+
+
+def trusted_sql_vars(body, params):
+    """Variables whose every value is built from string literals only (postgres.md G6): every write to them is
+    `= <literal pieces>` or `.= <literal pieces>`, where a piece is a string literal or another such variable.
+    They may be passed to db_* as SQL: nothing a client sends can be part of their text. Flow-insensitive (all
+    writes in the function count), which is simple and sound."""
+    writes = {}
+
+    def scan(x):
+        if isinstance(x, (list, tuple)):
+            for y in x:
+                scan(y)
+            return
+        if not isinstance(x, Node):
+            return
+        if x.kind == "assign" and x.target.kind == "var":
+            writes.setdefault(x.target.name, []).append((x.op, x.val))
+        elif x.kind == "decl":
+            writes.setdefault(x.name, []).append(("=", x.val) if x.val is not None else None)
+        elif x.kind == "foreach":
+            for n in (x.key, x.var):
+                if n:
+                    writes.setdefault(n, []).append(None)
+        elif x.kind in ("try", "trystmt") and getattr(x, "var", None):
+            writes.setdefault(x.var, []).append(None)
+        elif x.kind == "ref" and x.e.kind == "var":
+            writes.setdefault(x.e.name, []).append(None)
+        for k, v in x.__dict__.items():
+            if k not in ("kind", "line", "order", "first", "kills"):
+                scan(v)
+    scan(body)
+    for p in params:
+        writes.setdefault(p, []).append(None)
+    trusted = {n for n, ws in writes.items() if all(w is not None and w[0] in ("=", ".=") for w in ws)}
+
+    def pieces_ok(e, ok):
+        if e.kind == "str":
+            return True
+        if e.kind == "bin" and e.op == ".":
+            return pieces_ok(e.l, ok) and pieces_ok(e.r, ok)
+        return e.kind == "var" and e.name in ok
+
+    while True:                                 # drop variables with a non-literal piece until nothing changes
+        keep = {n for n in trusted if all(pieces_ok(v, trusted) for _, v in writes[n])}
+        if keep == trusted:
+            break
+        trusted = keep
+
+    def lits(e):
+        if e.kind == "str":
+            return [e.val]
+        return lits(e.l) + lits(e.r) if e.kind == "bin" else []
+    return {n: [t for _, v in writes[n] for t in lits(v)] for n in trusted}
 
 
 def session_sql(sql):

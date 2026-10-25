@@ -329,3 +329,9 @@ void pn_print_float(double v) {
     fmt_float(buf, sizeof buf, v);
     fputs(buf, stdout);
 }
+
+// env("NAME"): an environment variable, "" when unset — for secrets like DATABASE_URL that must not be in source.
+Str *pn_env(Str *name) {
+    const char *v = memchr(name->data, 0, (size_t)name->len) ? NULL : getenv(name->data);
+    return v ? str_from(v, (int64_t)strlen(v)) : str_alloc(0);
+}

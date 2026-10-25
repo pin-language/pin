@@ -11,3 +11,18 @@ while (db_next($rows)) {
 echo db_json($db, "SELECT * FROM orders", []), "\n";
 echo db_exec($db, "UPDATE orders SET qty = qty + 1", []), "\n";
 echo db_json($db, "SELECT count(*) AS n, sum(qty) AS total FROM orders WHERE item = " . "?", ["tea"]), "\n";
+
+// SQL built only from literals may go through a variable (postgres.md G6): optional filters without injection
+function search(db $db, string $name, int $min, string $sort): string {
+    $sql = "SELECT name, qty FROM items WHERE 1 = 1";
+    list<string> $ps = [];
+    if ($name != "") { $sql .= " AND name = ?"; $ps[] = $name; }
+    if ($min > 0) { $sql = $sql . " AND qty >= ?"; $ps[] = strval($min); }
+    $order = " ORDER BY name";
+    if ($sort == "qty") { $order = " ORDER BY qty DESC"; }
+    return db_json($db, $sql . $order, $ps);
+}
+$sdb = db_open(":memory:");
+db_exec($sdb, "CREATE TABLE items (name TEXT, qty INTEGER)", []);
+db_exec($sdb, "INSERT INTO items VALUES ('tea', 2), ('cake', 5), ('coffee', 9)", []);
+echo search($sdb, "", 0, ""), "\n", search($sdb, "", 3, "qty"), "\n", search($sdb, "x' OR '1'='1", 0, ""), "\n";

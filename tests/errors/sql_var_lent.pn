@@ -1,0 +1,5 @@
+function change(string &$s): void { $s = "x"; }
+$db = db_open(":memory:");
+$q = "SELECT 1";
+change(&$q);
+echo db_json($db, $q, []);
