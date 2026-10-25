@@ -68,5 +68,12 @@
  "hub_resume": "two\n",
  "hub_next": "error 504\n",
  "hub_last_id": "b has id 2\n",
- "run": "hello world; rm -rf /\nexit code 3\n"
+ "run": "hello world; rm -rf /\nexit code 3\n",
+ "hash": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n",
+ "hash_hmac": "64 valid\n",
+ "hash_equals": "same differ\n",
+ "random_token": "32\n",
+ "random_int": "a dice roll\n",
+ "password_hash": "$pbkdf2-sha256$600000$...\n",
+ "password_verify": "yes no\n"
 }

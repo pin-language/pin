@@ -3,6 +3,7 @@
 //   core.c     allocation, requests, resources, panics
 //   tasks.c    green threads, scheduler, timers, go / await
 //   values.c   lists, strings, maps, JSON, objects
+//   crypto.c   sha256, HMAC, password hashing, secure random numbers
 //   request.c  query / form / JSON helpers, printing
 //   hub.c      messages between requests, await_timeout
 //   server.c   the HTTP server, headers, limits, SSE
@@ -11,6 +12,7 @@
 #include "runtime/core.c"
 #include "runtime/tasks.c"
 #include "runtime/values.c"
+#include "runtime/crypto.c"
 #include "runtime/request.c"
 #include "runtime/hub.c"
 #include "runtime/server.c"

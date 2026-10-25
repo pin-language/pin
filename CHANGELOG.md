@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Security built-ins** (P5): `hash("sha256", $s)`, `hash_hmac("sha256", $data, $key)`, `hash_equals()` (constant
+  time), `random_token($bytes)` (hex), `random_int($min, $max)` (OS randomness, no bias), `password_hash()` /
+  `password_verify()` (PBKDF2-HMAC-SHA256, 600,000 rounds, random salt). SHA-256 / HMAC / PBKDF2 are written in
+  `runtime/crypto.c` (no new library) and checked against NIST, RFC 4231 and RFC 7914 vectors. Known cost:
+  ~0.5 s per password hash on an M2 (OpenSSL with hardware SHA: 0.06 s) — hardware instructions later.
+  `md5`, `sha1`, `rand`, `mt_rand`, `random_bytes`, `uniqid` and `PASSWORD_DEFAULT` now say what to write instead.
 - **Connection pool** (pin-language/docs design/pool.md, P1): `db_open()` takes a connection from a pool the
   runtime keeps per server thread, and the end of `$db`'s scope gives it back — clean only (an open transaction
   is rolled back; after a panic or a cancelled request it is closed). Same programs, ~7× more requests per

@@ -711,6 +711,9 @@ class Parser:
                 self.eat()
                 module, t = t.val, self.eat(kind="IDENT")
             if not self.at("("):
+                if t.val.startswith("PASSWORD_"):
+                    raise CompileError(f"no {t.val} in Pin: password_hash($password) takes one argument (the "
+                                       f"algorithm is always PBKDF2-SHA256)", t.line)
                 raise CompileError(f"unknown name '{t.val}' (variables start with $)", t.line)
             return Node("call", t.line, name=t.val, args=self.args(), module=module)
         if t.kind == "OP" and t.val == "(":
@@ -942,7 +945,14 @@ PHP_FUNCTION_HINTS = {
     "usleep": "sleep_ms($milliseconds) waits without blocking other tasks",
     "sleep": "sleep_ms($milliseconds): Pin counts milliseconds (sleep_ms(1000) is one second) and does not block "
              "other tasks",
-    "rand": "no random numbers yet", "mt_rand": "no random numbers yet", "time": "no clock yet",
+    "rand": "random_int($min, $max) (from the system's secure random source)",
+    "mt_rand": "random_int($min, $max) (from the system's secure random source)",
+    "random_bytes": "random_token($bytes) gives that many random bytes as hex text (bin2hex(random_bytes(n)))",
+    "bin2hex": "random_token($bytes) for random hex; hash(\"sha256\", $s) returns hex already",
+    "uniqid": "random_token(16) (uniqid is predictable; this is not)",
+    "md5": "hash(\"sha256\", $s): MD5 is broken", "sha1": "hash(\"sha256\", $s): SHA-1 is broken",
+    "crypt": "password_hash($password) / password_verify($password, $hash)",
+    "time": "no clock yet",
     "date": "no dates yet", "microtime": "no clock yet", "exit": "return from the top level instead",
     "die": "return from the top level instead",
     "header": "response_header(\"Name\", \"value\") adds a response header; http_status() sets the status",
@@ -989,7 +999,8 @@ BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_po
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
             "url_path", "query_param", "form_param", "query_has", "form_has", "floatval", "json_has",
             "db_open", "db_exec", "db_query", "db_json", "db_next", "db_int", "db_float", "db_string",
-            "db_is_null", "db_last_id", "db_error", "db_pool", "json_string", "json_int", "json_float",
+            "db_is_null", "db_last_id", "db_error", "db_pool", "hash", "hash_hmac", "hash_equals", "random_token",
+            "random_int", "password_hash", "password_verify", "json_string", "json_int", "json_float",
             "json_bool"}
 
 RUNTIME_DECLS = """
@@ -1009,6 +1020,13 @@ declare ptr @pn_query_param(ptr, ptr)
 declare ptr @pn_form_param(ptr, ptr)
 declare i64 @pn_jget_has(ptr, ptr)
 declare ptr @pn_db_open(ptr)
+declare ptr @pn_hash_sha256(ptr)
+declare ptr @pn_hash_hmac_sha256(ptr, ptr)
+declare i64 @pn_hash_equals(ptr, ptr)
+declare ptr @pn_random_token(i64)
+declare i64 @pn_random_int(i64, i64)
+declare ptr @pn_password_hash(ptr)
+declare i64 @pn_password_verify(ptr, ptr)
 declare void @pn_db_pool(ptr, i64, i64)
 declare void @pn_db_close(ptr)
 declare void @pn_rows_free(ptr)
@@ -3051,6 +3069,35 @@ class FuncGen:
             r = self.tmp()
             self.emit(f"{r} = load i64, ptr {v}" + (", !tbaa !1" if is_list(t) else ""))
             return r, "int", False
+        if name in ("hash", "hash_hmac"):
+            self.argc(e, 2 if name == "hash" else 3)
+            if args[0].kind != "str" or args[0].val != "sha256":
+                raise CompileError(f'{name}(): Pin has only "sha256" (MD5 and SHA-1 are broken): '
+                                   f'{name}("sha256", ...)', e.line)
+            if name == "hash":
+                return self.call("ptr", "@pn_hash_sha256", f"ptr {self.str_arg(e, 1)}"), "string", True
+            return self.call("ptr", "@pn_hash_hmac_sha256", f"ptr {self.str_arg(e, 1)}",
+                             f"ptr {self.str_arg(e, 2)}"), "string", True
+        if name == "hash_equals":
+            self.argc(e, 2)
+            return self.i64_to_bool(self.call("i64", "@pn_hash_equals", f"ptr {self.str_arg(e, 0)}",
+                                              f"ptr {self.str_arg(e, 1)}")), "bool", False
+        if name == "random_token":
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_random_token", f"i64 {self.int_arg(e, 0)}"), "string", True
+        if name == "random_int":
+            self.argc(e, 2)
+            return self.call("i64", "@pn_random_int", f"i64 {self.int_arg(e, 0)}", f"i64 {self.int_arg(e, 1)}"), "int", False
+        if name == "password_hash":
+            if len(args) == 2:
+                raise CompileError("password_hash($password) takes one argument in Pin: the algorithm is always "
+                                   "PBKDF2-SHA256 (no PASSWORD_DEFAULT needed)", e.line)
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_password_hash", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "password_verify":
+            self.argc(e, 2)
+            return self.i64_to_bool(self.call("i64", "@pn_password_verify", f"ptr {self.str_arg(e, 0)}",
+                                              f"ptr {self.str_arg(e, 1)}")), "bool", False
         if name == "strlen":
             self.argc(e, 1)
             v = self.str_arg(e, 0)
