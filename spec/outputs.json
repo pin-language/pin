@@ -57,5 +57,11 @@
  "db_error": "refused: UNIQUE constraint failed: items.name\n",
  "error": "user7\nfailed with 400: bad id -1\n",
  "sleep_ms": "first second\n",
- "await_all": "[1,4,9,16]\n"
+ "await_all": "[1,4,9,16]\n",
+ "await_timeout": "5 504\n",
+ "hub_publish": "{\"id\":7}\n",
+ "hub_subscribe": "hi hi\n",
+ "hub_resume": "two\n",
+ "hub_next": "error 504\n",
+ "hub_last_id": "b has id 2\n"
 }

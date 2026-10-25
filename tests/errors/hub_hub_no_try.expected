@@ -1,0 +1,1 @@
+hub_next() can fail. Write try hub_next(...), or handle the error: try hub_next(...) catch ($e) { ... }

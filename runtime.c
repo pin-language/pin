@@ -57,6 +57,8 @@ typedef struct Req {
     int panicked;                       // a task of this request panicked: the whole request answers 500
     struct Task *root;                  // the handler's task
     struct Task *tasks;                 // every live task of the request (linked through req_next)
+    int cancelled;                      // the client is gone (a stream's connection closed)
+    void *conn;                         // its connection (Conn *), for sse_*
 } Req;
 
 static __thread Req *cur_req;           // the request of the running task (NULL outside requests)
@@ -188,6 +190,7 @@ static int64_t checked_add(int64_t a, int64_t b) {
 // and in the server every request is one. Switching is a few loads and stores (pn_ctx_switch below).
 
 #include <sys/mman.h>
+#include <poll.h>
 #if defined(__has_feature)
 #  if __has_feature(address_sanitizer)
 #    define PN_ASAN 1
@@ -208,7 +211,8 @@ typedef struct Task {
     void *sp;                           // saved stack pointer while it is not running
     char *map; size_t map_size;         // the mapping: guard page + stack
     void (*fn)(void *); void *arg;
-    int state, panicked, auto_release, queued, zombie;
+    int state, panicked, auto_release, queued, zombie, cancelled;
+    struct Sub *waiting_sub;            // waiting in hub_next() for this subscription
     Req *req; jmp_buf *jmp;             // cur_req / cur_jmp while it runs
     struct Task *next_ready;
     struct Task *waiter;                // a task waiting in pn_await for this one
@@ -346,6 +350,7 @@ static Task *task_spawn(void (*fn)(void *), void *arg, size_t stack) {
     Task *t = task_alloc(stack);
     t->fn = fn; t->arg = arg;
     t->req = cur_req;
+    t->cancelled = cur_task ? cur_task->cancelled : 0;   // started by a cancelled task: cancelled too
     if (t->req) {                               // a task belongs to the request it was started in
         t->req_next = t->req->tasks;
         if (t->req_next) t->req_next->req_prev = t;
@@ -500,9 +505,52 @@ static void req_kill_tasks(Req *r) {
     }
 }
 
+// --- cancellation (cooperative: a cancelled task stops waiting; its next wait returns at once)
+static int cancelled_now(void) { return cur_task && (cur_task->cancelled || (cur_req && cur_req->cancelled)); }
+
+static void hub_forget_waiter(Task *t);
+
+static void wake_waiting(Task *t) {             // end whatever wait t is in (it will see it is cancelled)
+    if (t->state != T_WAITING || t->awaiting) return;   // awaiting another task: that one is woken instead
+    heap_remove(t);
+    if (t->waiting_sub) hub_forget_waiter(t);
+    make_ready(t);
+}
+
+static void task_cancel(Task *t) {
+    t->cancelled = 1;
+    if (t->awaiting) task_cancel(t->awaiting);  // and what it is waiting for
+    else wake_waiting(t);
+}
+
+// --- waking a thread from another one (Hub messages): a pipe the thread's loop also polls
+typedef struct Sched {
+    pthread_mutex_t mu;
+    struct Sub *inbox;                  // subscriptions with news for this thread (owner->mu)
+    int rd, wr;
+} Sched;
+static __thread Sched *my_sched;
+
+static Sched *sched_self(void) {
+    if (!my_sched) {
+        Sched *sc = calloc(1, sizeof *sc);
+        int fds[2];
+        if (!sc || pipe(fds) < 0) oom();
+        fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK);
+        fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL) | O_NONBLOCK);
+        pthread_mutex_init(&sc->mu, NULL);
+        sc->rd = fds[0]; sc->wr = fds[1];
+        my_sched = sc;
+    }
+    return my_sched;
+}
+
+static void hub_drain(void);                    // after the pipe said there is news
+
 // --- the built-ins
 void pn_sleep(int64_t ms) {
     if (!cur_task) { struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000}; if (ms > 0) nanosleep(&ts, NULL); return; }
+    if (cancelled_now()) return;
     if (ms <= 0) { make_ready(cur_task); cur_task->state = T_READY; leave_task(0); if (cur_req && cur_req->panicked) die(); return; }
     cur_task->wake_at = now_ms() + ms;
     heap_push(cur_task);
@@ -557,6 +605,8 @@ List *pn_await_all(List *tasks, int64_t esize, void (*free_res)(void *), void (*
     return out;
 }
 
+static int hub_has_subscribers(void);
+
 // The program's main runs as the first task, so it can await and sleep like any other.
 static int (*main_body)(void);
 static int main_code;
@@ -570,13 +620,14 @@ int pn_run_main(int (*body)(void)) {
         if (m->state == T_DONE) return main_code;
         int64_t wait = timers_fire(now_ms());
         if (ready_head) continue;
-        if (wait < 0) {
+        if (wait < 0 && !hub_has_subscribers()) {
             fflush(stdout);
             fprintf(stderr, "panic: every task is waiting and nothing can wake them (deadlock)\n");
             exit(1);
         }
-        struct timespec ts = {wait / 1000, (long)(wait % 1000) * 1000000};
-        nanosleep(&ts, NULL);
+        struct pollfd pf = {sched_self()->rd, POLLIN, 0};   // sleep until the next timer or a Hub message
+        poll(&pf, 1, wait < 0 ? -1 : (int)(wait > 2000000000 ? 2000000000 : wait));
+        hub_drain();
         timers_fire(now_ms());
     }
 }
@@ -1502,6 +1553,228 @@ void pn_print_float(double v) {
     fputs(buf, stdout);
 }
 
+// ============================================================================ hub (messages between requests)
+// Requests share nothing, so they talk through the runtime's Hub of named topics (concurrency.md C9). A
+// message is copied in once (refcounted, immutable) and handed to every subscriber; no program memory is
+// shared. Each topic keeps its last HUB_KEEP messages with increasing ids, so a reader that reconnects can
+// catch up (hub_resume). A subscriber whose queue fills up is dropped instead of using memory without limit.
+
+#define HUB_KEEP 100
+#define HUB_QUEUE 100
+
+typedef struct Msg { int64_t refs, id, len; char data[]; } Msg;
+
+typedef struct Sub {
+    struct Topic *topic;
+    struct Sub *prev, *next;            // the topic's subscribers (hub_mu)
+    Sched *owner;                       // the thread whose task reads it
+    Msg *q[HUB_QUEUE]; int qh, qn;      // delivered, not read yet (hub_mu)
+    int overflow;
+    Task *waiter;                       // a task in hub_next() (owner thread only)
+    int in_inbox; struct Sub *next_wake;   // queued on owner->inbox (owner->mu)
+    int64_t last_id;
+    void *res;                          // the request resource that unsubscribes it on a panic
+} Sub;
+
+typedef struct Topic {
+    struct Topic *next;
+    Sub *subs;
+    Msg *ring[HUB_KEEP]; int rh, rn;    // the last messages, for hub_resume
+    int64_t next_id;
+    size_t nlen;
+    char name[];
+} Topic;
+
+static pthread_mutex_t hub_mu = PTHREAD_MUTEX_INITIALIZER;
+static Topic *hub_topics[1024];
+static int64_t hub_nsubs;               // subscriptions open in the process (hub_mu)
+
+static void msg_unref(Msg *m) { if (__atomic_sub_fetch(&m->refs, 1, __ATOMIC_ACQ_REL) == 0) free(m); }
+
+static Topic *topic_get(Str *name) {    // hub_mu held
+    uint64_t h = hash_bytes(name->data, name->len) & 1023;
+    for (Topic *t = hub_topics[h]; t; t = t->next)
+        if (t->nlen == (size_t)name->len && memcmp(t->name, name->data, t->nlen) == 0) return t;
+    Topic *t = calloc(1, sizeof(Topic) + (size_t)name->len);
+    if (!t) oom();
+    t->nlen = (size_t)name->len;
+    memcpy(t->name, name->data, t->nlen);
+    t->next = hub_topics[h]; hub_topics[h] = t;
+    return t;
+}
+
+static void sub_deliver(Sub *s, Msg *m) {       // hub_mu held
+    if (s->qn == HUB_QUEUE) { s->overflow = 1; }
+    else {
+        __atomic_add_fetch(&m->refs, 1, __ATOMIC_RELAXED);
+        s->q[(s->qh + s->qn++) % HUB_QUEUE] = m;
+    }
+    if (s->owner == my_sched) {                 // same thread: wake its reader directly
+        if (s->waiter) { Task *w = s->waiter; hub_forget_waiter(w); heap_remove(w); make_ready(w); }
+        return;
+    }
+    pthread_mutex_lock(&s->owner->mu);
+    if (!s->in_inbox) { s->in_inbox = 1; s->next_wake = s->owner->inbox; s->owner->inbox = s; }
+    pthread_mutex_unlock(&s->owner->mu);
+    ssize_t w = write(s->owner->wr, "!", 1);    // a full pipe already means "news": fine to drop
+    (void)w;
+}
+
+// This thread was told there is news: wake the readers of those subscriptions.
+static void hub_drain(void) {
+    Sched *sc = sched_self();
+    char buf[256];
+    while (read(sc->rd, buf, sizeof buf) > 0) {}
+    pthread_mutex_lock(&sc->mu);
+    Sub *list = sc->inbox;
+    sc->inbox = NULL;
+    for (Sub *x = list; x; x = x->next_wake) x->in_inbox = 0;
+    pthread_mutex_unlock(&sc->mu);
+    for (Sub *x = list, *nx; x; x = nx) {
+        nx = x->next_wake;
+        if (x->waiter) { Task *w = x->waiter; hub_forget_waiter(w); heap_remove(w); make_ready(w); }
+    }
+}
+
+static int hub_has_subscribers(void) {
+    pthread_mutex_lock(&hub_mu);
+    int n = hub_nsubs > 0;
+    pthread_mutex_unlock(&hub_mu);
+    return n;
+}
+
+static void hub_forget_waiter(Task *t) {
+    if (t->waiting_sub) { t->waiting_sub->waiter = NULL; t->waiting_sub = NULL; }
+}
+
+void pn_hub_publish(Str *topic, Str *text) {
+    Msg *m = malloc(sizeof(Msg) + (size_t)text->len);
+    if (!m) oom();
+    m->refs = 1; m->len = text->len;
+    memcpy(m->data, text->data, (size_t)text->len);
+    pthread_mutex_lock(&hub_mu);
+    Topic *t = topic_get(topic);
+    m->id = ++t->next_id;
+    if (t->rn == HUB_KEEP) { msg_unref(t->ring[t->rh]); t->rh = (t->rh + 1) % HUB_KEEP; t->rn--; }
+    t->ring[(t->rh + t->rn++) % HUB_KEEP] = m;  // the topic's reference
+    for (Sub *x = t->subs; x; x = x->next) sub_deliver(x, m);
+    pthread_mutex_unlock(&hub_mu);
+}
+
+void pn_hub_unsubscribe(Sub *s);
+static void sub_close(void *s) { ((Sub *)s)->res = NULL; pn_hub_unsubscribe(s); }
+
+static Sub *subscribe(Str *topic, int64_t after) {
+    Sub *s = calloc(1, sizeof *s);
+    if (!s) oom();
+    s->owner = sched_self();
+    pthread_mutex_lock(&hub_mu);
+    Topic *t = topic_get(topic);
+    s->topic = t;
+    s->next = t->subs; if (t->subs) t->subs->prev = s; t->subs = s;
+    hub_nsubs++;
+    s->last_id = after >= 0 ? after : t->next_id;
+    if (after >= 0)                             // catch up on what was published after `after`
+        for (int i = 0; i < t->rn; i++) {
+            Msg *m = t->ring[(t->rh + i) % HUB_KEEP];
+            if (m->id > after && s->qn < HUB_QUEUE) {
+                __atomic_add_fetch(&m->refs, 1, __ATOMIC_RELAXED);
+                s->q[(s->qh + s->qn++) % HUB_QUEUE] = m;
+            }
+        }
+    pthread_mutex_unlock(&hub_mu);
+    s->res = pn_res_add(sub_close, s);          // a panicking request unsubscribes too
+    return s;
+}
+
+Sub *pn_hub_subscribe(Str *topic) { return subscribe(topic, -1); }
+Sub *pn_hub_resume(Str *topic, int64_t last_id) { return subscribe(topic, last_id < 0 ? 0 : last_id); }
+int64_t pn_hub_last_id(Sub *s) { return s->last_id; }
+
+void pn_hub_unsubscribe(Sub *s) {
+    if (!s) return;
+    if (s->res) pn_res_remove(s->res);
+    if (s->waiter) hub_forget_waiter(s->waiter);
+    pthread_mutex_lock(&s->owner->mu);          // off this thread's news list
+    for (Sub **pp = &s->owner->inbox; *pp; pp = &(*pp)->next_wake)
+        if (*pp == s) { *pp = s->next_wake; break; }
+    pthread_mutex_unlock(&s->owner->mu);
+    pthread_mutex_lock(&hub_mu);
+    if (s->prev) s->prev->next = s->next; else s->topic->subs = s->next;
+    if (s->next) s->next->prev = s->prev;
+    hub_nsubs--;
+    while (s->qn) { msg_unref(s->q[s->qh]); s->qh = (s->qh + 1) % HUB_QUEUE; s->qn--; }
+    pthread_mutex_unlock(&hub_mu);
+    free(s);
+}
+
+// An Error object the compiled code can free: { int64 code; Str *message } made with xmalloc.
+typedef struct { int64_t code; Str *message; } PinError;
+static PinError *make_error(int64_t code, const char *msg) {
+    PinError *e = xmalloc(sizeof *e);
+    e->code = code;
+    e->message = str_from(msg, (int64_t)strlen(msg));
+    return e;
+}
+
+typedef struct { Str *value; PinError *err; } StrOrError;
+
+// hub_next($sub, $ms): the next message, waiting at most $ms (504 when none came; 507 when this reader was
+// too slow and messages were dropped; 499 when the request was cancelled).
+StrOrError pn_hub_next(Sub *s, int64_t ms) {
+    StrOrError r = {NULL, NULL};
+    int64_t deadline = now_ms() + (ms > 0 ? ms : 0);
+    for (;;) {
+        pthread_mutex_lock(&hub_mu);
+        if (s->qn) {
+            Msg *m = s->q[s->qh];
+            s->qh = (s->qh + 1) % HUB_QUEUE; s->qn--;
+            pthread_mutex_unlock(&hub_mu);
+            r.value = str_from(m->data, m->len);
+            s->last_id = m->id;
+            msg_unref(m);
+            return r;
+        }
+        int over = s->overflow;
+        pthread_mutex_unlock(&hub_mu);
+        if (over) { r.err = make_error(507, "hub_next(): this reader fell more than 100 messages behind; messages were dropped"); return r; }
+        if (cancelled_now()) { r.err = make_error(499, "hub_next(): cancelled"); return r; }
+        if (!cur_task || now_ms() >= deadline) { r.err = make_error(504, "hub_next(): no message in time"); return r; }
+        s->waiter = cur_task;
+        cur_task->waiting_sub = s;
+        cur_task->wake_at = deadline;
+        heap_push(cur_task);
+        park();
+        heap_remove(cur_task);
+        hub_forget_waiter(cur_task);
+    }
+}
+
+PinError *pn_timeout_error(void) { return make_error(504, "await_timeout(): the task did not finish in time"); }
+
+// await_timeout($t, $ms): like await, but after $ms the task is cancelled (its waits end) and NULL comes
+// back once it has stopped; what it produced is freed with free_res / free_err.
+void *pn_await_timeout(Task *t, int64_t ms, void (*free_res)(void *), void (*free_err)(void *)) {
+    int64_t deadline = now_ms() + (ms > 0 ? ms : 0);
+    while (t->state != T_DONE && now_ms() < deadline && !cancelled_now()) {
+        t->waiter = cur_task;
+        cur_task->awaiting = t;
+        cur_task->wake_at = deadline;
+        heap_push(cur_task);
+        park();
+        heap_remove(cur_task);
+        if (t->waiter == cur_task) t->waiter = NULL;
+        cur_task->awaiting = NULL;
+    }
+    if (t->state == T_DONE) return pn_await(t);
+    task_cancel(t);                             // its waits end now; wait for it to stop
+    void **f = pn_await(t);
+    if (f[1]) free_err(f[1]);
+    else if (free_res) free_res(f[0]);
+    xfree(f);
+    return NULL;
+}
+
 // ============================================================================ http server
 
 typedef Str *(*Handler)(Str *method, Str *path, Str *body);
@@ -1521,6 +1794,8 @@ typedef struct Conn {
     int orphan;             // closed while busy: freed when the request ends
     int parsing;            // inside handle_input (a request that ends right away is answered there)
     struct Conn *next_done; // requests that ended later, waiting to be answered by the worker loop
+    int streaming;          // sse_start() was called: the handler writes the body itself, then the connection closes
+    int ep;                 // the worker's poll set (sse_send needs it when the client reads slowly)
 } Conn;
 
 static __thread Conn *done_conns;
@@ -1636,8 +1911,6 @@ static const char *reason(int64_t s) {
 }
 
 // ---------------------------------------------------------------- errors (throws / try)
-// An Error object is { int64 code; Str *message; } (two 8-byte fields, made by error(code, message)).
-typedef struct { int64_t code; Str *message; } PinError;
 
 // An error that leaves the top level: print it and stop (error-handling.md E-R6).
 __attribute__((noreturn)) void pn_uncaught(PinError *e) {
@@ -1716,7 +1989,9 @@ static void request_done(Task *t) {
     RunArgs *ra = t->ctx;
     Req *r = t->req;
     Conn *c = ra->c;
-    if (!c->orphan) {
+    if (c->streaming) {
+        c->close_after = 1;                     // the handler wrote the body; the end of the stream is a close
+    } else if (!c->orphan) {
         int64_t st = r->status;
         const char *body = ra->resp ? ra->resp->data : internal_error_body;
         size_t blen = ra->resp ? (size_t)ra->resp->len : sizeof internal_error_body - 1;
@@ -1760,6 +2035,7 @@ static void start_request(Conn *c, const char *line, const char *sp1, const char
     Task *t = task_spawn(handler_task, ra, TASK_STACK);
     cur_req = NULL;
     r->root = t;
+    r->conn = c;
     t->ctx = ra;
     t->on_done = request_done;
     t->auto_release = 1;
@@ -1847,6 +2123,68 @@ static int flush_out(Conn *c) {
     c->out_off = c->out_len = 0;
     return 1;
 }
+
+// ---------------------------------------------------------------- server-sent events (a stream from a handler)
+static void poll_want_out(int p, Conn *c, int on);
+
+// The connection of the running handler, or NULL with *err set.
+static Conn *sse_conn(PinError **err) {
+    Conn *c = cur_req ? cur_req->conn : NULL;
+    if (!c) panic_msg("sse_*() only works inside a serve() handler");
+    if (c->orphan || cur_req->cancelled) { *err = make_error(499, "the client closed the stream"); return NULL; }
+    return c;
+}
+
+static PinError *sse_flush(Conn *c) {
+    int f = flush_out(c);
+    if (f < 0) { cur_req->cancelled = 1; return make_error(499, "the client closed the stream"); }
+    if (f == 0) {
+        if (!c->want_out) { c->want_out = 1; poll_want_out(c->ep, c, 1); }
+        if (!c->out_start) c->out_start = now_ms();
+        if (c->out_len > ((size_t)1 << 20)) return make_error(503, "the client reads the stream too slowly");
+    } else c->out_start = 0;
+    return NULL;
+}
+
+void *pn_sse_start(void) {
+    PinError *err = NULL;
+    Conn *c = sse_conn(&err);
+    if (!c) return err;
+    if (c->streaming) panic_msg("sse_start(): the stream has already started");
+    char head[256];
+    int n = snprintf(head, sizeof head, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n"
+                     "X-Accel-Buffering: no\r\n");
+    out_add(c, head, (size_t)n);
+    if (cur_req->resp_hdr_len) out_add(c, cur_req->resp_hdr, cur_req->resp_hdr_len);
+    out_add(c, "Connection: close\r\n\r\n", 21);
+    c->streaming = 1;
+    return sse_flush(c);
+}
+
+static void *sse_write(int64_t id, Str *data, int comment) {
+    PinError *err = NULL;
+    Conn *c = sse_conn(&err);
+    if (!c) return err;
+    if (!c->streaming) panic_msg("call sse_start() before sending events");
+    char buf[32];
+    if (id >= 0) { int n = snprintf(buf, sizeof buf, "id: %lld\n", (long long)id); out_add(c, buf, (size_t)n); }
+    const char *p = data->data, *e = data->data + data->len;
+    do {                                        // one "data:" line per line of the text (SSE framing)
+        const char *nl = memchr(p, '\n', (size_t)(e - p));
+        const char *end = nl ? nl : e;
+        if (end > p && end[-1] == '\r') end--;
+        out_add(c, comment ? ": " : "data: ", comment ? 2 : 6);
+        out_add(c, p, (size_t)(end - p));
+        out_add(c, "\n", 1);
+        p = nl ? nl + 1 : e;
+    } while (p < e);
+    out_add(c, "\n", 1);
+    return sse_flush(c);
+}
+
+void *pn_sse_send(Str *data) { return sse_write(-1, data, 0); }
+void *pn_sse_send_id(int64_t id, Str *data) { return sse_write(id < 0 ? 0 : id, data, 0); }
+void *pn_sse_comment(Str *text) { return sse_write(-1, text, 1); }
 
 // ---------------------------------------------------------------- event polling
 // One small interface over epoll (Linux) and kqueue (macOS). An event with c == NULL is the listener.
@@ -1972,8 +2310,11 @@ static void conn_close(int ep, Conn *c, int status) {
     poll_del(ep, c);
     c->prev->next = c->next; c->next->prev = c->prev;
     if (status) say_and_close(c->fd, status); else close(c->fd);
-    if (c->busy) c->orphan = 1;
-    else conn_free(c);
+    if (c->busy) {
+        c->orphan = 1;
+        Req *r = c->busy->req;
+        if (r) { r->cancelled = 1; for (Task *t = r->tasks; t; t = t->req_next) wake_waiting(t); }
+    } else conn_free(c);
 }
 
 static void conn_times(Conn *c, int64_t now);
@@ -2006,6 +2347,10 @@ static void *worker(void *arg) {
     int lfd = shared_listener >= 0 ? shared_listener : open_listener(listen_port);
     int ep = poll_new();
     poll_listen(ep, lfd);
+    Conn *wake = calloc(1, sizeof(Conn));       // events for this thread's Hub wake pipe carry this
+    if (!wake) oom();
+    wake->fd = sched_self()->rd;
+    poll_add(ep, wake);
     PollEv evs[256];
     Conn conns = {0};                                     // circular list of this worker's open connections
     conns.prev = conns.next = &conns;
@@ -2026,6 +2371,7 @@ static void *worker(void *arg) {
         timers_fire(now);
         for (int i = 0; i < n; i++) {
             Conn *c = evs[i].c;
+            if (c == wake) { hub_drain(); continue; }
             if (!c) {                                         // new connections
                 for (;;) {
                     int fd = accept_conn(lfd);
@@ -2040,6 +2386,7 @@ static void *worker(void *arg) {
                     Conn *nc = calloc(1, sizeof(Conn));
                     if (!nc) oom();
                     nc->fd = fd;
+                    nc->ep = ep;
                     nc->in_cap = 4096; nc->in = malloc(nc->in_cap);
                     if (!nc->in) oom();
                     nc->req_start = now;                      // the first request must arrive in time too
@@ -2061,7 +2408,11 @@ static void *worker(void *arg) {
                     }
                     ssize_t r = read(c->fd, c->in + c->in_len, c->in_cap - c->in_len);
                     if (r > 0) { c->in_len += (size_t)r; continue; }
-                    if (r == 0) { c->close_after = 1; break; }   // client finished sending: still answer it
+                    if (r == 0) {
+                        if (c->streaming) dead = 1;   // a stream's reader left: end the stream
+                        else c->close_after = 1;      // client finished sending: still answer it
+                        break;
+                    }
                     if (errno == EINTR) continue;
                     if (errno != EAGAIN && errno != EWOULDBLOCK) dead = 1;
                     break;
@@ -2074,7 +2425,7 @@ static void *worker(void *arg) {
             last_scan = now;
             for (Conn *c = conns.next, *nx; c != &conns; c = nx) {
                 nx = c->next;
-                if (c->busy) continue;
+                if (c->busy && !(c->streaming && c->out_start && now - c->out_start > write_timeout_ms)) continue;
                 int late_out = c->out_start && now - c->out_start > write_timeout_ms;
                 int late_in = !late_out && c->req_start && now - c->req_start > read_timeout_ms;
                 int idle = !c->req_start && !c->out_len && now - c->last_active > idle_timeout_ms;

@@ -1,0 +1,21 @@
+function producer(int $n): void {
+    for ($i = 1; $i <= $n; $i++) {
+        sleep_ms(10);
+        hub_publish("news", "item $i");
+    }
+}
+function slowpoke(int $ms): int { sleep_ms($ms); return $ms; }
+
+$inbox = hub_subscribe("news");
+$p = go producer(3);
+for ($k = 0; $k < 4; $k++) {
+    $m = try hub_next($inbox, 200) catch ($e) { "timeout ({$e->code})"; };
+    echo $m, " id=", hub_last_id($inbox), "\n";
+}
+await $p;
+$late = hub_resume("news", 1);
+echo try hub_next($late, 10) catch ($e) { "?"; }, ", ", try hub_next($late, 10) catch ($e) { "?"; }, "\n";
+$t = go slowpoke(500);
+echo try await_timeout($t, 50) catch ($e) { -$e->code; }, "\n";
+$u = go slowpoke(5);
+echo try await_timeout($u, 500) catch ($e) { -1; }, "\n";

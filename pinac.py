@@ -87,7 +87,7 @@ class Node:
         return f"{self.kind}({ {k: v for k, v in self.__dict__.items() if k not in ('kind', 'line')} })"
 
 
-TYPE_NAMES = {"int", "float", "bool", "string", "list", "map", "void", "db", "rows"}
+TYPE_NAMES = {"int", "float", "bool", "string", "list", "map", "void", "db", "rows", "sub"}
 ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'", "$": "$", "0": "\0"}
 INTERP_RE = re.compile(r"(?<!\\)(\{\$[^{}\"]*\}|\$[A-Za-z_]\w*(?:->[A-Za-z_]\w*)?)")
 
@@ -810,7 +810,7 @@ def is_map(t):
 
 
 def is_heap(t):
-    return t in ("string", "db", "rows") or is_list(t) or is_map(t) or is_class(t) or is_task(t)
+    return t in ("string", "db", "rows", "sub") or is_list(t) or is_map(t) or is_class(t) or is_task(t)
 
 
 def elem_of(t):
@@ -835,6 +835,8 @@ def free_fn(t):
         return "@pn_db_close"
     if t == "rows":
         return "@pn_rows_free"
+    if t == "sub":
+        return "@pn_hub_unsubscribe"
     if is_list(t):
         e = elem_of(t)
         return "@pn_list_free_str" if e == "string" else need("free", t) if owns_ptr(e) else "@pn_list_free"
@@ -845,7 +847,7 @@ def free_fn(t):
 
 def uncopyable(t, seen=()):
     """The part of type t that cannot be copied (a db connection, a result set, a running task), or None."""
-    if t in ("db", "rows") or is_task(t):
+    if t in ("db", "rows", "sub") or is_task(t):
         return t
     if is_list(t):
         return uncopyable(elem_of(t), seen)
@@ -965,7 +967,8 @@ NOT_IN_PIN = {
 CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
              "PHP_EOL": ("str", "\n")}
 
-BUILTINS = {"await_all", "sleep_ms", "error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
+BUILTINS = {"await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1061,6 +1064,18 @@ declare void @pn_sleep(i64)
 declare ptr @pn_go(ptr, ptr)
 declare ptr @pn_await(ptr)
 declare ptr @pn_await_all(ptr, i64, ptr, ptr, ptr)
+declare ptr @pn_await_timeout(ptr, i64, ptr, ptr)
+declare ptr @pn_timeout_error()
+declare void @pn_hub_publish(ptr, ptr)
+declare ptr @pn_hub_subscribe(ptr)
+declare ptr @pn_hub_resume(ptr, i64)
+declare void @pn_hub_unsubscribe(ptr)
+declare { ptr, ptr } @pn_hub_next(ptr, i64)
+declare i64 @pn_hub_last_id(ptr)
+declare ptr @pn_sse_start()
+declare ptr @pn_sse_send(ptr)
+declare ptr @pn_sse_send_id(i64, ptr)
+declare ptr @pn_sse_comment(ptr)
 declare ptr @pn_request_header(ptr)
 declare i64 @pn_request_has_header(ptr)
 declare void @pn_response_header(ptr, ptr)
@@ -1328,7 +1343,7 @@ def json_string_literal(s):
 
 def unjsonable(t, seen=()):
     """The part of type t that json_encode() cannot write, or None. Private properties are left out."""
-    if t in ("db", "rows") or is_task(t):
+    if t in ("db", "rows", "sub") or is_task(t):
         return t
     if is_list(t):
         return unjsonable(elem_of(t), seen)
@@ -3221,6 +3236,69 @@ class FuncGen:
                 self.call("void", "@pn_list_free", f"ptr {res}")
                 return None, "void", False
             return res, f"list<{rt}>", True
+        if name == "hub_publish":
+            self.argc(e, 2)
+            t_, m = self.str_arg(e, 0), self.str_arg(e, 1)
+            self.call("void", "@pn_hub_publish", f"ptr {t_}", f"ptr {m}")
+            return None, "void", False
+        if name in ("hub_subscribe", "hub_resume"):
+            self.argc(e, 1 if name == "hub_subscribe" else 2)
+            t_ = self.str_arg(e, 0)
+            if name == "hub_subscribe":
+                return self.call("ptr", "@pn_hub_subscribe", f"ptr {t_}"), "sub", True
+            return self.call("ptr", "@pn_hub_resume", f"ptr {t_}", f"i64 {self.int_arg(e, 1)}"), "sub", True
+        if name in ("hub_next", "hub_last_id"):
+            self.argc(e, 2 if name == "hub_next" else 1)
+            sv = self.typed_arg(e, 0, "sub")
+            if name == "hub_last_id":
+                return self.call("i64", "@pn_hub_last_id", f"ptr {sv}"), "int", False
+            ms = self.int_arg(e, 1)
+            v = self.failing_call("string", "@pn_hub_next", [f"ptr {sv}", f"i64 {ms}"], e.line, "hub_next(...)")
+            return v, "string", True
+        if name in ("sse_start", "sse_send", "sse_send_id", "sse_comment"):
+            want = {"sse_start": 0, "sse_send": 1, "sse_send_id": 2, "sse_comment": 1}[name]
+            self.argc(e, want)
+            a = []
+            if name == "sse_send_id":
+                a = [f"i64 {self.int_arg(e, 0)}", f"ptr {self.str_arg(e, 1)}"]
+            elif want == 1:
+                a = [f"ptr {self.str_arg(e, 0)}"]
+            self.failing_call("void", f"@pn_{name}", a, e.line, f"{name}(...)")
+            return None, "void", False
+        if name == "await_timeout":
+            self.argc(e, 2)
+            op = args[0]
+            tt = self.static_type(op)
+            if op.kind != "var" or tt is None or not is_task(tt):
+                raise CompileError("await_timeout() takes a task variable and milliseconds: try await_timeout($t, 500)",
+                                   e.line)
+            fails = self.task_fail.get(op.name, False)
+            self.may_fail(e.line, f"await_timeout({op.name}, ...)")    # running out of time is an error
+            ms = self.int_arg(e, 1)
+            task, _ = self.owned_value(op, None, e.line)
+            rt = tt[5:-1]
+            fr = item_fn("free", rt) if is_heap(rt) else "null"
+            frame = self.call("ptr", "@pn_await_timeout", f"ptr {task}", f"i64 {ms}", f"ptr {fr}",
+                              f"ptr {item_fn('free', 'Error')}")
+            late = self.tmp()
+            self.emit(f"{late} = icmp eq ptr {frame}, null")
+            slow, ok = self.newlabel("late"), self.newlabel("intime")
+            self.emit(f"br i1 {late}, label %{slow}, label %{ok}, !prof !11")
+            self.place_label(slow)
+            self.route_error(self.call("ptr", "@pn_timeout_error"), e.line)
+            self.place_label(ok)
+            if fails:
+                ep, err = self.tmp(), self.tmp()
+                self.emit(f"{ep} = getelementptr inbounds i8, ptr {frame}, i64 8")
+                self.emit(f"{err} = load ptr, ptr {ep}")
+                self.error_branch(err, e.line, before=lambda: self.call("void", "@pn_obj_free", f"ptr {frame}"))
+            if rt == "void":
+                self.call("void", "@pn_obj_free", f"ptr {frame}")
+                return None, "void", False
+            v = self.tmp()
+            self.emit(f"{v} = load {llty(rt)}, ptr {frame}")
+            self.call("void", "@pn_obj_free", f"ptr {frame}")
+            return v, rt, is_heap(rt)
         if name == "sleep_ms":
             self.argc(e, 1)
             self.call("void", "@pn_sleep", f"i64 {self.int_arg(e, 0)}")
@@ -4005,19 +4083,19 @@ def split_type_args(inner):
 def resolve_type(t, mid, imports, line, file=None):
     """Turn a type as written in a file into its canonical form: class names become class keys
     ("Order" in the main file, "shop::Order" for class Order of module shop)."""
-    if t in ("int", "float", "bool", "string", "void", "db", "rows"):
+    if t in ("int", "float", "bool", "string", "void", "db", "rows", "sub"):
         return t
     if t.startswith("Task<"):
         return f"Task<{resolve_type(t[5:-1], mid, imports, line, file)}>"
     if t.startswith("list<"):
         e = resolve_type(t[5:-1], mid, imports, line, file)
-        if e in ("db", "rows"):
+        if e in ("db", "rows", "sub"):
             raise CompileError(f"a list cannot hold {e} values", line, file)
         return f"list<{e}>"
     if t.startswith("map<"):
         k, v = split_type_args(t[4:-1])
         v = resolve_type(v, mid, imports, line, file)
-        if v in ("db", "rows") or holds_task(v):
+        if v in ("db", "rows", "sub") or holds_task(v):
             raise CompileError(f"a map cannot hold {v} values", line, file)
         return f"map<{k},{v}>"
     if "::" in t:

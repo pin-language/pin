@@ -1,0 +1,1 @@
+sse_start() can fail. Write try sse_start(...), or handle the error: try sse_start(...) catch ($e) { ... }

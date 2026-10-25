@@ -1,0 +1,2 @@
+function f(): int { return 1; }
+echo try await_timeout(go f(), 10) catch ($e) { 0; };

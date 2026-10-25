@@ -1,0 +1,32 @@
+// Agents talking through the Hub: long-poll and a Server-Sent Events stream (concurrency.md C9-C11).
+function handle(string $method, string $path, string $body): string throws {
+    $route = url_path($path);
+    $agent = query_param($path, "agent");
+    if ($method == "POST" && $route == "/send") {
+        hub_publish("inbox:" . query_param($path, "to"), $body);
+        return "{\"ok\":true}";
+    }
+    if ($route == "/wait") {                    // long-poll: answers as soon as a message comes
+        $inbox = hub_subscribe("inbox:$agent");
+        $msg = try hub_next($inbox, 3000) catch ($e) {
+            http_status(204);
+            return "";
+        };
+        return $msg;
+    }
+    if ($route == "/stream") {                  // SSE: stays open, one event per message
+        $inbox = hub_resume("inbox:$agent", intval(request_header("Last-Event-ID")));
+        try sse_start();
+        while (true) {
+            $msg = try hub_next($inbox, 300) catch ($e) {
+                if ($e->code != 504) { return ""; }     // the client left (499): stop
+                try sse_comment("ping");
+                continue;
+            };
+            try sse_send_id(hub_last_id($inbox), $msg);
+        }
+    }
+    throw error(404, "no route $route");
+}
+
+serve(8089, "handle");

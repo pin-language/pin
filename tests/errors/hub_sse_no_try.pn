@@ -1,0 +1,2 @@
+function handle(string $method, string $path, string $body): string { sse_start(); return ""; }
+serve(8080, "handle");

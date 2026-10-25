@@ -1,0 +1,2 @@
+$s = hub_subscribe("t");
+echo hub_next($s, 10);

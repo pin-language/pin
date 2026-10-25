@@ -369,6 +369,105 @@ echo json_encode(await_all($ts)), "\n";''',
    "The list is used up (moved). When the tasks' function is `throws`, write `try await_all($ts)`: the first "
    "error is the one you get, and the results of the others are freed."])
 
+f("await_timeout", T, "await_timeout(Task<T> $t, int $ms): T throws",
+  "Like `await $t`, but give up after `$ms` milliseconds: the task is cancelled and the call fails with 504.",
+  r'''function slow(int $ms): int {
+    sleep_ms($ms);
+    return $ms;
+}
+$quick = go slow(5);
+$late = go slow(1000);
+echo try await_timeout($quick, 500) catch ($e) { -1; }, " ", try await_timeout($late, 20) catch ($e) { $e->code; }, "\n";''',
+  ["Cancelling is cooperative: the task's next wait (`sleep_ms`, `hub_next`) ends at once, so it stops soon; a "
+   "long computing loop runs to its end.",
+   "What a cancelled task returned is freed. Always needs `try` (running out of time is an error)."])
+HB = "hub"
+f("hub_publish", HB, "hub_publish(string $topic, string $message): void",
+  "Send a message to everyone subscribed to the topic — also requests on other threads.",
+  r'''$inbox = hub_subscribe("orders");
+hub_publish("orders", "{\"id\":7}");
+echo try hub_next($inbox, 100) catch ($e) { "none"; }, "\n";''',
+  ["Requests share no variables; the Hub is how one request tells another (a long-poll or a stream waiting for "
+   "news). The text is copied: usually `json_encode` of an object.",
+   "Each topic keeps its last 100 messages for `hub_resume`. Messages live in memory: a restart loses them, so "
+   "store what must not be lost (SQLite) and use the Hub to wake readers."])
+f("hub_subscribe", HB, "hub_subscribe(string $topic): sub",
+  "Start receiving the topic's messages (those published from now on).",
+  r'''$a = hub_subscribe("t");
+$b = hub_subscribe("t");
+hub_publish("t", "hi");
+echo try hub_next($a, 10) catch ($e) { "?"; }, " ", try hub_next($b, 10) catch ($e) { "?"; }, "\n";''',
+  ["The `sub` is an owned value: when it goes out of scope (or the request ends or panics) it unsubscribes.",
+   "A reader more than 100 messages behind is dropped: its next `hub_next` fails with 507."])
+f("hub_resume", HB, "hub_resume(string $topic, int $last_id): sub",
+  "Subscribe and also receive the kept messages with an id above `$last_id` (a reader catching up).",
+  r'''hub_publish("log", "one");
+hub_publish("log", "two");
+$r = hub_resume("log", 1);
+echo try hub_next($r, 10) catch ($e) { "?"; }, "\n";''',
+  ["For Server-Sent Events: `hub_resume($topic, intval(request_header(\"Last-Event-ID\")))` gives a reconnecting "
+   "client what it missed."])
+f("hub_next", HB, "hub_next(sub $s, int $ms): string throws",
+  "The next message, waiting at most `$ms` milliseconds (other requests keep running meanwhile).",
+  r'''$s = hub_subscribe("quiet");
+echo try hub_next($s, 20) catch ($e) { "error " . $e->code; }, "\n";''',
+  ["Fails with 504 when nothing arrives in time, 507 when this reader fell behind, 499 when the request was "
+   "cancelled (its client left). The time limit is required: nothing waits forever."])
+f("hub_last_id", HB, "hub_last_id(sub $s): int", "The id of the message `hub_next` last returned.",
+  r'''$s = hub_subscribe("ids");
+hub_publish("ids", "a");
+hub_publish("ids", "b");
+$x = try hub_next($s, 10) catch ($e) { ""; };
+$y = try hub_next($s, 10) catch ($e) { ""; };
+echo $y, " has id ", hub_last_id($s), "\n";''',
+  ["Send it as the SSE event id (`sse_send_id`) so a client can resume from it."])
+f("sse_start", H, "sse_start(): void throws",
+  "Turn the response into a Server-Sent Events stream (`text/event-stream`), sent as it is written.",
+  r'''function handle(string $method, string $path, string $body): string throws {
+    $inbox = hub_subscribe("news");
+    try sse_start();
+    while (true) {
+        $m = try hub_next($inbox, 25000) catch ($e) {
+            if ($e->code != 504) { return ""; }   // the client left
+            try sse_comment("ping");             // keeps proxies from closing a quiet stream
+            continue;
+        };
+        try sse_send($m);
+    }
+}
+serve(8080, "handle");''',
+  ["Headers set with `response_header()` before it are sent. The stream ends when the handler returns; the "
+   "connection then closes.",
+   "When the client leaves, the next `sse_*` call (or `hub_next`) fails with 499, so the handler ends and its "
+   "subscription is closed."], run=False)
+f("sse_send", H, "sse_send(string $data): void throws", "Send one event (`data:` lines; a newline in the text starts a new line).",
+  r'''function handle(string $method, string $path, string $body): string throws {
+    try sse_start();
+    try sse_send(json_encode(["n" => 1]));
+    return "";
+}
+serve(8080, "handle");''',
+  ["Fails with 499 when the client is gone, 503 when it reads too slowly (over 1 MB waiting)."], run=False)
+f("sse_send_id", H, "sse_send_id(int $id, string $data): void throws",
+  "Send one event with an id; a reconnecting browser sends it back as the `Last-Event-ID` header.",
+  r'''function handle(string $method, string $path, string $body): string throws {
+    try sse_start();
+    $inbox = hub_resume("news", intval(request_header("Last-Event-ID")));
+    $msg = try hub_next($inbox, 25000);
+    try sse_send_id(hub_last_id($inbox), $msg);
+    return "";
+}
+serve(8080, "handle");''', run=False)
+f("sse_comment", H, "sse_comment(string $text): void throws",
+  "Send a comment line (`: text`): clients ignore it; it keeps an idle stream from being closed.",
+  r'''function handle(string $method, string $path, string $body): string throws {
+    try sse_start();
+    try sse_comment("ping");
+    return "";
+}
+serve(8080, "handle");''', run=False)
+
 CATEGORIES = [{"id": S, "title": "Strings"}, {"id": L, "title": "Lists and maps"}, {"id": N, "title": "Numbers"},
               {"id": V, "title": "Conversions"}, {"id": J, "title": "JSON"}, {"id": H, "title": "HTTP"},
-              {"id": "database", "title": "Database (SQLite)"}, {"id": E, "title": "Errors"}, {"id": T, "title": "Tasks (go / await)"}]
+              {"id": "database", "title": "Database (SQLite)"}, {"id": E, "title": "Errors"}, {"id": T, "title": "Tasks (go / await)"},
+              {"id": HB, "title": "Hub (messages between requests)"}]

@@ -615,5 +615,90 @@ if "--no-server" not in sys.argv:
             proc.terminate()
             proc.wait(timeout=5)
 
+if "--no-server" not in sys.argv:
+    print("hub: long-poll and SSE between requests (tests/server/hub.pn on :8089, 4 threads)")
+    out = os.path.join(BUILD, "server_hub")
+    b = build(os.path.join(ROOT, "tests", "server", "hub.pn"), out)
+    if b.returncode:
+        fail("tests/server/hub.pn", "build failed: " + b.stderr[-400:])
+    else:
+        proc = subprocess.Popen([out], env=dict(os.environ, PN_THREADS="4"), stdout=subprocess.DEVNULL,
+                                stderr=server_log(out))
+        try:
+            for _ in range(50):
+                try:
+                    socket.create_connection(("127.0.0.1", 8089), timeout=0.2).close()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            import threading  # noqa: E402
+            worst, bad = 0.0, []
+            for i in range(20):                    # the waiting and the sending request are often on different threads
+                got = {}
+                def wait():
+                    got["r"] = http(8089, "GET", f"/wait?agent=b{i}")
+                th = threading.Thread(target=wait)
+                th.start()
+                time.sleep(0.1)
+                t0 = time.time()
+                http(8089, "POST", f"/send?to=b{i}", f"hello {i}")
+                th.join()
+                worst = max(worst, time.time() - t0)
+                if got.get("r") != (200, f"hello {i}"):
+                    bad.append(got.get("r"))
+            if not bad and worst < 0.5:
+                ok(f"long-poll: 20 waiting requests woken by a message from another request (slowest {worst*1000:.0f} ms)")
+            else:
+                fail("long-poll", f"bad {bad[:3]}, slowest {worst:.2f}s")
+            t0 = time.time()
+            r = http(8089, "GET", "/wait?agent=nobody")
+            dt = time.time() - t0
+            (ok if r[0] == 204 and 2.5 < dt < 4 else lambda n: fail(n, f"{r} after {dt:.1f}s"))(
+                f"long-poll with no message ends after its timeout with 204 ({dt:.1f}s)")
+
+            sk = socket.create_connection(("127.0.0.1", 8089), timeout=5)
+            sk.sendall(b"GET /stream?agent=s1 HTTP/1.1\r\nLast-Event-ID: 0\r\n\r\n")
+            time.sleep(0.2)
+            for j in range(3):
+                http(8089, "POST", "/send?to=s1", f"line {j}\nsecond")
+            data, deadline = b"", time.time() + 3
+            while data.count(b"\n\n") < 4 and time.time() < deadline:   # headers + 3 events
+                data += sk.recv(65536)
+            text = data.decode()
+            want = "id: 1\ndata: line 0\ndata: second\n\nid: 2\ndata: line 1\ndata: second\n\nid: 3\n"
+            (ok if "Content-Type: text/event-stream" in text and want in text else lambda n: fail(n, text[-300:]))(
+                "SSE: three messages arrive as events with ids, multi-line text split into data: lines")
+            time.sleep(0.5)
+            more = sk.recv(65536).decode()
+            (ok if ": ping" in more else lambda n: fail(n, repr(more)))("SSE: a ping comment while nothing happens")
+            sk.close()
+            sk = socket.create_connection(("127.0.0.1", 8089), timeout=5)
+            sk.sendall(b"GET /stream?agent=s1 HTTP/1.1\r\nLast-Event-ID: 2\r\n\r\n")
+            data, deadline = b"", time.time() + 3
+            while b"id: 3" not in data and time.time() < deadline:
+                data += sk.recv(65536)
+            sk.close()
+            (ok if b"id: 3" in data and b"id: 2" not in data else lambda n: fail(n, data[-200:]))(
+                "SSE: reconnecting with Last-Event-ID 2 gets only what came after it")
+            for _ in range(10):
+                c = socket.create_connection(("127.0.0.1", 8089), timeout=5)
+                c.sendall(b"GET /stream?agent=gone HTTP/1.1\r\n\r\n")
+                c.recv(4096)
+                c.close()
+            before = rss_mb(proc.pid)
+            for _ in range(200):                   # streams whose readers leave: each request must end and free
+                c = socket.create_connection(("127.0.0.1", 8089), timeout=5)
+                c.sendall(b"GET /stream?agent=gone HTTP/1.1\r\n\r\n")
+                c.recv(4096)
+                c.close()
+            time.sleep(1.0)
+            grew = rss_mb(proc.pid) - before
+            alive = http(8089, "GET", "/wait?agent=x&nothing") if False else http(8089, "POST", "/send?to=x", "y")
+            (ok if grew < 30 and alive == (200, '{"ok":true}') else lambda n: fail(n, f"RSS grew {grew:.0f} MB, {alive}"))(
+                f"200 SSE clients that leave: their requests end and free (RSS grew {grew:.0f} MB)")
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
 print(f"\n{passed} passed, {len(failed)} failed")
 sys.exit(1 if failed else 0)
