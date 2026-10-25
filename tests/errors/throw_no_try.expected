@@ -1,0 +1,1 @@
+f() can fail. Write try f(...), or handle the error: try f(...) catch ($e) { ... }

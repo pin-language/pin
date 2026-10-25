@@ -1,0 +1,1 @@
+nothing in this try block can fail; remove try { } catch

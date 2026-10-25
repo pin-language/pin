@@ -25,10 +25,18 @@ function oob(): string {
     return "{\"n\":" . $xs[10] . "}";
 }
 
-function handle(string $method, string $path, string $body): string {
+function lookup(string $path): string throws {
+    $keep = str_repeat("z", 50000);         // freed on the error path too
+    if ($path == "/notfound") { throw error(404, "no such thing: $path"); }
+    throw error(7, "a code outside 400-599 answers 500");
+}
+
+function handle(string $method, string $path, string $body): string throws {
     if ($path == "/boom") { return boom(); }
     if ($path == "/oob") { return oob(); }
     if ($path == "/objects") { return objects(); }
+    if ($path == "/notfound" || $path == "/odd") { return try lookup($path); }
+    if ($path == "/caught") { return try lookup("/notfound") catch ($e) { json_encode($e); }; }
     if ($path == "/overflow") { return "{\"n\":" . intdiv(intval("-9223372036854775808"), intval("-1")) . "}"; }
     return "{\"ok\":true}";
 }

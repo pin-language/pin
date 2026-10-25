@@ -290,6 +290,23 @@ f("db_error", D, "db_error(db $db): string", 'Why the last `db_exec` returned -1
   SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
 if (db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]) < 0) { echo "refused: ", db_error($db), "\n"; }''')
 
+E = "errors"
+f("error", E, "error(int $code, string $message): Error", "A new error, to throw from a function declared `throws`.",
+  r'''function findUser(int $id): string throws {
+    if ($id <= 0) { throw error(400, "bad id $id"); }
+    return "user$id";
+}
+echo try findUser(7) catch ($e) { "?"; }, "\n";
+echo try findUser(-1) catch ($e) { "failed with " . $e->code . ": " . $e->message; }, "\n";''',
+  ["An `Error` has two public properties, `$e->code` and `$e->message`; `json_encode($e)` gives both.",
+   "A function that can fail is declared `: T throws`; every call to it needs `try` (pass the error on) or "
+   "`try ... catch ($e) { ... }` (handle it). An error escaping the top level prints `error: ... (code N)` and "
+   "exits 1.",
+   "An error leaving a `serve()` handler answers its code if it is 400–599 (else 500), with the standard status "
+   "text as the body; the message goes to the log only."],
+  php="Instead of `throw new InvalidArgumentException(...)`. Pin has one error type, and errors are values "
+      "returned next to the result, not exceptions that unwind the stack.")
+
 CATEGORIES = [{"id": S, "title": "Strings"}, {"id": L, "title": "Lists and maps"}, {"id": N, "title": "Numbers"},
               {"id": V, "title": "Conversions"}, {"id": J, "title": "JSON"}, {"id": H, "title": "HTTP"},
-              {"id": "database", "title": "Database (SQLite)"}]
+              {"id": "database", "title": "Database (SQLite)"}, {"id": E, "title": "Errors"}]

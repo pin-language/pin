@@ -10,7 +10,7 @@ production มาจับตอน compile ทุก error บอกวิธ�
 คนที่เขียน PHP อ่าน Pin ได้ทันที แต่ตัวแปรแต่ละตัวมี type เดียว หน่วยความจำจัดการด้วย ownership ที่เช็คตอน
 compile (คล้าย Rust แต่ย่อให้ง่าย) และ compile ผ่าน LLVM ออกมาเป็น binary ไฟล์เดียว รวมถึง HTTP server แบบหลาย thread
 
-> **สถานะ: preview (0.5) สำหรับให้คนเริ่มทดลอง** ภาษายังเล็กและยังเปลี่ยนได้ ห้ามใช้ใน production และห้ามเปิด HTTP
+> **สถานะ: preview (0.6) สำหรับให้คนเริ่มทดลอง** ภาษายังเล็กและยังเปลี่ยนได้ ห้ามใช้ใน production และห้ามเปิด HTTP
 > server ออก internet (ยังไม่มี TLS และ timeout) · English: [README.md](README.md)
 
 หลักการออกแบบ: **memory safety > ความเร็ว > อ่านง่าย > เหมือน PHP**
@@ -149,7 +149,7 @@ macOS ล็อก CPU core ไม่ได้ ส่วนต่างต่ำ
 
 ## ยังไม่มี
 
-inheritance/interface, `null`, `try`/`catch`, ค่า default ของ parameter, closure, header ของ
+inheritance/interface, `null`, `finally`, ค่า default ของ parameter, closure, header ของ
 request, `json_decode` เต็มรูปแบบ (ตอนนี้อ่าน key ชั้นบนสุดได้ด้วย `json_string` / `json_int` / …), PostgreSQL (SQLite มีแล้ว), `go`/`await` · ส่วนใหญ่ออกแบบไว้แล้วใน [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/)
 
 ## อยากได้ feedback

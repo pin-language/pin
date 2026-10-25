@@ -1,0 +1,1 @@
+throw needs an Error, e.g. throw error(404, "not found"); — not string

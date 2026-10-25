@@ -1,0 +1,1 @@
+new A() can fail. Write try new A(...), or handle the error: try new A(...) catch ($e) { ... }

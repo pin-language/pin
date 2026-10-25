@@ -1,0 +1,12 @@
+user3 caught 404: user 50 not found
+guest
+found user1
+skip {"code":404,"message":"user 20 not found"}
+skip {"code":400,"message":"bad id -1"}
+1
+6
+-422
+12
+insufficient funds
+{"balance":70,"log":["withdraw 30"]}
+refused: negative start

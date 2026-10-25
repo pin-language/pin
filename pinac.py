@@ -301,13 +301,14 @@ class Parser:
                 raise CompileError(f"function {name}() needs a return type, e.g. ': int' or ': void'", self.cur.line)
             self.eat(":")
             ret = self.type_()
+        throws = self.accept("throws")
         body = self.block()
         for pvis, ptype, pname in reversed(promoted):     # public int $id  ->  $this->id = $id; first
             this = Node("var", line, name="$this")
             body.body.insert(0, Node("assign", line, target=Node("field", line, obj=this, name=pname[1:]), op="=",
                                      val=Node("var", line, name=pname), promoted=True))
         return Node("func", line, name=name, params=params, ret=ret, body=body, exported=exported,
-                    promoted=promoted, vis="public")
+                    promoted=promoted, vis="public", throws=throws)
 
     def type_(self):
         t = self.cur
@@ -373,6 +374,19 @@ class Parser:
         if t.kind == "IDENT":
             if t.val == "if":
                 return self.if_()
+            if t.val == "try" and self.peek().val == "{":
+                self.eat()
+                body = self.block()
+                if not self.at("catch", "IDENT"):
+                    raise CompileError("try { ... } needs a catch ($e) { ... } after it" +
+                                       (" (finally is not in Pin yet)" if self.at("finally", "IDENT") else ""), t.line)
+                var, cbody, _ = self.catch_clause(value=False)
+                return Node("trystmt", t.line, body=body, var=var, cbody=cbody)
+            if t.val == "throw":
+                self.eat()
+                val = self.expr()
+                self.eat(";")
+                return Node("throw", t.line, val=val)
             if t.val == "while":
                 self.eat()
                 self.eat("(")
@@ -420,7 +434,7 @@ class Parser:
                 self.eat(";")
                 return Node(t.val, t.line)
             if ((t.val in TYPE_NAMES and self.peek().kind == "VAR") or (t.val in ("list", "map") and self.peek().val == "<")
-                    or (t.val not in NOT_IN_PIN and t.val not in ("new", "print") and self.peek().kind == "VAR")
+                    or (t.val not in NOT_IN_PIN and t.val not in ("new", "print", "try", "throw") and self.peek().kind == "VAR")
                     or (self.peek().val == "::" and self.peek(2).kind == "IDENT" and self.peek(3).kind == "VAR")):
                 vtype = self.type_()
                 name = self.eat(kind="VAR").val
@@ -469,7 +483,7 @@ class Parser:
             return Node("assign", t.line, target=e, op="+=" if op == "++" else "-=", val=one)
         if e.kind == "append":
             raise CompileError("$a[] can only be assigned to", t.line)
-        if e.kind not in ("call", "mcall"):
+        if e.kind not in ("call", "mcall", "try", "new"):
             raise CompileError("this expression does nothing on its own", t.line)
         return Node("exprstmt", t.line, expr=e)
 
@@ -502,8 +516,55 @@ class Parser:
                 raise CompileError("chained comparisons need parentheses", self.cur.line)
         return left
 
+    def catch_clause(self, value):
+        """catch ($e) { ... }  /  catch (Exception $e) { ... }. With `value`, the block may end with a bare
+        expression: the value the try expression gives when it fails."""
+        line = self.eat("catch").line
+        self.eat("(")
+        if self.cur.kind == "IDENT":
+            w = self.eat()
+            if w.val not in ("Error", "Exception", "Throwable"):
+                raise CompileError(f"Pin has one error type, Error, so catch takes no class (or Error): "
+                                   f"catch ($e) {{ ... }}", w.line)
+        var = None
+        if self.cur.kind == "VAR":
+            var = self.eat().val
+        self.eat(")")
+        start = self.eat("{").line
+        body, val = [], None
+        while not self.at("}"):
+            if self.cur.kind == "EOF":
+                raise CompileError("missing '}'", start)
+            if value and not (self.cur.kind == "IDENT" and self.cur.val in self.STATEMENT_WORDS):
+                save = self.i
+                try:
+                    e = self.expr()
+                    if self.at(";") and self.peek().val == "}":
+                        self.eat(";")
+                        val = e
+                        break
+                except CompileError:
+                    pass
+                self.i = save
+            body.append(self.statement())
+        self.eat("}")
+        if self.at("catch", "IDENT"):
+            raise CompileError("Pin has one error type, so one catch is enough", self.cur.line)
+        if self.at("finally", "IDENT"):
+            raise CompileError("finally is not in Pin yet: put the clean-up after the try/catch", self.cur.line)
+        return var, Node("block", line, body=body), val
+
+    STATEMENT_WORDS = ("if", "while", "for", "foreach", "return", "echo", "break", "continue", "throw", "try")
+
     def unary(self):
         t = self.cur
+        if t.kind == "IDENT" and t.val == "try" and self.peek().val != "{":
+            self.eat()
+            e = self.unary()
+            if self.at("catch", "IDENT"):
+                var, body, val = self.catch_clause(value=True)
+                return Node("try", t.line, e=e, var=var, cbody=body, cval=val, catch=True)
+            return Node("try", t.line, e=e, catch=False)
         if t.kind == "OP" and t.val in ("!", "-"):
             self.eat()
             return Node("unary", t.line, op=t.val, e=self.unary())
@@ -678,6 +739,22 @@ def llty(t):
     return {"int": "i64", "float": "double", "bool": "i1", "void": "void"}.get(t, "ptr")
 
 
+def fn_llret(ret, throws):
+    """LLVM return type of a function: a function that can fail also returns an error pointer (null = no error),
+    in registers next to the result (error-handling.md E-R3)."""
+    if not throws:
+        return llty(ret)
+    return "ptr" if ret == "void" else f"{{ {llty(ret)}, ptr }}"
+
+
+class Catch:
+    """Where errors go inside `try ... catch` (block=False) or `try { } catch` (block=True)."""
+    def __init__(self, label, block, temp_mark, pending_mark, stash_mark):
+        self.label, self.block = label, block
+        self.temp_mark, self.pending_mark, self.stash_mark = temp_mark, pending_mark, stash_mark
+        self.errs, self.flows = [], []      # (error value, block) and Flow at every place that can fail
+
+
 def is_class(t):
     return t in CLASSES
 
@@ -837,10 +914,8 @@ PHP_FUNCTION_HINTS = {
 NOT_IN_PIN = {
     "interface": "interfaces are not in Pin yet", "trait": "traits are not in Pin yet",
     "enum": "enums are not in Pin yet; use int or string constants", "abstract": "classes are not in Pin yet",
-    "try": "try/catch is not in Pin yet (designed: pin-language/docs design/error-handling.md); check values before "
-           "using them, e.g. isset($m[$k]) or $m[$k] ?? default",
-    "catch": "try/catch is not in Pin yet", "throw": "throw is not in Pin yet; return an error value",
-    "finally": "try/catch is not in Pin yet",
+    "catch": "catch goes after try: try f() catch ($e) { ... }  or  try { ... } catch ($e) { ... }",
+    "finally": "finally is not in Pin yet: put the clean-up after the try/catch",
     "switch": "switch is not in Pin; use if / elseif / else", "match": "match is not in Pin; use if / elseif / else",
     "do": "do/while is not in Pin; use while", "goto": "goto is not in Pin",
     "include": "use `import name;` (loads name.pn; call name::fn())", "require": "use `import name;`",
@@ -859,7 +934,7 @@ NOT_IN_PIN = {
 CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
              "PHP_EOL": ("str", "\n")}
 
-BUILTINS = {"count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
+BUILTINS = {"error", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -949,6 +1024,8 @@ declare void @pn_http_status(i64)
 declare void @pn_serve(i64, ptr)
 declare double @llvm.sqrt.f64(double)
 declare ptr @pn_obj_new(i64)
+declare void @pn_uncaught(ptr) noreturn cold
+declare ptr @pn_handler_error(ptr)
 declare void @pn_obj_free(ptr)
 declare void @pn_list_free_with(ptr, ptr)
 declare ptr @pn_list_copy_with(ptr, ptr)
@@ -972,6 +1049,7 @@ class Module:
         self.funcs = {}         # key ("name" in the main file, "module::name" elsewhere) -> (param types, ret)
         self.exported = {}      # key -> bool
         self.params = {}        # key -> [(type, name, ref)]
+        self.throws = {}        # key -> declared `throws`
         self.handler = None
         self.inferring = False  # compiling methods only to find out which ones change $this (R6)
         self.changed = False
@@ -998,7 +1076,14 @@ class Module:
                      f'{{ i64 {n - 1}, i64 -1, [{n} x i8] c"{enc}" }}, align 8')
         h.append(RUNTIME_DECLS)
         h += helpers
-        if self.handler:
+        if self.handler and self.throws.get(self.handler):
+            # an error leaving the handler answers its code (400-599, else 500) with the standard status text
+            h.append('define ptr @pn_user_handler(ptr %m, ptr %p, ptr %b) {\n'
+                     f'  %r = call {{ ptr, ptr }} @"f.{self.handler}"(ptr %m, ptr %p, ptr %b)\n'
+                     '  %v = extractvalue { ptr, ptr } %r, 0\n  %e = extractvalue { ptr, ptr } %r, 1\n'
+                     '  %bad = icmp ne ptr %e, null\n  br i1 %bad, label %err, label %ok\n'
+                     'ok:\n  ret ptr %v\nerr:\n  %s = call ptr @pn_handler_error(ptr %e)\n  ret ptr %s\n}')
+        elif self.handler:
             h.append('define ptr @pn_user_handler(ptr %m, ptr %p, ptr %b) {\n'
                      f'  %r = call ptr @"f.{self.handler}"(ptr %m, ptr %p, ptr %b)\n  ret ptr %r\n}}')
         return h
@@ -1014,6 +1099,7 @@ class Method:
         self.cls, self.node, self.params, self.ret = cls, node, params, ret     # params: (type, name, ref)
         self.name, self.vis = node.name, node.vis
         self.changing = node.name == "__construct"     # inferred for the others (ownership-v2.md R6)
+        self.throws = bool(getattr(node, "throws", False))
         self.llname = f'@"m.{cls.key}.{node.name}"'
 
 
@@ -1254,7 +1340,8 @@ class Flow:
 
 
 class FuncGen:
-    def __init__(self, mod, name, params, ret, line, is_main=False, modid="", imports=None, method=None):
+    def __init__(self, mod, name, params, ret, line, is_main=False, modid="", imports=None, method=None,
+                 throws=False):
         self.mod, self.name, self.ret, self.line, self.is_main = mod, name, ret, line, is_main
         self.modid, self.imports = modid, imports or {}     # imports: alias -> (module id, file)
         self.key = name if not modid else f"{modid}::{name}"
@@ -1283,6 +1370,11 @@ class FuncGen:
         self.open_loops = []    # loops being generated: (first order, last order, kills)
         self.at = 0             # order of the statement being generated
         self.ctor_need = set()  # in __construct: properties without a default, which it must set
+        self.throws = throws or bool(method and method.throws)
+        self.try_stack = []     # Catch handlers, innermost last
+        self.try_ok = 0         # > 0 inside the operand of a try: calls that can fail are allowed
+        self.fail_count = 0     # places that can fail so far (a try with none is an error)
+        self.temp_stack = []    # statement temporaries set aside while a catch block's statements run
         if method:
             self.declare("$this", self.cls.key, borrowed=not method.changing)
             self.flow.assigned.add("$this")
@@ -1614,6 +1706,8 @@ class FuncGen:
             return self.method_call(e)
         if k == "new":
             return self.new_object(e)
+        if k == "try":
+            return self.try_expr(e, hint)
         if k == "ref":
             raise CompileError("& goes only in front of an argument of a function or method that changes it, "
                                "e.g. discount(&$order)", e.line)
@@ -1689,6 +1783,8 @@ class FuncGen:
                 return self.rt(e.cls, e.line)
             except CompileError:
                 return None
+        if k == "try":
+            return self.static_type(e.e)
         if k == "mcall":
             ot = self.static_type(e.obj)
             if ot and is_class(ot) and e.name in CLASSES[ot].methods:
@@ -1841,6 +1937,9 @@ class FuncGen:
             o, _ = self.obj_value(e.obj) if e.obj.kind != "var" or e.obj.name != "$this" else \
                 self.use_var("$this", e.line)
         vals = self.args_for(e, m.params, f"{ci.name}::{e.name}")
+        if m.throws:
+            how = f"{show(e.obj)}->{e.name}(...)"
+            return self.failing_call(m.ret, m.llname, [f"ptr {o}"] + vals, e.line, how), m.ret, is_heap(m.ret)
         r = self.call(llty(m.ret), m.llname, f"ptr {o}", *vals)
         return r, m.ret, is_heap(m.ret)
 
@@ -1848,6 +1947,8 @@ class FuncGen:
         key = self.rt(e.cls, e.line)
         if not is_class(key):
             raise CompileError(f"new needs a class, and {e.cls} is {key}", e.line)
+        if key == "Error":
+            raise CompileError('make an error with error(code, message), e.g. throw error(404, "not found");', e.line)
         ci = CLASSES[key]
         ctor = ci.methods.get("__construct")
         if ctor is None and e.args:
@@ -1858,7 +1959,11 @@ class FuncGen:
         o = self.call("ptr", "@pn_obj_new", f"i64 {ci.size}")
         if any(f.default is not None for f in ci.fields.values()):
             self.call("void", f'@"init.{key}"', f"ptr {o}")
-        if ctor:
+        if ctor and ctor.throws:
+            self.may_fail(e.line, f"new {e.cls}(...)")
+            err = self.call("ptr", ctor.llname, f"ptr {o}", *vals)
+            self.error_branch(err, e.line, before=lambda: self.call("void", free_fn(key), f"ptr {o}"))
+        elif ctor:
             self.call("void", ctor.llname, f"ptr {o}", *vals)
         return o, key, True
 
@@ -2458,11 +2563,206 @@ class FuncGen:
                                ". See the built-in list in the AI guide, github.com/pin-language/docs"), e.line)
         _, ret = self.mod.funcs[key]
         vals = self.args_for(e, self.mod.params[key], name)   # heap values are lent to the callee
+        if self.mod.throws.get(key):
+            return self.failing_call(ret, f'@"f.{key}"', vals, e.line, f"{name}(...)"), ret, is_heap(ret)
         r = self.call(llty(ret), f'@"f.{key}"', *vals)
         return r, ret, is_heap(ret)
 
+    # --- errors (error-handling.md)
+    def may_fail(self, line, how):
+        if self.try_ok or (self.try_stack and self.try_stack[-1].block):
+            self.fail_count += 1
+            return
+        raise CompileError(f"{how.split('(')[0]}() can fail. Write try {how}, or handle the error: "
+                           f"try {how} catch ($e) {{ ... }}", line)
+
+    def failing_call(self, ret, fn, args, line, how):
+        """Call a function declared throws and send its error where it belongs."""
+        self.may_fail(line, how)
+        r = self.tmp()
+        self.emit(f"{r} = call {fn_llret(ret, True)} {fn}({', '.join(args)})")
+        if ret == "void":
+            v, err = None, r
+        else:
+            v, err = self.tmp(), self.tmp()
+            self.emit(f"{v} = extractvalue {fn_llret(ret, True)} {r}, 0")
+            self.emit(f"{err} = extractvalue {fn_llret(ret, True)} {r}, 1")
+        self.error_branch(err, line)
+        return v
+
+    def error_branch(self, err, line, before=None):
+        """If `err` is not null: run `before()` (e.g. free a half-built object), then route the error."""
+        c, ok, bad = self.tmp(), self.newlabel("noerr"), self.newlabel("err")
+        self.emit(f"{c} = icmp ne ptr {err}, null")
+        self.emit(f"br i1 {c}, label %{bad}, label %{ok}, !prof !11")
+        self.place_label(bad)
+        if before:
+            before()
+        self.route_error(err, line)
+        self.place_label(ok)
+
+    def route_error(self, err, line):
+        """Jump to the innermost catch (cleaning up what it does not keep), or leave the function with it."""
+        if self.try_stack:
+            ctx = self.try_stack[-1]
+            if not ctx.block and ctx.stash_mark < len(self.temp_stack):
+                raise CompileError("an error inside the catch of a try expression cannot go to an outer try "
+                                   "expression; use a try { ... } catch ($e) { ... } block instead", line)
+            self.free_temps(self.temps[ctx.temp_mark:])
+            for group, _ in self.temp_stack[ctx.stash_mark:]:
+                self.free_temps(group)
+            for group in self.pending[ctx.pending_mark:]:
+                self.free_temps(group)
+            ctx.errs.append((err, self.label))
+            ctx.flows.append(self.flow.copy())
+            self.emit(f"br label %{ctx.label}")
+            return
+        if self.is_main:                    # escaping the top level: print it and exit 1 (E-R6)
+            self.call("void", "@pn_uncaught", f"ptr {err}")
+            self.emit("unreachable")
+            return
+        if not self.throws:
+            raise CompileError(f"{self.name}() is not declared throws, so an error cannot leave it. Add throws "
+                               f"after the return type (: {self.ret} throws), or handle it with catch", line)
+        self.free_temps(self.temps)
+        for group, _ in self.temp_stack:
+            self.free_temps(group)
+        self.free_pending()
+        self.free_owned()
+        if self.ret == "void":
+            self.emit(f"ret ptr {err}")
+        else:
+            r = self.tmp()
+            self.emit(f"{r} = insertvalue {fn_llret(self.ret, True)} zeroinitializer, ptr {err}, 1")
+            self.emit(f"ret {fn_llret(self.ret, True)} {r}")
+
+    def emit_ret(self, v=None):
+        if self.is_main:
+            self.emit("ret i32 0")
+        elif not self.throws:
+            self.emit("ret void" if v is None else f"ret {llty(self.ret)} {v}")
+        elif v is None:
+            self.emit("ret ptr null")
+        else:
+            rt = fn_llret(self.ret, True)
+            a, b = self.tmp(), self.tmp()
+            self.emit(f"{a} = insertvalue {rt} undef, {llty(self.ret)} {v}, 0")
+            self.emit(f"{b} = insertvalue {rt} {a}, ptr null, 1")
+            self.emit(f"ret {rt} {b}")
+
+    def bind_error(self, var, err, line):
+        if var is None:
+            self.call("void", free_fn("Error"), f"ptr {err}")
+            return
+        if var in self.vars and self.vars[var] != "Error":
+            raise CompileError(f"{var} is already {self.vars[var]}; name the caught error differently", line)
+        self.declare(var, "Error")
+        self.check_writable(var, line)
+        old = self.tmp()                    # the slot holds null or an Error this function owns
+        self.emit(f"{old} = load ptr, ptr {self.slot(var)}")
+        self.call("void", free_fn("Error"), f"ptr {old}")
+        self.emit(f"store ptr {err}, ptr {self.slot(var)}")
+        self.moved.pop(var, None)
+        self.flow.maybe.discard(var)
+        self.flow.assigned.add(var)
+
+    def can_propagate(self, line, what):
+        if not (self.try_stack or self.throws or self.is_main):
+            raise CompileError(f"{self.name}() is not declared throws, so {what}. Add throws after the return "
+                               f"type (: {self.ret} throws), or handle the error: try ... catch ($e) {{ ... }}", line)
+
+    def try_expr(self, e, hint):
+        before = self.fail_count
+        if not e.catch:
+            self.can_propagate(e.line, "try cannot pass the error on")
+            self.try_ok += 1
+            try:
+                r = self.expr(e.e, hint)
+            finally:
+                self.try_ok -= 1
+            if self.fail_count == before:
+                raise CompileError("nothing after this try can fail; remove try", e.line)
+            return r
+        ctx = Catch(self.newlabel("catch"), False, len(self.temps), len(self.pending), len(self.temp_stack))
+        self.try_stack.append(ctx)
+        self.try_ok += 1
+        try:
+            v, t, owned = self.expr(e.e, hint)
+        finally:
+            self.try_ok -= 1
+            self.try_stack.pop()
+        if self.fail_count == before:
+            raise CompileError("nothing in this try can fail; remove try ... catch", e.line)
+        if t != "void" and is_heap(t) and not owned:
+            if t != "string":
+                raise CompileError(f"try ... catch must give its own value; use copy({show(e.e)})", e.line)
+            v = self.dup_str(v)
+        self.flush_temps(ctx.temp_mark)
+        ok_end, ok_flow = self.label, self.flow
+        merge = self.newlabel("tryend")
+        self.emit(f"br label %{merge}")
+        cv, c_end, c_live = self.catch_body(ctx, e.var, e.cbody, e.cval, t, e.line)
+        self.place_label(merge)
+        self.flow = Flow.merge([ok_flow] + ([self.catch_flow] if c_live else []), ok_flow)
+        if t == "void":
+            return None, "void", False
+        r = self.tmp()
+        arms = f"[ {v}, %{ok_end} ]" + (f", [ {cv}, %{c_end} ]" if c_live else "")
+        self.emit(f"{r} = phi {llty(t)} {arms}")
+        return r, t, is_heap(t)
+
+    def catch_body(self, ctx, var, body, val, want, line):
+        """Generate a catch block; returns (value, its block, whether it falls through)."""
+        self.place_label(ctx.label)
+        err = self.tmp()
+        self.emit(f"{err} = phi ptr " + ", ".join(f"[ {v}, %{b} ]" for v, b in ctx.errs))
+        self.flow = Flow.merge(ctx.flows, self.flow)
+        saved_ok, self.try_ok = self.try_ok, 0
+        self.temp_stack.append((self.temps, len(self.loops)))
+        self.temps = []
+        try:
+            self.bind_error(var, err, line)
+            self.stmt(body)
+            cv = None
+            if val is not None and self.flow.live:
+                if want in (None, "void"):
+                    v, t, owned = self.expr(val)
+                    if owned:
+                        self.temps.append((v, t))
+                else:
+                    cv, ct, owned = self.expr(val, want)
+                    if ct != want and not (ct == "int" and want == "float"):
+                        raise CompileError(f"the catch block gives {ct}, but the try gives {want}", line)
+                    cv = self.coerce(cv, ct, want, line, "catch value")
+                    if is_heap(want) and not owned:
+                        if want != "string":
+                            raise CompileError("the catch value must be its own value; use copy()", line)
+                        cv = self.dup_str(cv)
+                self.flush_temps()
+        finally:
+            self.temps, _ = self.temp_stack.pop()
+            self.try_ok = saved_ok
+        live = self.flow.live and not self.term
+        if live and want not in (None, "void") and cv is None:
+            raise CompileError(f"this catch block must return, throw, or end with a value of type {want} "
+                               f"(e.g. {'0' if want == 'int' else chr(34) * 2 if want == 'string' else '...'};)", line)
+        self.catch_flow = self.flow
+        return cv, self.label, live          # the caller's place_label() adds the jump to after the try
+
     def builtin(self, e, hint):
         name, args = e.name, e.args
+        if name == "error":
+            self.argc(e, 2)
+            code = self.int_arg(e, 0)
+            msg, mt = self.owned_value(args[1], "string", e.line)
+            if mt != "string":
+                raise CompileError(f"error() argument 2 must be a string (the message) but got {mt}", e.line)
+            o = self.call("ptr", "@pn_obj_new", "i64 16")
+            self.emit(f"store i64 {code}, ptr {o}")
+            p = self.tmp()
+            self.emit(f"{p} = getelementptr inbounds i8, ptr {o}, i64 8")
+            self.emit(f"store ptr {msg}, ptr {p}")
+            return o, "Error", True
         if name == "count":
             self.argc(e, 1)
             v, t = self.borrow(args[0])
@@ -2743,12 +3043,40 @@ class FuncGen:
             if not self.loops:
                 raise CompileError(f"'{k}' outside a loop", s.line)
             self.flush_temps()
+            for group, depth in self.temp_stack:
+                if depth >= len(self.loops):     # the statement around this catch is inside the loop left
+                    self.free_temps(group)
             lp = self.loops[-1]
             (lp.breaks if k == "break" else lp.conts).append(self.flow.copy())
             self.flow.live = False
             self.emit(f"br label %{lp.brk if k == 'break' else lp.cont}")
         elif k == "return":
             self.return_(s)
+        elif k == "throw":
+            v, t = self.owned_value(s.val, "Error", s.line)
+            if t != "Error":
+                raise CompileError(f'throw needs an Error, e.g. throw error(404, "not found"); — not {t}', s.line)
+            self.fail_count += 1
+            self.can_propagate(s.line, "throw is not allowed here")
+            self.route_error(v, s.line)
+            self.flow.live = False
+        elif k == "trystmt":
+            ctx = Catch(self.newlabel("catch"), True, len(self.temps), len(self.pending), len(self.temp_stack))
+            before = self.fail_count
+            self.try_stack.append(ctx)
+            try:
+                self.stmt(s.body)
+            finally:
+                self.try_stack.pop()
+            if self.fail_count == before:
+                raise CompileError("nothing in this try block can fail; remove try { } catch", s.line)
+            ok_flow = self.flow
+            end = self.newlabel("tryend")
+            if not self.term:
+                self.emit(f"br label %{end}")
+            self.catch_body(ctx, s.var, s.cbody, None, None, s.line)
+            self.place_label(end)
+            self.flow = Flow.merge([ok_flow, self.catch_flow], ok_flow)
         else:
             raise CompileError(f"unknown statement {k}", s.line)
         self.flush_temps()
@@ -3221,6 +3549,7 @@ class FuncGen:
             if s.val is not None:
                 raise CompileError("top-level return cannot have a value", s.line)
             self.flush_temps()
+            self.free_stashed()
             self.free_pending()
             self.free_owned()
             self.emit("ret i32 0")
@@ -3231,9 +3560,10 @@ class FuncGen:
                 raise CompileError(f"{self.name}() must return {self.ret}", s.line)
             self.ctor_done(s.line)
             self.flush_temps()
+            self.free_stashed()
             self.free_pending()
             self.free_owned()
-            self.emit("ret void")
+            self.emit_ret()
             self.flow.live = False
             return
         if self.ret == "void":
@@ -3244,10 +3574,15 @@ class FuncGen:
             v, t = self.borrow(s.val, self.ret)
         v = self.coerce(v, t, self.ret, s.line, f"return value of {self.name}()")
         self.flush_temps()
+        self.free_stashed()
         self.free_pending()
         self.free_owned()
-        self.emit(f"ret {llty(self.ret)} {v}")
+        self.emit_ret(v)
         self.flow.live = False
+
+    def free_stashed(self):
+        for group, _ in self.temp_stack:
+            self.free_temps(group)
 
     def ctor_done(self, line):
         """N5: when __construct() ends, on every path, every property has a value."""
@@ -3273,7 +3608,7 @@ class FuncGen:
             elif self.ret == "void":
                 self.ctor_done(self.line)
                 self.free_owned()
-                self.emit("ret void")
+                self.emit_ret()
             else:
                 if self.flow.live:
                     raise CompileError(f"{self.name}() can reach its end without returning {'an' if self.ret[0] in 'aeiou' else 'a'} {self.ret}. "
@@ -3286,7 +3621,7 @@ class FuncGen:
             ps = [f"{'ptr' if ref else llty(t)} %arg.{n[1:]}" for t, n, ref in self.params]
             if self.method:
                 ps.insert(0, "ptr %arg.this")
-            sig = f"define internal {llty(self.ret)} {self.llname}({', '.join(ps)})"
+            sig = f"define internal {fn_llret(self.ret, self.throws)} {self.llname}({', '.join(ps)})"
         return [sig + " {", "entry:"] + self.allocas + self.inits + ["  br label %body", "body:"] + self.body + ["}"]
 
 
@@ -3409,15 +3744,24 @@ def compile_file(path, src=None):
 
     load(main_path, "", [main_path], src)
     mod = Module()
+    # the one error type: Error { int $code; string $message; } (error-handling.md E2)
+    err = ClassInfo(Node("class", 0, name="Error", props=[], methods=[], exported=True), "Error", "", "<built-in>", {})
+    err.fields["code"] = Field("code", "int", "public", None, 0, 0)
+    err.fields["message"] = Field("message", "string", "public", None, 1, 0)
+    err.builtin = True
+    CLASSES["Error"] = err
     # classes first: function signatures and other classes may name them
     for file in order:
         mid, _, _, table, classes = mods[file]
         for c in classes:
             key = c.name if not mid else f"{mid}::{c.name}"
             if key in CLASSES:
-                raise CompileError(f"class {c.name} is already defined", c.line, file)
+                raise CompileError(f"class {c.name} is " + ("built in (the error type)" if key == "Error" else
+                                   "already defined"), c.line, file)
             CLASSES[key] = ClassInfo(c, key, mid, file, table)
     for ci in list(CLASSES.values()):
+        if getattr(ci, "builtin", False):
+            continue
         for pr in ci.node.props:
             if pr.name in ci.fields:
                 raise CompileError(f"class {ci.name} declares ${pr.name} twice", pr.line, ci.file)
@@ -3468,6 +3812,7 @@ def compile_file(path, src=None):
             mod.params[key] = ps
             mod.funcs[key] = ([t for t, _, _ in ps], resolve_type(f.ret, mid, table, f.line, file))
             mod.exported[key] = getattr(f, "exported", False) or not mid
+            mod.throws[key] = bool(getattr(f, "throws", False))
 
     def gen_method(m):
         ci = m.cls
@@ -3496,6 +3841,9 @@ def compile_file(path, src=None):
         return lines
 
     methods = [m for ci in CLASSES.values() for m in ci.methods.values()]
+    for m in methods:
+        if m.throws and m.name == "__construct":
+            pass                            # new Name(...) can fail: callers write try new Name(...)
     out = []
     mod.inferring = True                    # R6: which methods change $this; repeat until nothing new is found
     while True:
@@ -3514,8 +3862,9 @@ def compile_file(path, src=None):
         mid, funcs, main, table, _ = mods[file]
         try:
             for f in funcs:
-                g = FuncGen(mod, f.name, mod.params[f.name if not mid else f"{mid}::{f.name}"],
-                            mod.funcs[f.name if not mid else f"{mid}::{f.name}"][1], f.line, modid=mid, imports=table)
+                key = f.name if not mid else f"{mid}::{f.name}"
+                g = FuncGen(mod, f.name, mod.params[key], mod.funcs[key][1], f.line, modid=mid, imports=table,
+                            throws=mod.throws[key])
                 g.prepare(f.body)
                 g.stmt(f.body)
                 out += g.finish()
@@ -3696,7 +4045,7 @@ def pin_get(spec):
     return 0
 
 
-VERSION = "0.5.0"
+VERSION = "0.6.0-dev"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 

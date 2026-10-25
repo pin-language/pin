@@ -1,0 +1,76 @@
+class User {
+    public function __construct(public int $id, public string $name) {}
+}
+
+function findUser(int $id): User throws {
+    if ($id <= 0) { throw error(400, "bad id $id"); }
+    if ($id > 10) { throw error(404, "user $id not found"); }
+    return new User($id, "user$id");
+}
+
+function nameOf(int $id): string throws {
+    $u = try findUser($id);
+    return $u->name;
+}
+
+function safeName(int $id): string {
+    return try nameOf($id) catch ($e) {
+        echo "caught ", $e->code, ": ", $e->message, "\n";
+        "guest";
+    };
+}
+
+function count3(): int {
+    $ok = 0;
+    foreach ([1, 20, -1] as $id) {
+        try {
+            $u = findUser($id);
+            echo "found ", $u->name, "\n";
+            $ok += 1;
+        } catch ($e) {
+            echo "skip ", json_encode($e), "\n";
+        }
+    }
+    return $ok;
+}
+
+echo safeName(3), " ", safeName(50), "\n";
+echo count3(), "\n";
+$n = try nameOf(2);
+
+// an error while temporaries and a foreach over a temporary are alive: all freed on the error path
+function parts(string $s): list<string> throws {
+    if ($s == "") { throw error(422, "empty"); }
+    return explode(",", $s);
+}
+function total(list<string> $inputs): int throws {
+    $t = 0;
+    foreach ($inputs as $in) {
+        foreach (try parts($in . "") as $p) {
+            $t += intval($p);
+            if ($t > 100) { throw error(413, "too big: " . strval($t)); }
+        }
+    }
+    return $t;
+}
+echo try total(["1,2", "3"]) catch ($e) { -1; }, "\n";
+echo try total(["1,2", ""]) catch ($e) { -$e->code; }, "\n";
+echo try total(["99,5"]) catch ($e) { strlen($e->message); }, "\n";
+
+class Account {
+    public int $balance = 0;
+    public list<string> $log = [];
+    function __construct(int $start) throws {
+        if ($start < 0) { throw error(400, "negative start"); }
+        $this->balance = $start;
+    }
+    function withdraw(int $n): void throws {
+        if ($n > $this->balance) { throw error(409, "insufficient funds"); }
+        $this->balance -= $n;
+        $this->log[] = "withdraw $n";
+    }
+}
+$a = try new Account(100) catch ($e) { return; };
+try { $a->withdraw(30); $a->withdraw(500); } catch ($e) { echo $e->message, "\n"; }
+echo json_encode($a), "\n";
+try { $b = new Account(-5); echo "no\n"; } catch ($e) { echo "refused: ", $e->message, "\n"; }

@@ -1,0 +1,1 @@
+Pin has one error type, Error, so catch takes no class (or Error): catch ($e) { ... }

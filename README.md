@@ -14,7 +14,7 @@ LLVM into a single native binary, including a multi-threaded HTTP server.
 > **AI agents:** read [the AI guide](https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md) before
 > writing Pin — it is the complete language on one page — and loop on `pin check --json`. See also [AGENTS.md](AGENTS.md).
 
-> **Status: preview (0.5) for early testers.** The language is small and still changing. Do not use it
+> **Status: preview (0.6) for early testers.** The language is small and still changing. Do not use it
 > in production, and do not expose its HTTP server to the internet (no TLS, no timeouts yet).
 > 🇹🇭 ภาษาไทย: [README.th.md](README.th.md)
 
@@ -79,7 +79,7 @@ echo total(squares(10)), "\n";          // 385
 3. Run with `pin run file.pn`. Run-time errors print `panic: ...` with the line and exit 1 (inside an
    HTTP handler they answer 500 and the server keeps going).
 
-Messages are written for agents trained on PHP: reaching for `extends`, `try`, `switch`, `null`,
+Messages are written for agents trained on PHP: reaching for `extends`, `finally`, `switch`, `null`,
 `array()`, closures or `include` gets "not in Pin yet — write this instead", not a parse error.
 
 ## Commands
@@ -207,7 +207,7 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 
 ## Not there yet
 
-Inheritance and interfaces, `null` / nullable types, `try`/`catch`, default parameter values, closures,
+Inheritance and interfaces, `null` / nullable types, `finally`, default parameter values, closures,
 request headers, a full `json_decode` (nested JSON; top-level keys can already be read with
 `json_string` / `json_int` / …), PostgreSQL (SQLite is there), `go`/`await`.
 Most of these are already designed in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see

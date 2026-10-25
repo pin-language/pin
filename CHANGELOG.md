@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased (next: 0.6.0, with request headers and timeouts)
+
+Errors you expect: `throws`, `try`, `catch` (design: error-handling.md), compiled to return values.
+
+- `function f(): T throws` (methods and `__construct` too); `throw error($code, $message);` — one error type
+  `Error` with public `$code` and `$message`.
+- Every call that can fail needs `try`: `try f()` passes the error on (only in a `throws` function),
+  `try f() catch ($e) { ...; value; }` handles it in an expression, `try { ... } catch ($e) { ... }` handles
+  several lines. Forgetting `try`, a `try` with nothing that can fail, and a catch block without a value are
+  compile errors that say what to write. `catch (Exception $e)` is accepted; `finally` is not in Pin yet.
+- No stack unwinding: a failing call returns its error next to its result, in registers. Benchmark programs
+  compile to exactly the same code as before.
+- The error path frees what the failing code owned — temporaries, foreach temporaries, variables, a
+  half-built object when its constructor fails (LeakSanitizer and macOS `leaks` clean).
+- An error escaping the top level prints `error: <message> (code N)` and exits 1. A `serve()` handler may be
+  declared `throws`: an escaping error answers its code (400–599, else 500) with the standard status text;
+  the message goes to the log only, never to the client.
+- Docs: Learn chapter 9, the AI guide's Errors section, the language guide, and `error()` in the reference.
+
 ## 0.5.0 — 2026-10-25
 
 Classes, nested containers and `&`: data with mixed types and structure, without a garbage collector.

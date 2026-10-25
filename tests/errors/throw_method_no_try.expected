@@ -1,0 +1,1 @@
+$a->f() can fail. Write try $a->f(...), or handle the error: try $a->f(...) catch ($e) { ... }

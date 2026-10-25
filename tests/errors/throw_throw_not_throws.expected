@@ -1,0 +1,1 @@
+g() is not declared throws, so throw is not allowed here. Add throws after the return type (: int throws), or handle the error: try ... catch ($e) { ... }

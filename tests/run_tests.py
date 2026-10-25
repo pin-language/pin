@@ -328,6 +328,8 @@ if "--no-server" not in sys.argv:
                 except OSError:
                     time.sleep(0.1)
             for path, want in [("/boom", (500, err500)), ("/ok", (200, '{"ok":true}')), ("/oob", (500, err500)), ("/objects", (500, err500)),
+                               ("/notfound", (404, '{"error":"Not Found"}')), ("/odd", (500, err500)),
+                               ("/caught", (200, '{"code":404,"message":"no such thing: /notfound"}')),
                                ("/overflow", (500, err500)), ("/ok", (200, '{"ok":true}'))]:
                 got = http_get(8085, path)
                 if got == want:
@@ -344,6 +346,19 @@ if "--no-server" not in sys.argv:
                 fail("500 panicking requests", f"bad answers {bad[:2]}, RSS grew {grew:.0f} MB")
             else:
                 ok(f"500 panicking requests (RSS grew {grew:.0f} MB, server still answers)")
+            # errors leaving the handler free what the handler held
+            before = rss_mb(proc.pid)
+            bad = [r for r in (http_get(8085, "/notfound") for _ in range(300)) if r[0] != 404]
+            grew = rss_mb(proc.pid) - before
+            if bad or grew > 50:
+                fail("300 errors leaving the handler", f"bad answers {bad[:2]}, RSS grew {grew:.0f} MB")
+            else:
+                ok(f"300 errors leaving the handler answer 404 (RSS grew {grew:.0f} MB)")
+            log = open(out + ".log").read()
+            if "error 404: no such thing: /notfound" in log and "no such thing" not in http_get(8085, "/notfound")[1]:
+                ok("the error message goes to the log, not to the client")
+            else:
+                fail("error message only in the log", log[-300:])
             # each /objects builds an object holding 1000 lists and 1000 strings before it panics
             before = rss_mb(proc.pid)
             bad = [r for r in (http_get(8085, "/objects") for _ in range(300)) if r != (500, err500)]

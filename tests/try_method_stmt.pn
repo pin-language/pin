@@ -1,0 +1,10 @@
+class A {
+    public int $n = 0;
+    function w(int $x): void throws { if ($x < 0) { throw error(400, "neg"); } $this->n += $x; }
+}
+function f(A &$a): void throws {
+    try $a->w(1);
+    try $a->w(-1);
+}
+$a = new A();
+try f(&$a) catch ($e) { echo $e->message, " ", $a->n, "\n"; };

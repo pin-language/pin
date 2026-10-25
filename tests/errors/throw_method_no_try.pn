@@ -1,0 +1,2 @@
+class A { function f(): void throws { throw error(1, "x"); } }
+$a = new A(); $a->f();

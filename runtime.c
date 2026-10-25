@@ -1115,6 +1115,30 @@ static const char *reason(int64_t s) {
     }
 }
 
+// ---------------------------------------------------------------- errors (throws / try)
+// An Error object is { int64 code; Str *message; } (two 8-byte fields, made by error(code, message)).
+typedef struct { int64_t code; Str *message; } PinError;
+
+// An error that leaves the top level: print it and stop (error-handling.md E-R6).
+__attribute__((noreturn)) void pn_uncaught(PinError *e) {
+    fflush(stdout);
+    fprintf(stderr, "error: %.*s (code %lld)\n", (int)e->message->len, e->message->data, (long long)e->code);
+    exit(1);
+}
+
+// An error that leaves a handler: status from its code (400-599, else 500), the standard status text as the
+// body, and the message only in the log — internal details never reach the client (E3).
+Str *pn_handler_error(PinError *e) {
+    int64_t s = e->code >= 400 && e->code <= 599 ? e->code : 500;
+    http_status = s;
+    fprintf(stderr, "error %lld: %.*s\n", (long long)e->code, (int)e->message->len, e->message->data);
+    char buf[96];
+    int n = snprintf(buf, sizeof buf, "{\"error\":\"%s\"}", reason(s));
+    pn_str_free(e->message);
+    xfree(e);
+    return str_from(buf, n);
+}
+
 static void out_add(Conn *c, const char *p, size_t n) {
     if (c->out_len + n > c->out_cap) {
         c->out_cap = (c->out_len + n) * 2;

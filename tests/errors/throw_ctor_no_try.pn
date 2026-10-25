@@ -1,0 +1,2 @@
+class A { function __construct() throws { throw error(1, "x"); } }
+$a = new A();

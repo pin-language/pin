@@ -1,0 +1,1 @@
+class Error { public int $x = 0; }
