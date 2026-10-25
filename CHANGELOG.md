@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Import paths may have `[name]` / `[...name]` parts (route files of the Tack framework): `import
+  routes/users/[id] as user;` (a name with `as` is required for them). The built-in `Error` type can be named in
+  modules too (it was "unknown type" outside the main file).
 - Fix: an HTTP/1.0 client asking for keep-alive is now told `Connection: keep-alive` (`ab -k` hung).
 - **SQL from literals in a variable** (postgres.md G6): `$sql = "SELECT ... WHERE 1 = 1"; if ($q != "") { $sql .=
   " AND name = ?"; $ps[] = $q; }` now compiles — a variable whose every write is literal pieces is accepted as SQL,

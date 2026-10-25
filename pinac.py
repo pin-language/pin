@@ -245,13 +245,16 @@ class Parser:
             parts.append(self.cur.val)
             self.i += 1
         path = "".join(parts)
-        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*(/[A-Za-z0-9_][A-Za-z0-9_.\-]*)*", path) or ".." in path.split("/"):
+        seg = r"(?:[A-Za-z0-9_][A-Za-z0-9_.\-]*|\[(?:\.\.\.)?[A-Za-z_][A-Za-z0-9_]*\])"   # [id], [...rest]: route files
+        if not re.fullmatch(seg + r"(?:/" + seg + r")*", path) or ".." in path.split("/"):
             raise CompileError("import needs a module path like  import prices;  or  import http/router;  "
                                "(a file in the project folder, without .pn; paths start at the main file's folder, "
                                "so no ../ is needed)", line)
         alias = None
         if self.accept("as"):
             alias = self.eat(kind="IDENT").val
+        elif path.endswith("]"):
+            raise CompileError(f"import {path}: give it a name with as, e.g.  import {path} as user;", line)
         self.eat(";")
         return Node("import", line, path=path, alias=alias or path.split("/")[-1].replace("-", "_").replace(".", "_"))
 
@@ -4355,6 +4358,8 @@ def resolve_type(t, mid, imports, line, file=None):
     key = f"{mid}::{t}" if mid else t
     if key in CLASSES:
         return key
+    if t == "Error":                            # the built-in error type has the same name in every module
+        return "Error"
     near = {"integer": "int", "boolean": "bool", "double": "float", "str": "string", "array": "list<int>"}
     raise CompileError(f"unknown type '{t}'" + (f" (did you mean {near[t]}?)" if t in near else
                        " (types: int, float, bool, string, list<T>, map<K,V>, db, rows, or a class name)"), line, file)

@@ -7,3 +7,6 @@ export class Item {
 export class Basket {
     public list<Item> $items = [];
 }
+
+// The built-in Error type can be named in a module too.
+export function describe(Error $e): string { return $e->code . ": " . $e->message; }

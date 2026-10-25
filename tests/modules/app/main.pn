@@ -17,6 +17,7 @@ echo t::shout(prices::label("cake")), "\n";
 echo post::title("from a subfolder"), "\n";
 
 import shop;
+import routes/[id] as item;                    // brackets in a path need a name
 
 class Gift {                                   // a class here whose field is a class from shop.pn
     public shop::Item $item;
@@ -29,3 +30,5 @@ shop::Basket $b = try json_decode("{\"items\":[{\"name\":\"tea\",\"qty\":2},{\"n
 echo count($b->items), " ", $b->items[1]->name, "\n";
 Gift $g = try json_decode("{\"to\":\"Nok\",\"item\":{\"name\":\"tea\",\"qty\":3}}");
 echo $g->to, " gets ", $g->item->qty, " ", $g->item->name, "\n";
+echo item::title(9), "\n";
+echo shop::describe(error(404, "no tea")), "\n";
