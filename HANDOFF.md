@@ -141,6 +141,9 @@ Linux container, update this file.
 
 ## 5. Reproducing
 
+- Linux: `tools/linux_test.sh` — the full suite + sanitizers on arm64 and x86_64 in kept images `pin-test:*`
+  (built once from tools/linux/Dockerfile). Owner, 2026-10-25: run it for big rounds (before a release), not
+  after every change — installing clang in a fresh container each time filled the Mac's disk.
 - Tests: `python3 tests/run_tests.py` (≈2 min). Server stderr goes to `build/server_*.log` (a pipe
   nobody read filled after ~64 KB of panic lines and blocked the server: looked like a hang). Linux: run the same inside Docker (see §1).
 - Sanitizers: see CLAUDE.md. On macOS use clang for the link step; LeakSanitizer only works on Linux.
