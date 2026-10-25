@@ -1,0 +1,33 @@
+// Handlers run as tasks: one waiting does not hold up the others on the same thread.
+function lookup(int $id): string {
+    sleep_ms(100);
+    return "user$id";
+}
+
+function boom(int $n): int {
+    sleep_ms(20);
+    $xs = fill(100000, 1);              // freed by the panic cleanup
+    return $xs[$n];                     // out of range: panics inside a child task
+}
+
+function handle(string $method, string $path, string $body): string {
+    $route = url_path($path);
+    if ($route == "/slow") {
+        sleep_ms(300);
+        return "{\"slow\":true}";
+    }
+    if ($route == "/fanout") {          // three lookups at once: ~100 ms, not 300
+        $a = go lookup(1);
+        $b = go lookup(2);
+        $c = go lookup(3);
+        return json_encode([await $a, await $b, await $c]);
+    }
+    if ($route == "/childpanic") {
+        $t = go boom(999999);
+        $u = go lookup(7);              // still waiting when its sibling panics
+        return json_encode([await $t, intval(substr(await $u, 4))]);
+    }
+    return "{\"fast\":true}";
+}
+
+serve(8088, "handle");

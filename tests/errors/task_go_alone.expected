@@ -1,0 +1,1 @@
+a task started with go must be awaited: $t = go f(...); ... await $t;

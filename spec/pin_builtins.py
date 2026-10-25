@@ -344,6 +344,31 @@ echo try findUser(-1) catch ($e) { "failed with " . $e->code . ": " . $e->messag
   php="Instead of `throw new InvalidArgumentException(...)`. Pin has one error type, and errors are values "
       "returned next to the result, not exceptions that unwind the stack.")
 
+T = "tasks"
+f("sleep_ms", T, "sleep_ms(int $ms): void", "Wait this many milliseconds. Other tasks (and other requests) keep running.",
+  r'''function late(string $s, int $ms): string {
+    sleep_ms($ms);
+    return $s;
+}
+$a = go late("second", 40);
+$b = go late("first", 10);
+echo await $b, " ", await $a, "\n";''',
+  ["Counts milliseconds, not seconds like PHP's `sleep()`: `sleep_ms(1000)` is one second.",
+   "In a `serve()` handler it waits without holding the thread: the same thread answers other requests meanwhile."],
+  php="Instead of `sleep()` / `usleep()`, which block the whole process.")
+f("await_all", T, "await_all(list<Task<T>> $tasks): list<T>",
+  "Wait for every task in the list and return their results, in the list's order.",
+  r'''function square(int $n): int {
+    sleep_ms(10);
+    return $n * $n;
+}
+list<Task<int>> $ts = [];
+foreach ([1, 2, 3, 4] as $n) { $ts[] = go square($n); }
+echo json_encode(await_all($ts)), "\n";''',
+  ["The tasks run at the same time: four 10 ms tasks take about 10 ms.",
+   "The list is used up (moved). When the tasks' function is `throws`, write `try await_all($ts)`: the first "
+   "error is the one you get, and the results of the others are freed."])
+
 CATEGORIES = [{"id": S, "title": "Strings"}, {"id": L, "title": "Lists and maps"}, {"id": N, "title": "Numbers"},
               {"id": V, "title": "Conversions"}, {"id": J, "title": "JSON"}, {"id": H, "title": "HTTP"},
-              {"id": "database", "title": "Database (SQLite)"}, {"id": E, "title": "Errors"}]
+              {"id": "database", "title": "Database (SQLite)"}, {"id": E, "title": "Errors"}, {"id": T, "title": "Tasks (go / await)"}]

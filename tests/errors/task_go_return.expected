@@ -1,0 +1,1 @@
+a task started with go must be kept in a variable or a list and awaited, e.g. $t = go f(...); ... $x = await $t;  or awaited at once: await go f(...)

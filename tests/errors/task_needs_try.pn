@@ -1,0 +1,6 @@
+function f(int $x): int { sleep_ms(1); return $x; }
+function tot(list<int> $xs): int { return count($xs); }
+function inc(int &$n): void { $n += 1; }
+function mayfail(int $x): int throws { if ($x < 0) { throw error(400, "neg"); } return $x; }
+$t = go mayfail(1);
+echo await $t;

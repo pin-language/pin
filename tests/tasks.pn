@@ -1,0 +1,59 @@
+function slow(int $id, int $ms): string {
+    sleep_ms($ms);
+    return "user$id";
+}
+
+function total(list<int> $xs, int $from, int $to): int {
+    $t = 0;
+    for ($i = $from; $i < $to; $i++) { $t += $xs[$i]; }
+    return $t;
+}
+
+function find(int $id): int throws {
+    sleep_ms(10);
+    if ($id < 0) { throw error(404, "no user $id"); }
+    return $id * 10;
+}
+
+$a = go slow(1, 100);
+$b = go slow(2, 100);
+$c = go slow(3, 100);
+echo await $a, " ", await $b, " ", await $c, "\n";
+
+$xs = fill(1000, 2);
+$h = intdiv(count($xs), 2);
+$p = go total($xs, 0, $h);
+$q = go total($xs, $h, count($xs));
+echo await $p + await $q, "\n";
+
+list<Task<int>> $ts = [];
+foreach ([1, 2, 3] as $id) { $ts[] = go find($id); }
+echo json_encode(try await_all($ts) catch ($e) { [0]; }), "\n";
+$bad = go find(-5);
+echo try await $bad catch ($e) { -$e->code; }, "\n";
+echo await go slow(9, 1), "\n";
+
+// a task borrows its arguments; changing them after the await is fine
+$ys = [1, 2, 3];
+$t = go total($ys, 0, 3);
+$sum = await $t;
+$ys[] = $sum;
+echo json_encode($ys), "\n";
+
+// & lends a value to one task for changing
+function addTo(list<int> &$xs, int $n): void { for ($i = 0; $i < $n; $i++) { $xs[] = $i; sleep_ms(1); } }
+$zs = [9];
+$w = go addTo(&$zs, 3);
+await $w;
+echo json_encode($zs), "\n";
+
+// results that are lists and objects; an error on the way frees what the other tasks gave
+class Item { public function __construct(public string $name, public int $n) {} }
+function make(int $n): Item throws {
+    sleep_ms(5 * $n);
+    if ($n == 2) { throw error(500, "item 2 failed"); }
+    return new Item("item$n", $n);
+}
+list<Task<Item>> $its = [];
+for ($i = 1; $i <= 3; $i++) { $its[] = go make($i); }
+$got = try await_all($its) catch ($e) { echo "await_all: ", $e->message, "\n"; return; };

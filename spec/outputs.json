@@ -55,5 +55,7 @@
  "db_json": "[{\"id\":1,\"name\":\"tea\",\"qty\":2,\"price\":40.0},{\"id\":2,\"name\":\"cake \\\"special\\\"\",\"qty\":null,\"price\":null}]\n",
  "db_last_id": "2\n",
  "db_error": "refused: UNIQUE constraint failed: items.name\n",
- "error": "user7\nfailed with 400: bad id -1\n"
+ "error": "user7\nfailed with 400: bad id -1\n",
+ "sleep_ms": "first second\n",
+ "await_all": "[1,4,9,16]\n"
 }

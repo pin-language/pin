@@ -1,0 +1,1 @@
+cannot change $xs here: the task in $t (started on line 6) reads it until it is awaited on line 8. Change it after the await, or give the task its own copy()

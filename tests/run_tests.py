@@ -547,5 +547,73 @@ if "--no-server" not in sys.argv:
             proc.terminate()
             proc.wait(timeout=5)
 
+if "--no-server" not in sys.argv:
+    print("handlers as tasks (tests/server/tasks.pn on :8088, one thread)")
+    out = os.path.join(BUILD, "server_tasks")
+    b = build(os.path.join(ROOT, "tests", "server", "tasks.pn"), out)
+    if b.returncode:
+        fail("tests/server/tasks.pn", "build failed: " + b.stderr[-400:])
+    else:
+        proc = subprocess.Popen([out], env=dict(os.environ, PN_THREADS="1"), stdout=subprocess.DEVNULL,
+                                stderr=server_log(out))
+        try:
+            for _ in range(50):
+                try:
+                    socket.create_connection(("127.0.0.1", 8088), timeout=0.2).close()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            import threading  # noqa: E402
+            slow = {}
+            def get_slow():
+                t0 = time.time()
+                slow["r"] = http_get(8088, "/slow")
+                slow["t"] = time.time() - t0
+            th = threading.Thread(target=get_slow)
+            th.start()
+            time.sleep(0.05)
+            t0 = time.time()
+            fast = http_get(8088, "/fast")
+            dt = time.time() - t0
+            th.join()
+            if fast == (200, '{"fast":true}') and dt < 0.15 and slow.get("r") == (200, '{"slow":true}'):
+                ok(f"a waiting handler does not hold up others on its thread (fast {dt*1000:.0f} ms while slow waits)")
+            else:
+                fail("waiting handler", f"fast {fast} in {dt:.2f}s, slow {slow}")
+            t0 = time.time()
+            r = http_get(8088, "/fanout")
+            dt = time.time() - t0
+            if r == (200, '["user1","user2","user3"]') and dt < 0.25:
+                ok(f"three go calls run at once ({dt*1000:.0f} ms for three 100 ms lookups)")
+            else:
+                fail("go in a handler", f"{r} in {dt:.2f}s")
+            err500 = (500, '{"error":"Internal Server Error"}')
+            r = http_get(8088, "/childpanic")
+            if r == err500 and http_get(8088, "/fast") == (200, '{"fast":true}'):
+                ok("a panic in a task started by the handler answers 500; the server goes on")
+            else:
+                fail("panic in a child task", str(r))
+            for _ in range(20):
+                http_get(8088, "/childpanic")
+            before = rss_mb(proc.pid)
+            bad = [x for x in (http_get(8088, "/childpanic") for _ in range(200)) if x != err500]
+            grew = rss_mb(proc.pid) - before
+            if bad or grew > 60:
+                fail("200 child-task panics", f"bad {bad[:2]}, RSS grew {grew:.0f} MB")
+            else:
+                ok(f"200 child-task panics free their memory and tasks (RSS grew {grew:.0f} MB)")
+            for _ in range(30):                    # clients that hang up while their handler waits
+                sk = socket.create_connection(("127.0.0.1", 8088), timeout=2)
+                sk.sendall(b"GET /slow HTTP/1.1\r\n\r\n")
+                sk.close()
+            time.sleep(0.5)
+            if http_get(8088, "/fast") == (200, '{"fast":true}') and proc.poll() is None:
+                ok("clients that disconnect while their handler waits do not break the server")
+            else:
+                fail("disconnect while waiting", "server not answering")
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
 print(f"\n{passed} passed, {len(failed)} failed")
 sys.exit(1 if failed else 0)

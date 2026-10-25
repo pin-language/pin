@@ -321,6 +321,11 @@ class Parser:
                         "boolean": " (use bool)", "double": " (use float)", "str": " (use string)",
                         "mixed": " (every value has one type in Pin)", "object": " (name the class)"}.get(name, "")
                 raise CompileError(f"unknown type '{name}'{hint}", t.line)
+            if name == "Task" and self.at("<"):     # Task<T>: a running `go` (concurrency.md C1)
+                self.eat("<")
+                inner = self.type_()
+                self.close_angle()
+                return f"Task<{inner}>"
             if self.at("::"):                       # a class from an imported module: shop::Order
                 self.eat()
                 name = f"{name}::{self.eat(kind='IDENT').val}"
@@ -434,7 +439,7 @@ class Parser:
                 self.eat(";")
                 return Node(t.val, t.line)
             if ((t.val in TYPE_NAMES and self.peek().kind == "VAR") or (t.val in ("list", "map") and self.peek().val == "<")
-                    or (t.val not in NOT_IN_PIN and t.val not in ("new", "print", "try", "throw") and self.peek().kind == "VAR")
+                    or (t.val not in NOT_IN_PIN and t.val not in ("new", "print", "try", "throw", "await", "go") and self.peek().kind == "VAR")
                     or (self.peek().val == "::" and self.peek(2).kind == "IDENT" and self.peek(3).kind == "VAR")):
                 vtype = self.type_()
                 name = self.eat(kind="VAR").val
@@ -483,7 +488,9 @@ class Parser:
             return Node("assign", t.line, target=e, op="+=" if op == "++" else "-=", val=one)
         if e.kind == "append":
             raise CompileError("$a[] can only be assigned to", t.line)
-        if e.kind not in ("call", "mcall", "try", "new"):
+        if e.kind == "go":
+            raise CompileError("a task started with go must be awaited: $t = go f(...); ... await $t;", t.line)
+        if e.kind not in ("call", "mcall", "try", "new", "await"):
             raise CompileError("this expression does nothing on its own", t.line)
         return Node("exprstmt", t.line, expr=e)
 
@@ -558,6 +565,15 @@ class Parser:
 
     def unary(self):
         t = self.cur
+        if t.kind == "IDENT" and t.val == "go" and self.peek().kind == "IDENT":
+            self.eat()
+            e = self.unary()
+            if e.kind not in ("call", "mcall"):
+                raise CompileError("go starts a function call: $t = go fetch($id);", t.line)
+            return Node("go", t.line, call=e)
+        if t.kind == "IDENT" and t.val == "await" and self.peek().kind in ("VAR", "IDENT"):
+            self.eat()
+            return Node("await", t.line, e=self.unary())
         if t.kind == "IDENT" and t.val == "try" and self.peek().val != "{":
             self.eat()
             e = self.unary()
@@ -759,9 +775,17 @@ def is_class(t):
     return t in CLASSES
 
 
+def is_task(t):
+    return t.startswith("Task<")
+
+
+def holds_task(t):
+    return is_task(t) or (is_list(t) and holds_task(elem_of(t)))
+
+
 def owns_ptr(t):
-    """Lists, maps and objects: stored as an owned pointer whose freeing / copying / JSON needs per-type code."""
-    return is_list(t) or is_map(t) or is_class(t)
+    """Lists, maps, objects and tasks: an owned pointer whose freeing / copying / JSON needs per-type code."""
+    return is_list(t) or is_map(t) or is_class(t) or is_task(t)
 
 
 def ell(t):
@@ -786,7 +810,7 @@ def is_map(t):
 
 
 def is_heap(t):
-    return t in ("string", "db", "rows") or is_list(t) or is_map(t) or is_class(t)
+    return t in ("string", "db", "rows") or is_list(t) or is_map(t) or is_class(t) or is_task(t)
 
 
 def elem_of(t):
@@ -820,8 +844,8 @@ def free_fn(t):
 
 
 def uncopyable(t, seen=()):
-    """The part of type t that cannot be copied (a db connection or a result set), or None."""
-    if t in ("db", "rows"):
+    """The part of type t that cannot be copied (a db connection, a result set, a running task), or None."""
+    if t in ("db", "rows") or is_task(t):
         return t
     if is_list(t):
         return uncopyable(elem_of(t), seen)
@@ -903,6 +927,9 @@ PHP_FUNCTION_HINTS = {
     "str_replace": "no str_replace() yet: rebuild the string with strpos()/substr()",
     "ucfirst": "no ucfirst() yet: strtoupper(substr($s, 0, 1)) . substr($s, 1)",
     "strrev": "no strrev() yet: loop from the end with substr($s, $i, 1)",
+    "usleep": "sleep_ms($milliseconds) waits without blocking other tasks",
+    "sleep": "sleep_ms($milliseconds): Pin counts milliseconds (sleep_ms(1000) is one second) and does not block "
+             "other tasks",
     "rand": "no random numbers yet", "mt_rand": "no random numbers yet", "time": "no clock yet",
     "date": "no dates yet", "microtime": "no clock yet", "exit": "return from the top level instead",
     "die": "return from the top level instead",
@@ -938,7 +965,7 @@ NOT_IN_PIN = {
 CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
              "PHP_EOL": ("str", "\n")}
 
-BUILTINS = {"error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
+BUILTINS = {"await_all", "sleep_ms", "error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1029,6 +1056,11 @@ declare void @pn_serve(i64, ptr)
 declare double @llvm.sqrt.f64(double)
 declare ptr @pn_obj_new(i64)
 declare void @pn_uncaught(ptr) noreturn cold
+declare i32 @pn_run_main(ptr)
+declare void @pn_sleep(i64)
+declare ptr @pn_go(ptr, ptr)
+declare ptr @pn_await(ptr)
+declare ptr @pn_await_all(ptr, i64, ptr, ptr, ptr)
 declare ptr @pn_request_header(ptr)
 declare i64 @pn_request_has_header(ptr)
 declare void @pn_response_header(ptr, ptr)
@@ -1059,7 +1091,40 @@ class Module:
         self.throws = {}        # key -> declared `throws`
         self.handler = None
         self.inferring = False  # compiling methods only to find out which ones change $this (R6)
+        self.go_funcs = []      # IR of the functions that run a `go` call inside its task
+        self.ngo = 0
         self.changed = False
+
+    def go_trampoline(self, key, argtys, ret, throws, owned):
+        """A function the new task runs: unpack the frame, call the function, store result and error back."""
+        self.ngo += 1
+        name = f'@"go.{self.ngo}"'
+        if self.inferring:
+            return name
+        L = [f"define internal void {name}(ptr %f) {{", "entry:"]
+        args = []
+        for i, ty in enumerate(argtys):
+            L += [f"  %p{i} = getelementptr inbounds i8, ptr %f, i64 {16 + 8 * i}", f"  %a{i} = load {ty}, ptr %p{i}"]
+            args.append(f"{ty} %a{i}")
+        rt = fn_llret(ret, throws)
+        call = f"call {rt} @\"f.{key}\"({', '.join(args)})"
+        L.append(f"  %r = {call}" if rt != "void" else f"  {call}")
+        if throws:
+            if ret == "void":
+                L += ["  %ep = getelementptr inbounds i8, ptr %f, i64 8", "  store ptr %r, ptr %ep"]
+            else:
+                L += [f"  %v = extractvalue {rt} %r, 0", f"  %e = extractvalue {rt} %r, 1",
+                      "  %ep = getelementptr inbounds i8, ptr %f, i64 8", "  store ptr %e, ptr %ep",
+                      f"  store {llty(ret)} %v, ptr %f"]
+        elif ret != "void":
+            L.append(f"  store {llty(ret)} %r, ptr %f")
+        for j, t in enumerate(owned):
+            off = 16 + 8 * (len(argtys) + j)
+            L += [f"  %o{j}p = getelementptr inbounds i8, ptr %f, i64 {off}", f"  %o{j} = load ptr, ptr %o{j}p",
+                  f"  call void {free_fn(t)}(ptr %o{j})"]
+        L += ["  ret void", "}"]
+        self.go_funcs += L
+        return name
 
     def lit(self, s):
         """A string literal: a constant {len, -1, bytes} the runtime never frees or writes."""
@@ -1083,6 +1148,7 @@ class Module:
                      f'{{ i64 {n - 1}, i64 -1, [{n} x i8] c"{enc}" }}, align 8')
         h.append(RUNTIME_DECLS)
         h += helpers
+        h += self.go_funcs
         if self.handler and self.throws.get(self.handler):
             # an error leaving the handler answers its code (400-599, else 500) with the standard status text
             h.append('define ptr @pn_user_handler(ptr %m, ptr %p, ptr %b) {\n'
@@ -1161,6 +1227,17 @@ def gen_helper(mod, name, kind, t):
             emit(f"{r} = call ptr {json_fn(ft)}(ptr {d}, ptr {v})")
         return r
 
+    if kind == "free" and is_task(t):
+        # a task dropped without await (only on an error or panic path): wait for it, discard what it gave
+        rt = t[5:-1]
+        out += [f"define internal void {name}(ptr %p) {{", "entry:", "  %z = icmp eq ptr %p, null",
+                "  br i1 %z, label %done, label %go", "go:", "  %f = call ptr @pn_await(ptr %p)"]
+        if is_heap(rt):
+            out += ["  %r = load ptr, ptr %f", f"  call void {free_fn(rt)}(ptr %r)"]
+        out += ["  %ep = getelementptr inbounds i8, ptr %f, i64 8", "  %e = load ptr, ptr %ep",
+                f"  call void {free_fn('Error')}(ptr %e)", "  call void @pn_obj_free(ptr %f)", "  br label %done",
+                "done:", "  ret void", "}"]
+        return out
     if kind == "free":
         out.append(f"define internal void {name}(ptr %p) {{")
         out.append("entry:")
@@ -1251,7 +1328,7 @@ def json_string_literal(s):
 
 def unjsonable(t, seen=()):
     """The part of type t that json_encode() cannot write, or None. Private properties are left out."""
-    if t in ("db", "rows"):
+    if t in ("db", "rows") or is_task(t):
         return t
     if is_list(t):
         return unjsonable(elem_of(t), seen)
@@ -1382,6 +1459,12 @@ class FuncGen:
         self.try_ok = 0         # > 0 inside the operand of a try: calls that can fail are allowed
         self.fail_count = 0     # places that can fail so far (a try with none is an error)
         self.temp_stack = []    # statement temporaries set aside while a catch block's statements run
+        self.task_borrows = {}  # task (or list of tasks) variable -> {(root, props)} its tasks read (C2)
+        self.task_lent = {}     # task variable -> roots lent to it with & (C3): no other use until await
+        self.task_fail = {}     # task variable -> its tasks can fail (await needs try)
+        self.task_line = {}     # task variable -> line of its go
+        self.foreach_root = {}  # foreach variable -> (root, props) of what it walks (None: a temporary)
+        self.go_ok = False      # a go expression is allowed here (stored in a variable, or awaited)
         if method:
             self.declare("$this", self.cls.key, borrowed=not method.changing)
             self.flow.assigned.add("$this")
@@ -1510,6 +1593,15 @@ class FuncGen:
                             "changed by ") else "change")
                 raise CompileError(f"cannot {verb} {path} while a foreach is looping over "
                                    f"{'it' if walked == path else walked + f' (line {ln})'}", line)
+        for b, roots in self.task_borrows.items():
+            for r, p in roots:
+                if r == root and overlaps(p, props) and b != root:
+                    ln = self.live_use(b, at)
+                    if ln:
+                        raise CompileError(
+                            f"cannot change {root} here: the task in {b} (started on line {self.task_line.get(b, '?')}) "
+                            f"reads it until it is awaited on line {ln}. Change it after the await, or give the "
+                            f"task its own copy()", line)
         for b, roots in self.borrow_vars.items():
             for r, p in roots:
                 if r == root and overlaps(p, props) and b != root:
@@ -1537,7 +1629,8 @@ class FuncGen:
                 if is_heap(t) and n not in self.borrowed and n not in self.refs and n != "$this"]
 
     def free_owned(self, skip=()):
-        for n, t in self.owned_vars():
+        # tasks first: freeing one waits for it, and it may still be reading the other variables
+        for n, t in sorted(self.owned_vars(), key=lambda v: not holds_task(v[1])):
             if n in skip:
                 continue
             r = self.tmp()
@@ -1584,6 +1677,12 @@ class FuncGen:
 
     def use_var(self, name, line, raw=False):
         self.require_assigned(name, line)
+        for tv, lent in self.task_lent.items():
+            if name in lent and tv != name:
+                ln = self.live_use(tv, self.at)
+                if ln:
+                    raise CompileError(f"{name} is lent with & to the task in {tv} (line {self.task_line.get(tv, '?')}) "
+                                       f"until it is awaited on line {ln}; use it after the await", line)
         if name == "$this" and self.ctor_need and not raw:
             missing = sorted(f for f in self.ctor_need if f"$this->{f}" not in self.flow.assigned)
             if missing:
@@ -1594,6 +1693,9 @@ class FuncGen:
             where = " (on one path of an if or loop)" if name in self.flow.maybe else ""
             fix = (f"Pass {name} to functions instead of assigning it (functions borrow it), or open another one"
                    if self.vars[name] in ("db", "rows") else f"Use copy({name}) if you need two separate values")
+            if holds_task(self.vars[name]):
+                raise CompileError(f"the task in {name} was already awaited (or moved) on line {self.moved[name]}"
+                                   f"{where}; a task gives its result once — keep the result in a variable", line)
             raise CompileError(
                 f"{name} {how} on line {self.moved[name]}{where} and can no longer be used here. {fix}", line)
         t = self.vars[name]
@@ -1715,6 +1817,15 @@ class FuncGen:
             return self.new_object(e)
         if k == "try":
             return self.try_expr(e, hint)
+        if k == "go":
+            if not self.go_ok:
+                raise CompileError("a task started with go must be kept in a variable or a list and awaited, "
+                                   "e.g. $t = go f(...); ... $x = await $t;  or awaited at once: await go f(...)",
+                                   e.line)
+            self.go_ok = False
+            return self.go_expr(e)
+        if k == "await":
+            return self.await_expr(e)
         if k == "ref":
             raise CompileError("& goes only in front of an argument of a function or method that changes it, "
                                "e.g. discount(&$order)", e.line)
@@ -1949,6 +2060,104 @@ class FuncGen:
             return self.failing_call(m.ret, m.llname, [f"ptr {o}"] + vals, e.line, how), m.ret, is_heap(m.ret)
         r = self.call(llty(m.ret), m.llname, f"ptr {o}", *vals)
         return r, m.ret, is_heap(m.ret)
+
+    # --- tasks: go / await (concurrency.md)
+    def go_expr(self, e):
+        c = e.call
+        if c.kind == "mcall":
+            raise CompileError("go works on functions for now: put the method call in a function and go that", e.line)
+        if c.name in BUILTINS and getattr(c, "module", None) is None:
+            raise CompileError(f"go starts one of your functions, not the built-in {c.name}()", e.line)
+        key = self.fkey(c)
+        if key is None:
+            raise CompileError(f"unknown function {c.name}()", e.line)
+        params, (_, ret), throws = self.mod.params[key], self.mod.funcs[key], self.mod.throws.get(key, False)
+        if len(c.args) != len(params):
+            raise CompileError(f"{c.name}() takes {len(params)} argument(s) but got {len(c.args)}", e.line)
+        mark = len(self.temps)
+        slots, roots, lent = [], set(), set()
+        for i, (a, (pt, pn, ref)) in enumerate(zip(c.args, params)):
+            if ref:
+                if a.kind != "ref":
+                    raise CompileError(f"{c.name}() can change its argument {pn}, so write go {c.name}(&...)", e.line)
+                others = [x for j, x in enumerate(c.args) if j != i]
+                slots.append(("ptr", self.ref_arg(a.e, pt, c, others, c.name)))
+                rr = self.task_roots(a.e)
+                roots |= rr
+                lent |= {r for r, _ in rr}
+            else:
+                if a.kind == "ref":
+                    raise CompileError(f"{c.name}() does not change {pn}; remove the &", e.line)
+                v, t = self.borrow(a, pt)
+                slots.append((llty(pt), self.coerce(v, t, pt, e.line, f"argument {pn} of {c.name}()")))
+                if is_heap(pt):
+                    roots |= self.task_roots(a)
+        owned = self.temps[mark:]                   # temporaries made for the arguments: the task frees them
+        del self.temps[mark:]
+        frame = self.call("ptr", "@pn_obj_new", f"i64 {16 + 8 * (len(slots) + len(owned))}")
+        for i, (ty, v) in enumerate(slots + [("ptr", v) for v, _ in owned]):
+            p = self.tmp()
+            self.emit(f"{p} = getelementptr inbounds i8, ptr {frame}, i64 {16 + 8 * i}")
+            self.emit(f"store {ty} {v}, ptr {p}")
+        tramp = self.mod.go_trampoline(key, [ty for ty, _ in slots], ret, throws, [t for _, t in owned])
+        task = self.call("ptr", "@pn_go", f"ptr {tramp}", f"ptr {frame}")
+        self.last_go = (roots, lent, throws)
+        return task, f"Task<{ret}>", True
+
+    def await_expr(self, e):
+        op = e.e
+        fails = False
+        if op.kind == "go":
+            self.go_ok = True
+            try:
+                task, tt, _ = self.expr(op)
+            finally:
+                self.go_ok = False
+            fails = self.last_go[2]
+            how = f"await go {op.call.name}(...)"
+        else:
+            tt = self.static_type(op)
+            if tt is None or not is_task(tt):
+                raise CompileError(f"await needs a task started with go, e.g. $t = go f(); ... await $t; "
+                                   f"(this is {tt})", e.line)
+            if op.kind != "var":
+                raise CompileError("await a task variable ($t), or a list of them with await_all($tasks)", e.line)
+            fails = self.task_fail.get(op.name, False)
+            how = f"await {op.name}"
+            task, tt = self.owned_value(op, None, e.line)
+        ret = tt[5:-1]
+        if fails:
+            self.may_fail(e.line, how)
+        frame = self.call("ptr", "@pn_await", f"ptr {task}")
+        if fails:
+            ep, err = self.tmp(), self.tmp()
+            self.emit(f"{ep} = getelementptr inbounds i8, ptr {frame}, i64 8")
+            self.emit(f"{err} = load ptr, ptr {ep}")
+            self.error_branch(err, e.line, before=lambda: self.call("void", "@pn_obj_free", f"ptr {frame}"))
+        if ret == "void":
+            self.call("void", "@pn_obj_free", f"ptr {frame}")
+            return None, "void", False
+        v = self.tmp()
+        self.emit(f"{v} = load {llty(ret)}, ptr {frame}")
+        self.call("void", "@pn_obj_free", f"ptr {frame}")
+        return v, ret, is_heap(ret)
+
+    def tasks_done(self, line):
+        """C1: a task started in this function is awaited before it returns (on every path)."""
+        for n, t in self.vars.items():
+            if holds_task(t) and n not in self.borrowed and self.flow.live:
+                started = self.task_line.get(n, "?")
+                if n in self.flow.assigned and n not in self.moved:
+                    if self.is_main and line == self.line and isinstance(started, int):
+                        line = started                      # the end of the program: point at the go
+                    raise CompileError(f"the task in {n} (started on line {started}) is not awaited when "
+                                       f"{'the program ends' if self.is_main else self.name + '() returns here'}. "
+                                       f"Add " +
+                                       (f"await_all({n})" if is_list(t) else f"await {n}") + " before returning",
+                                       line)
+                if n in self.flow.maybe:
+                    raise CompileError(f"the task in {n} (started on line {started}) may not be awaited on every "
+                                       f"path to this return", line)
 
     def new_object(self, e):
         key = self.rt(e.cls, e.line)
@@ -2580,6 +2789,9 @@ class FuncGen:
         if self.try_ok or (self.try_stack and self.try_stack[-1].block):
             self.fail_count += 1
             return
+        if how.startswith("await"):
+            raise CompileError(f"{how} can fail (the task's function is declared throws). Write try {how}, or "
+                               f"handle the error: try {how} catch ($e) {{ ... }}", line)
         raise CompileError(f"{how.split('(')[0]}() can fail. Write try {how}, or handle the error: "
                            f"try {how} catch ($e) {{ ... }}", line)
 
@@ -2981,6 +3193,38 @@ class FuncGen:
             else:
                 self.call("void", "@pn_map_del", f"ptr {m}", f"i64 {key}")
             return None, "void", False
+        if name == "await_all":
+            self.argc(e, 1)
+            a = args[0]
+            lt = self.static_type(a)
+            if lt is None or not is_list(lt) or not is_task(elem_of(lt)):
+                raise CompileError(f"await_all() needs a list of tasks (list<Task<T>>), not {lt}", e.line)
+            if a.kind != "var":
+                raise CompileError("await_all() takes a list variable: await_all($tasks)", e.line)
+            fails = self.task_fail.get(a.name, False)
+            if fails:
+                self.may_fail(e.line, f"await_all({a.name})")
+            lst, _ = self.owned_value(a, None, e.line)
+            rt = elem_of(lt)[5:-1]
+            errslot = f"%v.__err{self.n}"
+            self.n += 1
+            self.allocas.append(f"  {errslot} = alloca ptr")
+            self.emit(f"store ptr null, ptr {errslot}")
+            fr = item_fn("free", rt) if is_heap(rt) else "null"
+            res = self.call("ptr", "@pn_await_all", f"ptr {lst}", f"i64 {esize(rt) if rt != 'void' else 8}",
+                            f"ptr {fr}", f"ptr {item_fn('free', 'Error')}", f"ptr {errslot}")
+            if fails:
+                err = self.tmp()
+                self.emit(f"{err} = load ptr, ptr {errslot}")
+                self.error_branch(err, e.line)
+            if rt == "void":
+                self.call("void", "@pn_list_free", f"ptr {res}")
+                return None, "void", False
+            return res, f"list<{rt}>", True
+        if name == "sleep_ms":
+            self.argc(e, 1)
+            self.call("void", "@pn_sleep", f"i64 {self.int_arg(e, 0)}")
+            return None, "void", False
         if name == "request_header":
             self.argc(e, 1)
             return self.call("ptr", "@pn_request_header", f"ptr {self.str_arg(e, 0)}"), "string", True
@@ -3130,11 +3374,68 @@ class FuncGen:
         self.flow.maybe.discard(name)
         self.flow.assigned.add(name)
 
+    def task_roots(self, a):
+        """What a task argument borrows: the owning variables behind it."""
+        root, props = path_root(a) if a.kind in ("var", "field", "index") else (None, ())
+        if root is None:
+            return set()
+        out, todo, seen = set(), [(root, props)], set()
+        while todo:                                 # follow borrowed and foreach variables to their owners
+            r, p = todo.pop()
+            if r in seen:
+                continue
+            seen.add(r)
+            if r in self.borrow_vars:
+                todo += list(self.borrow_vars[r])
+            elif r in self.foreach_root:
+                if self.foreach_root[r] is None:
+                    raise CompileError(f"{r} is an item of a temporary list that is gone after its foreach; a "
+                                       f"task cannot borrow it. Store the list in a variable first, or pass "
+                                       f"copy({show(a)})", a.line)
+                todo.append(self.foreach_root[r])
+            out.add((r, p))
+        return out
+
+    def assign_task(self, name, val_e, line, want=None):
+        """$t = go f(...);  (or moving a task / list of tasks to another variable)"""
+        if name in self.vars and holds_task(self.vars[name]) and name in self.flow.assigned and name not in self.moved:
+            raise CompileError(f"the task in {name} (line {self.task_line.get(name, '?')}) is not awaited before "
+                               f"{name} gets a new one. await {name} first", line)
+        if val_e.kind == "go":
+            self.go_ok = True
+            try:
+                v, t, _ = self.expr(val_e)
+            finally:
+                self.go_ok = False
+            roots, lent, fails = self.last_go
+            self.task_borrows[name] = set(roots)
+            self.task_lent[name] = set(lent)
+            self.task_fail[name] = fails
+            self.task_line[name] = line
+        else:
+            src = val_e.name
+            v, t = self.owned_value(val_e, None, line)
+            self.task_borrows[name] = set(self.task_borrows.get(src, ()))
+            self.task_lent[name] = set(self.task_lent.get(src, ()))
+            self.task_fail[name] = self.task_fail.get(src, False)
+            self.task_line[name] = self.task_line.get(src, line)
+        if want and t != want:
+            raise CompileError(f"{name} is declared {want} but the task gives {t}", line)
+        if name in self.vars and self.vars[name] != t:
+            raise CompileError(f"{name} is already {self.vars[name]}; a variable keeps one type", line)
+        self.declare(name, t)
+        self.emit(f"store ptr {v}, ptr {self.slot(name)}")      # the old one was awaited (moved): slot is null
+        self.moved.pop(name, None)
+        self.flow.maybe.discard(name)
+        self.flow.assigned.add(name)
+
     def assign_var(self, name, val_e, line, want=None):
         if name == "$this":
             raise CompileError("$this cannot be assigned", line)
         if self.is_borrow(name, val_e):
             return self.assign_borrow(name, val_e, line, want)
+        if val_e.kind == "go" or (val_e.kind == "var" and holds_task(self.vars.get(val_e.name, ""))):
+            return self.assign_task(name, val_e, line, want)
         if name in self.borrow_vars:
             raise CompileError(f"{name} borrows from another value, so it cannot hold this new value. Use a new "
                                f"variable name", line)
@@ -3223,7 +3524,19 @@ class FuncGen:
             if not is_list(st):
                 raise CompileError(f"{name} is {st}; $a[] = value appends to lists only", s.line)
             et = elem_of(st)
-            if is_heap(et):
+            if s.val.kind == "go":
+                self.go_ok = True
+                try:
+                    v, t, _ = self.expr(s.val, et)
+                finally:
+                    self.go_ok = False
+                roots, lent, fails = self.last_go
+                if lent:
+                    raise CompileError("a task in a list cannot take & arguments; keep it in its own variable", s.line)
+                self.task_borrows.setdefault(name, set()).update(roots)
+                self.task_fail[name] = self.task_fail.get(name, False) or fails
+                self.task_line.setdefault(name, s.line)
+            elif is_heap(et):
                 v, t = self.owned_value(s.val, et, s.line, into=name)    # the list owns what it holds
             else:
                 v, t = self.borrow(s.val)
@@ -3493,6 +3806,7 @@ class FuncGen:
             self.loop_var(s.var, vt, s.line)
         if is_heap(vt):
             self.loop_scope[s.var] = before
+            self.foreach_root[s.var] = (root, props) if root is not None else None
         pos = f"%v.__pos{self.n}"
         self.n += 1
         self.allocas.append(f"  {pos} = alloca i64")
@@ -3564,6 +3878,7 @@ class FuncGen:
 
     def return_(self, s):
         if self.is_main:
+            self.tasks_done(s.line)
             if s.val is not None:
                 raise CompileError("top-level return cannot have a value", s.line)
             self.flush_temps()
@@ -3577,6 +3892,7 @@ class FuncGen:
             if self.ret != "void":
                 raise CompileError(f"{self.name}() must return {self.ret}", s.line)
             self.ctor_done(s.line)
+            self.tasks_done(s.line)
             self.flush_temps()
             self.free_stashed()
             self.free_pending()
@@ -3591,6 +3907,7 @@ class FuncGen:
         else:
             v, t = self.borrow(s.val, self.ret)
         v = self.coerce(v, t, self.ret, s.line, f"return value of {self.name}()")
+        self.tasks_done(s.line)                 # after the value: it may be what awaits them
         self.flush_temps()
         self.free_stashed()
         self.free_pending()
@@ -3620,6 +3937,7 @@ class FuncGen:
     def finish(self):
         if not self.term:
             self.flush_temps()
+            self.tasks_done(self.line)
             if self.is_main:
                 self.free_owned()
                 self.emit("ret i32 0")
@@ -3633,8 +3951,11 @@ class FuncGen:
                                        f"Add a return at the end (or in every branch)", self.line)
                 self.call("void", "@pn_noreturn", f"i32 {self.line}")
                 self.emit("unreachable")
-        if self.is_main:
-            sig = "define i32 @main()"
+        if self.is_main:      # main runs as the first task (runtime pn_run_main), so it can await and sleep
+            sig = 'define internal i32 @"main.body"()'
+            return ([sig + " {", "entry:"] + self.allocas + self.inits + ["  br label %body", "body:"] + self.body +
+                    ["}", "define i32 @main() {", '  %r = call i32 @pn_run_main(ptr @"main.body")', "  ret i32 %r",
+                     "}"])
         else:
             ps = [f"{'ptr' if ref else llty(t)} %arg.{n[1:]}" for t, n, ref in self.params]
             if self.method:
@@ -3686,6 +4007,8 @@ def resolve_type(t, mid, imports, line, file=None):
     ("Order" in the main file, "shop::Order" for class Order of module shop)."""
     if t in ("int", "float", "bool", "string", "void", "db", "rows"):
         return t
+    if t.startswith("Task<"):
+        return f"Task<{resolve_type(t[5:-1], mid, imports, line, file)}>"
     if t.startswith("list<"):
         e = resolve_type(t[5:-1], mid, imports, line, file)
         if e in ("db", "rows"):
@@ -3694,7 +4017,7 @@ def resolve_type(t, mid, imports, line, file=None):
     if t.startswith("map<"):
         k, v = split_type_args(t[4:-1])
         v = resolve_type(v, mid, imports, line, file)
-        if v in ("db", "rows"):
+        if v in ("db", "rows") or holds_task(v):
             raise CompileError(f"a map cannot hold {v} values", line, file)
         return f"map<{k},{v}>"
     if "::" in t:
@@ -3786,6 +4109,9 @@ def compile_file(path, src=None):
             ft = resolve_type(pr.vtype, ci.mid, ci.imports, pr.line, ci.file)
             if ft == "void":
                 raise CompileError("a property cannot be void", pr.line, ci.file)
+            if holds_task(ft):
+                raise CompileError("a task cannot be kept in a property: await it in the function that started it",
+                                   pr.line, ci.file)
             if pr.default is not None:
                 try:
                     check_default(pr.default, pr.line)
@@ -3827,6 +4153,9 @@ def compile_file(path, src=None):
             if len(set(names)) != len(names):
                 raise CompileError(f"{f.name}() has two parameters with the same name", f.line, file)
             ps = [(resolve_type(t, mid, table, f.line, file), n, r) for t, n, r in f.params]
+            if any(holds_task(t) for t, _, _ in ps) or holds_task(resolve_type(f.ret, mid, table, f.line, file)):
+                raise CompileError("a task cannot be passed to or returned from a function: await it in the function "
+                                   "that started it (concurrency.md C1)", f.line, file)
             mod.params[key] = ps
             mod.funcs[key] = ([t for t, _, _ in ps], resolve_type(f.ret, mid, table, f.line, file))
             mod.exported[key] = getattr(f, "exported", False) or not mid

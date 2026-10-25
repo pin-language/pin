@@ -33,22 +33,39 @@
 
 static void oom(void) { fprintf(stderr, "fatal: out of memory\n"); exit(2); }
 
-// ---------------------------------------------------------------- allocation and panics
-// Every heap value of the language (lists, strings, maps and their buffers) is allocated here with a
-// 16-byte header. While an HTTP request is being handled, its blocks are linked into a per-thread
-// list. If the handler panics, the worker longjmps back, frees every block of that request and
-// answers 500. Handlers share nothing (no globals), so nothing outside the request can point at
-// those blocks. Outside requests blocks are not linked and the header only costs 16 bytes.
+// ---------------------------------------------------------------- allocation, requests and panics
+// Every heap value of the language (lists, strings, maps, objects and their buffers) is allocated here with a
+// 16-byte header. While an HTTP request is being handled, its blocks are linked into that request's list
+// (struct Req). If the handler panics, its task longjmps back, frees every block of that request and the
+// answer is 500. Handlers share nothing (no globals), so nothing outside the request can point at those
+// blocks. Outside requests blocks are not linked and the header only costs 16 bytes.
+//
+// One OS thread runs many tasks (green threads: go / await, and one task per request in the server), so the
+// request state is per task: `cur_req` is switched with the running task.
 
 typedef struct Blk { struct Blk *prev, *next; } Blk;
+typedef struct Res { struct Res *prev, *next; void (*close)(void *); void *obj; } Res;
+struct Task;
 
-static __thread Blk req_blocks;        // circular list of the current request's blocks
-static __thread int req_active;        // link new blocks into req_blocks
-static __thread jmp_buf *req_jmp;      // where a panic goes while a handler runs
+typedef struct Req {
+    Blk blocks;                         // circular list of the request's blocks
+    Res res;                            // open resources (database handles), closed on panic
+    int64_t status;                     // http_status()
+    char *hdr; size_t hdr_len;          // a copy of the request's header lines
+    char *resp_hdr; size_t resp_hdr_len, resp_hdr_cap;   // extra response header lines (plain malloc)
+    int resp_has_ctype;
+    int panicked;                       // a task of this request panicked: the whole request answers 500
+    struct Task *root;                  // the handler's task
+    struct Task *tasks;                 // every live task of the request (linked through req_next)
+} Req;
+
+static __thread Req *cur_req;           // the request of the running task (NULL outside requests)
+static __thread jmp_buf *cur_jmp;       // where a panic in the running task goes (NULL: stop the program)
 
 static void blk_link(Blk *b) {
-    b->prev = req_blocks.prev; b->next = &req_blocks;
-    req_blocks.prev->next = b; req_blocks.prev = b;
+    Blk *h = &cur_req->blocks;
+    b->prev = h->prev; b->next = h;
+    h->prev->next = b; h->prev = b;
 }
 
 static void blk_unlink(Blk *b) { b->prev->next = b->next; b->next->prev = b->prev; }
@@ -56,7 +73,7 @@ static void blk_unlink(Blk *b) { b->prev->next = b->next; b->next->prev = b->pre
 static void *xmalloc(size_t n) {
     Blk *b = malloc(sizeof(Blk) + n);
     if (!b) oom();
-    if (req_active) blk_link(b); else b->prev = b->next = NULL;
+    if (cur_req) blk_link(b); else b->prev = b->next = NULL;
     return b + 1;
 }
 
@@ -66,10 +83,16 @@ static void *xrealloc(void *p, size_t n) {
     if (!p) return xmalloc(n);
     Blk *b = (Blk *)p - 1;
     int linked = b->prev != NULL;
-    if (linked) blk_unlink(b);
-    b = realloc(b, sizeof(Blk) + n);
-    if (!b) oom();
-    if (linked) blk_link(b); else b->prev = b->next = NULL;
+    if (linked) {                       // keep it in the list it was in (possibly another request's)
+        Blk *prev = b->prev, *next = b->next;
+        blk_unlink(b);
+        b = realloc(b, sizeof(Blk) + n);
+        if (!b) oom();
+        b->prev = prev; b->next = next; prev->next = b; next->prev = b;
+    } else {
+        b = realloc(b, sizeof(Blk) + n);
+        if (!b) oom();
+    }
     return b + 1;
 }
 
@@ -80,9 +103,13 @@ static void xfree(void *p) {
     free(b);
 }
 
-static void req_begin(void) {
-    req_blocks.prev = req_blocks.next = &req_blocks;
-    req_active = 1;
+static Req *req_new(void) {
+    Req *r = calloc(1, sizeof(Req));
+    if (!r) oom();
+    r->blocks.prev = r->blocks.next = &r->blocks;
+    r->res.prev = r->res.next = &r->res;
+    r->status = 200;
+    return r;
 }
 
 // ---------------------------------------------------------------- resources
@@ -90,17 +117,14 @@ static void req_begin(void) {
 // while a request runs. Normally their owner closes them and unregisters; if the handler panics, the
 // request cleanup closes whatever is still open, newest first, before freeing the request's memory.
 
-typedef struct Res { struct Res *prev, *next; void (*close)(void *); void *obj; } Res;
-static __thread Res req_res;            // circular; set up on first use
-
 void *pn_res_add(void (*close)(void *), void *obj) {
-    if (!req_active) return NULL;
-    if (!req_res.next) req_res.next = req_res.prev = &req_res;
+    if (!cur_req) return NULL;
+    Res *h = &cur_req->res;
     Res *r = malloc(sizeof(Res));
     if (!r) oom();
     r->close = close; r->obj = obj;
-    r->prev = req_res.prev; r->next = &req_res;
-    req_res.prev->next = r; req_res.prev = r;
+    r->prev = h->prev; r->next = h;
+    h->prev->next = r; h->prev = r;
     return r;
 }
 
@@ -111,28 +135,26 @@ void pn_res_remove(void *token) {
     free(r);
 }
 
-static void req_close_resources(void) {
-    if (!req_res.next) return;
-    while (req_res.prev != &req_res) {          // newest first: statements before their connection
-        Res *r = req_res.prev;
+// Free everything the request still owns: open resources first (newest first: statements before their
+// connection), then every block. After a normal request this finds little or nothing.
+static void req_free_all(Req *rq) {
+    Req *saved = cur_req;
+    cur_req = rq;
+    while (rq->res.prev != &rq->res) {
+        Res *r = rq->res.prev;
         r->prev->next = r->next; r->next->prev = r->prev;
         r->close(r->obj);
         free(r);
     }
+    Blk *b = rq->blocks.next;
+    while (b != &rq->blocks) { Blk *n = b->next; free(b); b = n; }
+    rq->blocks.prev = rq->blocks.next = &rq->blocks;
+    cur_req = saved;
 }
 
-// Free everything the request still owns (only needed after a panic: normally the list is empty
-// except for blocks the server frees itself right after).
-static void req_free_all(void) {
-    req_close_resources();
-    Blk *b = req_blocks.next;
-    while (b != &req_blocks) { Blk *n = b->next; free(b); b = n; }
-    req_blocks.prev = req_blocks.next = &req_blocks;
-}
-
-// After a panic message: inside a handler, abandon the request; otherwise stop the program.
+// After a panic message: inside a request, abandon it; otherwise stop the program.
 __attribute__((noreturn)) static void die(void) {
-    if (req_jmp) longjmp(*req_jmp, 1);
+    if (cur_jmp) longjmp(*cur_jmp, 1);
     exit(1);
 }
 
@@ -159,9 +181,407 @@ static int64_t checked_add(int64_t a, int64_t b) {
     return r;
 }
 
-// ============================================================================ lists
+// ============================================================================ tasks (go / await)
+// Green threads: each task has its own stack (mmap'd, with an unmapped guard page below it, so running off
+// the end faults instead of overwriting memory). A task runs only on the OS thread that created it — no
+// work stealing — so two tasks never run at the same time on the same data. `main` itself runs as a task,
+// and in the server every request is one. Switching is a few loads and stores (pn_ctx_switch below).
+
+#include <sys/mman.h>
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define PN_ASAN 1
+#  endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) && !defined(PN_ASAN)
+#  define PN_ASAN 1
+#endif
+#ifdef PN_ASAN
+#include <sanitizer/common_interface_defs.h>
+#include <sanitizer/asan_interface.h>
+#endif
 
 typedef struct { int64_t len, cap; void *data; } List;
+enum { T_READY, T_RUNNING, T_WAITING, T_DONE };
+
+typedef struct Task {
+    void *sp;                           // saved stack pointer while it is not running
+    char *map; size_t map_size;         // the mapping: guard page + stack
+    void (*fn)(void *); void *arg;
+    int state, panicked, auto_release, queued, zombie;
+    Req *req; jmp_buf *jmp;             // cur_req / cur_jmp while it runs
+    struct Task *next_ready;
+    struct Task *waiter;                // a task waiting in pn_await for this one
+    struct Task *awaiting;              // the task this one waits for
+    int64_t wake_at; int heap_idx;      // sleeping: its place in the timer heap (-1 = none)
+    struct Task *req_next, *req_prev;   // the request's tasks
+    void (*on_done)(struct Task *);     // the server: answer the request
+    void *ctx;
+    void *fake;                         // AddressSanitizer fiber bookkeeping
+} Task;
+
+#define TASK_STACK (1u << 20)           // 1 MB per task (virtual memory: pages are used only when touched)
+#define MAIN_STACK (8u << 20)           // main gets what a normal program's stack would have
+
+static __thread Task *cur_task;         // NULL = the scheduler (the thread's own stack)
+static __thread void *sched_sp;
+static __thread __attribute__((unused)) const void *sched_bottom;
+static __thread __attribute__((unused)) size_t sched_size;
+static __thread Task *ready_head, *ready_tail;
+static __thread Task **timers;          // binary min-heap on wake_at
+static __thread int ntimers, timers_cap;
+static __thread Task *pool;             // finished tasks kept for reuse (their stacks stay mapped)
+static __thread int npool;
+
+static int64_t now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+#ifdef __APPLE__
+#define SYM(x) "_" #x
+#else
+#define SYM(x) #x
+#endif
+
+void pn_ctx_switch(void **save, void *to);
+__attribute__((visibility("hidden"), used)) void pn_task_main(Task *t);
+
+#if defined(__aarch64__)
+// saves x19-x30 and d8-d15 (the registers a call must preserve) on the current stack, switches stacks, restores
+__asm__(".text\n.p2align 2\n.globl " SYM(pn_ctx_switch) "\n" SYM(pn_ctx_switch) ":\n"
+        "  sub sp, sp, #160\n"
+        "  stp x19, x20, [sp, #0]\n  stp x21, x22, [sp, #16]\n  stp x23, x24, [sp, #32]\n"
+        "  stp x25, x26, [sp, #48]\n  stp x27, x28, [sp, #64]\n  stp x29, x30, [sp, #80]\n"
+        "  stp d8, d9, [sp, #96]\n  stp d10, d11, [sp, #112]\n  stp d12, d13, [sp, #128]\n  stp d14, d15, [sp, #144]\n"
+        "  mov x9, sp\n  str x9, [x0]\n  mov sp, x1\n"
+        "  ldp x19, x20, [sp, #0]\n  ldp x21, x22, [sp, #16]\n  ldp x23, x24, [sp, #32]\n"
+        "  ldp x25, x26, [sp, #48]\n  ldp x27, x28, [sp, #64]\n  ldp x29, x30, [sp, #80]\n"
+        "  ldp d8, d9, [sp, #96]\n  ldp d10, d11, [sp, #112]\n  ldp d12, d13, [sp, #128]\n  ldp d14, d15, [sp, #144]\n"
+        "  add sp, sp, #160\n  ret\n"
+        ".globl " SYM(pn_task_entry) "\n" SYM(pn_task_entry) ":\n"
+        "  mov x0, x19\n  bl " SYM(pn_task_main) "\n  brk #0\n");
+#elif defined(__x86_64__)
+__asm__(".text\n.globl " SYM(pn_ctx_switch) "\n" SYM(pn_ctx_switch) ":\n"
+        "  pushq %rbp\n  pushq %rbx\n  pushq %r12\n  pushq %r13\n  pushq %r14\n  pushq %r15\n"
+        "  movq %rsp, (%rdi)\n  movq %rsi, %rsp\n"
+        "  popq %r15\n  popq %r14\n  popq %r13\n  popq %r12\n  popq %rbx\n  popq %rbp\n  ret\n"
+        ".globl " SYM(pn_task_entry) "\n" SYM(pn_task_entry) ":\n"
+        "  movq %rbx, %rdi\n  call " SYM(pn_task_main) "\n  ud2\n");
+#else
+#error "tasks need a context switch for this CPU (aarch64 and x86_64 are supported)"
+#endif
+void pn_task_entry(void);
+
+static size_t page_size(void) { static size_t ps; if (!ps) ps = (size_t)sysconf(_SC_PAGESIZE); return ps; }
+
+static void frame_init(Task *t) {
+    uintptr_t top = ((uintptr_t)t->map + t->map_size) & ~(uintptr_t)15;
+#if defined(__aarch64__)
+    uint64_t *f = (uint64_t *)(top - 160);
+    memset(f, 0, 160);
+    f[0] = (uint64_t)t;                         // x19 -> pn_task_entry passes it to pn_task_main
+    f[11] = (uint64_t)pn_task_entry;            // x30: where `ret` goes
+#else
+    uint64_t *f = (uint64_t *)(top - 72);
+    memset(f, 0, 72);
+    f[4] = (uint64_t)t;                         // rbx
+    f[6] = (uint64_t)pn_task_entry;             // return address
+#endif
+    t->sp = f;
+}
+
+static Task *task_alloc(size_t stack) {
+    Task *t;
+    if (stack == TASK_STACK && pool) {
+        t = pool; pool = t->next_ready; npool--;
+        char *map = t->map; size_t ms = t->map_size;
+        memset(t, 0, sizeof *t);
+        t->map = map; t->map_size = ms;
+    } else {
+        t = calloc(1, sizeof *t);
+        if (!t) oom();
+        t->map_size = stack + page_size();
+        t->map = mmap(NULL, t->map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (t->map == MAP_FAILED) oom();
+        mprotect(t->map, page_size(), PROT_NONE);   // the guard page
+    }
+    t->heap_idx = -1;
+#ifdef PN_ASAN
+    // a reused stack still carries the previous task's poisoned redzones
+    __asan_unpoison_memory_region(t->map + page_size(), t->map_size - page_size());
+#endif
+    return t;
+}
+
+static void task_unlink_req(Task *t) {
+    if (!t->req) return;
+    if (t->req_prev) t->req_prev->req_next = t->req_next; else t->req->tasks = t->req_next;
+    if (t->req_next) t->req_next->req_prev = t->req_prev;
+    t->req_prev = t->req_next = NULL;
+}
+
+static void task_release(Task *t) {
+    task_unlink_req(t);
+    if (t->queued) { t->zombie = 1; return; }       // still in the ready queue: freed when popped
+    if (t->map_size == TASK_STACK + page_size() && npool < 64) {
+        t->next_ready = pool; pool = t; npool++;
+    } else {
+        munmap(t->map, t->map_size);
+        free(t);
+    }
+}
+
+static void make_ready(Task *t) {
+    if (t->state == T_READY || t->state == T_DONE || t->queued) return;
+    t->state = T_READY;
+    t->queued = 1;
+    t->next_ready = NULL;
+    if (ready_tail) ready_tail->next_ready = t; else ready_head = t;
+    ready_tail = t;
+}
+
+static Task *task_spawn(void (*fn)(void *), void *arg, size_t stack) {
+    Task *t = task_alloc(stack);
+    t->fn = fn; t->arg = arg;
+    t->req = cur_req;
+    if (t->req) {                               // a task belongs to the request it was started in
+        t->req_next = t->req->tasks;
+        if (t->req_next) t->req_next->req_prev = t;
+        t->req->tasks = t;
+    }
+    frame_init(t);
+    t->state = T_WAITING;
+    make_ready(t);
+    return t;
+}
+
+// --- the timer heap (sleep, and later timeouts)
+static void heap_swap(int a, int b) {
+    Task *x = timers[a]; timers[a] = timers[b]; timers[b] = x;
+    timers[a]->heap_idx = a; timers[b]->heap_idx = b;
+}
+static void heap_up(int i) {
+    while (i > 0 && timers[(i - 1) / 2]->wake_at > timers[i]->wake_at) { heap_swap(i, (i - 1) / 2); i = (i - 1) / 2; }
+}
+static void heap_down(int i) {
+    for (;;) {
+        int l = 2 * i + 1, r = l + 1, m = i;
+        if (l < ntimers && timers[l]->wake_at < timers[m]->wake_at) m = l;
+        if (r < ntimers && timers[r]->wake_at < timers[m]->wake_at) m = r;
+        if (m == i) return;
+        heap_swap(i, m); i = m;
+    }
+}
+static void heap_push(Task *t) {
+    if (ntimers == timers_cap) {
+        timers_cap = timers_cap ? timers_cap * 2 : 64;
+        Task **p = realloc(timers, sizeof(Task *) * (size_t)timers_cap);
+        if (!p) oom();
+        timers = p;
+    }
+    t->heap_idx = ntimers;
+    timers[ntimers++] = t;
+    heap_up(t->heap_idx);
+}
+static void heap_remove(Task *t) {
+    int i = t->heap_idx;
+    if (i < 0) return;
+    t->heap_idx = -1;
+    if (--ntimers == i) return;
+    timers[i] = timers[ntimers];
+    timers[i]->heap_idx = i;
+    heap_up(i);
+    heap_down(timers[i]->heap_idx);
+}
+
+// Wake every sleeper whose time has come; milliseconds until the next one (-1 = none).
+static int64_t timers_fire(int64_t now) {
+    while (ntimers && timers[0]->wake_at <= now) {
+        Task *t = timers[0];
+        heap_remove(t);
+        make_ready(t);
+    }
+    return ntimers ? timers[0]->wake_at - now : -1;
+}
+
+// --- switching
+static void enter_task(Task *t) {               // from the scheduler into t, until t parks or ends
+    cur_task = t;
+    t->state = T_RUNNING;
+    cur_req = t->req; cur_jmp = t->jmp;
+#ifdef PN_ASAN
+    void *fake = NULL;
+    __sanitizer_start_switch_fiber(&fake, t->map + page_size(), t->map_size - page_size());
+#endif
+    pn_ctx_switch(&sched_sp, t->sp);
+#ifdef PN_ASAN
+    __sanitizer_finish_switch_fiber(fake, NULL, NULL);
+#endif
+    cur_task = NULL; cur_req = NULL; cur_jmp = NULL;
+    if (t->state == T_DONE && t->auto_release) task_release(t);
+}
+
+static void leave_task(int final) {             // from the running task back to the scheduler
+    Task *t = cur_task;
+    t->req = cur_req; t->jmp = cur_jmp;
+#ifdef PN_ASAN
+    __sanitizer_start_switch_fiber(final ? NULL : &t->fake, sched_bottom, sched_size);
+#endif
+    pn_ctx_switch(&t->sp, sched_sp);
+#ifdef PN_ASAN
+    __sanitizer_finish_switch_fiber(t->fake, NULL, NULL);
+#endif
+    (void)final;
+}
+
+static void run_ready(void) {
+    while (ready_head) {
+        Task *t = ready_head;
+        ready_head = t->next_ready;
+        if (!ready_head) ready_tail = NULL;
+        t->queued = 0;
+        if (t->zombie) { t->zombie = 0; task_release(t); continue; }
+        enter_task(t);
+    }
+}
+
+// A request whose task panicked: wake its handler, which then panics too and cleans the request up.
+static void wake_root(Req *r) {
+    Task *root = r->root;
+    if (!root || root == cur_task || root->state != T_WAITING) return;
+    heap_remove(root);
+    if (root->awaiting) { root->awaiting->waiter = NULL; root->awaiting = NULL; }
+    make_ready(root);
+}
+
+static void park(void) {                        // wait until someone calls make_ready()
+    cur_task->state = T_WAITING;
+    leave_task(0);
+    if (cur_req && cur_req->panicked) die();    // another task of this request panicked
+}
+
+void pn_task_main(Task *t_) {
+    Task *volatile t = t_;
+#ifdef PN_ASAN
+    __sanitizer_finish_switch_fiber(NULL, &sched_bottom, &sched_size);
+#endif
+    jmp_buf jb;
+    if (t->req) {
+        if (setjmp(jb)) {                       // a panic in this task: the whole request fails
+            cur_jmp = NULL;
+            t->panicked = 1;
+            t->req->panicked = 1;
+            wake_root(t->req);
+            goto done;
+        }
+        cur_jmp = &jb;
+    }
+    t->fn(t->arg);
+done:
+    cur_jmp = NULL;
+    t->state = T_DONE;
+    if (t->waiter) { Task *w = t->waiter; t->waiter = NULL; w->awaiting = NULL; make_ready(w); }
+    if (t->on_done) t->on_done(t);
+    leave_task(1);
+    abort();                                    // never resumed
+}
+
+// Destroy the other tasks of a failed request (they are parked or queued, never running).
+static void req_kill_tasks(Req *r) {
+    for (Task *t = r->tasks, *nx; t; t = nx) {
+        nx = t->req_next;
+        if (t == cur_task) continue;
+        heap_remove(t);
+        t->waiter = NULL; t->awaiting = NULL;
+        t->state = T_DONE;
+        task_release(t);
+    }
+}
+
+// --- the built-ins
+void pn_sleep(int64_t ms) {
+    if (!cur_task) { struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000}; if (ms > 0) nanosleep(&ts, NULL); return; }
+    if (ms <= 0) { make_ready(cur_task); cur_task->state = T_READY; leave_task(0); if (cur_req && cur_req->panicked) die(); return; }
+    cur_task->wake_at = now_ms() + ms;
+    heap_push(cur_task);
+    park();
+}
+
+// go f(...): the compiler packs the arguments into `frame` and passes a function that unpacks them, calls f
+// and stores the result back into the frame.
+void *pn_go(void (*fn)(void *), void *frame) { return task_spawn(fn, frame, TASK_STACK); }
+
+// await: wait for the task, then hand back its frame (result and error inside) and free the task.
+void *pn_await(Task *t) {
+    while (t->state != T_DONE) {
+        t->waiter = cur_task;
+        cur_task->awaiting = t;
+        park();
+    }
+    int panicked = t->panicked;
+    void *frame = t->arg;
+    task_release(t);
+    if (panicked) die();                        // the request already failed; this task goes with it
+    return frame;
+}
+
+// await_all($tasks): wait for every task (in order), and return a list of their results; the tasks list is
+// consumed. If any failed, every other result is freed, *err_out gets the first error (the others are
+// freed) and NULL is returned.
+List *pn_list_new(int64_t esize);
+void pn_list_free(List *l);
+void pn_list_push(List *l, int64_t esize, uint64_t bits);
+List *pn_await_all(List *tasks, int64_t esize, void (*free_res)(void *), void (*free_err)(void *), void **err_out) {
+    List *out = pn_list_new(esize);
+    void *err = NULL;
+    for (int64_t i = 0; i < tasks->len; i++) {
+        void **f = pn_await(((Task **)tasks->data)[i]);
+        void *e = f[1];
+        if (e) { if (!err) err = e; else free_err(e); }
+        else if (!err) {
+            uint64_t bits = 0;
+            memcpy(&bits, f, (size_t)esize);
+            pn_list_push(out, esize, bits);
+        } else if (free_res) free_res(f[0]);
+        xfree(f);
+    }
+    pn_list_free(tasks);
+    if (err) {
+        if (free_res) for (int64_t i = 0; i < out->len; i++) free_res(((void **)out->data)[i]);
+        pn_list_free(out);
+        *err_out = err;
+        return NULL;
+    }
+    return out;
+}
+
+// The program's main runs as the first task, so it can await and sleep like any other.
+static int (*main_body)(void);
+static int main_code;
+static void main_task(void *arg) { (void)arg; main_code = main_body(); }
+
+int pn_run_main(int (*body)(void)) {
+    main_body = body;
+    Task *m = task_spawn(main_task, NULL, MAIN_STACK);
+    for (;;) {
+        run_ready();
+        if (m->state == T_DONE) return main_code;
+        int64_t wait = timers_fire(now_ms());
+        if (ready_head) continue;
+        if (wait < 0) {
+            fflush(stdout);
+            fprintf(stderr, "panic: every task is waiting and nothing can wake them (deadlock)\n");
+            exit(1);
+        }
+        struct timespec ts = {wait / 1000, (long)(wait % 1000) * 1000000};
+        nanosleep(&ts, NULL);
+        timers_fire(now_ms());
+    }
+}
+
+// ============================================================================ lists
 
 List *pn_list_new(int64_t esize) {
     List *l = xmalloc(sizeof(List));
@@ -1087,8 +1507,7 @@ void pn_print_float(double v) {
 typedef Str *(*Handler)(Str *method, Str *path, Str *body);
 static Handler pn_user_handler;   // set by pn_serve(); the compiler passes the program's handler
 
-static __thread int64_t http_status = 200;
-void pn_http_status(int64_t s) { http_status = s; }
+void pn_http_status(int64_t s) { if (cur_req) cur_req->status = s; }
 
 typedef struct Conn {
     int fd, close_after, want_out, dead;
@@ -1098,21 +1517,21 @@ typedef struct Conn {
     int64_t out_start;      // ms since a response has been waiting for the client to read it (0 = none)
     int64_t last_active;    // ms of the last completed request (for the keep-alive idle limit)
     struct Conn *prev, *next;   // the worker's open connections, scanned for timeouts
+    struct Task *busy;      // the request being handled (its task may be waiting); one at a time per connection
+    int orphan;             // closed while busy: freed when the request ends
+    int parsing;            // inside handle_input (a request that ends right away is answered there)
+    struct Conn *next_done; // requests that ended later, waiting to be answered by the worker loop
 } Conn;
+
+static __thread Conn *done_conns;
 
 // ---------------------------------------------------------------- limits (slow clients cannot hold the server)
 // A request must arrive completely within PN_READ_TIMEOUT_MS of its first byte (a new connection counts as a
 // request that has started: sending nothing is not a way to hold a connection), an idle keep-alive connection
 // is closed after PN_IDLE_TIMEOUT_MS, a response the client does not read after PN_WRITE_TIMEOUT_MS, and at
-// most PN_MAX_CONNS connections are open at once.
+// most PN_MAX_CONNS connections are open at once. A handler that is still working (waiting) is not timed out.
 static int64_t read_timeout_ms = 15000, idle_timeout_ms = 60000, write_timeout_ms = 30000, max_conns = 10000;
 static int64_t open_conns;          // all workers (atomic)
-
-static int64_t now_ms(void) {
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
-}
 
 static int64_t env_ms(const char *name, int64_t dflt) {
     const char *v = getenv(name);
@@ -1124,19 +1543,16 @@ static int64_t env_ms(const char *name, int64_t dflt) {
 }
 
 // ---------------------------------------------------------------- request and response headers
-// The handler reads the current request's headers and adds response headers through thread-local state set
-// up around each call; nothing is shared between requests or threads.
-static __thread const char *req_hdr, *req_hdr_end;     // the header lines of the request being handled
-static __thread char *resp_hdr;                        // extra response header lines (plain malloc, reused)
-static __thread size_t resp_hdr_len, resp_hdr_cap;
-static __thread int resp_has_ctype, in_handler;
+// The handler reads its request's headers and adds response headers through its Req (cur_req follows the
+// running task); nothing is shared between requests or threads.
 
 // The value of request header `name` (case-insensitive), trimmed; NULL if absent.
 static Str *find_header(Str *name) {
-    if (!in_handler) return NULL;
-    for (const char *p = req_hdr; p < req_hdr_end;) {
-        const char *e = memmem(p, (size_t)(req_hdr_end + 2 - p), "\r\n", 2);
-        if (!e) e = req_hdr_end;
+    if (!cur_req || !cur_req->hdr) return NULL;
+    const char *p = cur_req->hdr, *end = cur_req->hdr + cur_req->hdr_len;
+    while (p < end) {
+        const char *e = memmem(p, (size_t)(end - p), "\r\n", 2);
+        if (!e) e = end;
         const char *colon = memchr(p, ':', (size_t)(e - p));
         if (colon && colon - p == name->len && strncasecmp(p, name->data, (size_t)name->len) == 0) {
             const char *v = colon + 1, *ve = e;
@@ -1168,7 +1584,8 @@ static int is_token_char(unsigned char c) {
 // Add a response header. A name or value that could break the header block (CR, LF and other control bytes:
 // "header injection") panics, as do the headers the server writes itself.
 void pn_response_header(Str *name, Str *value) {
-    if (!in_handler) panic_msg("response_header() only works inside a serve() handler");
+    Req *r = cur_req;
+    if (!r || !r->root) panic_msg("response_header() only works inside a serve() handler");
     if (name->len == 0) panic_msg("response_header(): empty header name");
     for (int64_t i = 0; i < name->len; i++)
         if (!is_token_char((unsigned char)name->data[i])) panic_msg("response_header(): invalid character in the header name");
@@ -1181,19 +1598,21 @@ void pn_response_header(Str *name, Str *value) {
     for (int i = 0; own[i]; i++)
         if ((size_t)name->len == strlen(own[i]) && strncasecmp(name->data, own[i], (size_t)name->len) == 0)
             panic_msg("response_header(): Content-Length, Connection, Transfer-Encoding and Date are set by the server");
-    if (name->len == 12 && strncasecmp(name->data, "content-type", 12) == 0) resp_has_ctype = 1;
-    size_t need = resp_hdr_len + (size_t)name->len + (size_t)value->len + 4;
+    if (name->len == 12 && strncasecmp(name->data, "content-type", 12) == 0) r->resp_has_ctype = 1;
+    size_t need = r->resp_hdr_len + (size_t)name->len + (size_t)value->len + 4;
     if (need > (64u << 10)) panic_msg("response_header(): more than 64 KB of response headers");
-    if (need > resp_hdr_cap) {
-        resp_hdr_cap = need * 2;
-        char *p = realloc(resp_hdr, resp_hdr_cap);
+    if (need > r->resp_hdr_cap) {
+        r->resp_hdr_cap = need * 2;
+        char *p = realloc(r->resp_hdr, r->resp_hdr_cap);
         if (!p) oom();
-        resp_hdr = p;
+        r->resp_hdr = p;
     }
-    memcpy(resp_hdr + resp_hdr_len, name->data, (size_t)name->len); resp_hdr_len += (size_t)name->len;
-    memcpy(resp_hdr + resp_hdr_len, ": ", 2); resp_hdr_len += 2;
-    memcpy(resp_hdr + resp_hdr_len, value->data, (size_t)value->len); resp_hdr_len += (size_t)value->len;
-    memcpy(resp_hdr + resp_hdr_len, "\r\n", 2); resp_hdr_len += 2;
+    char *d = r->resp_hdr + r->resp_hdr_len;
+    memcpy(d, name->data, (size_t)name->len); d += name->len;
+    memcpy(d, ": ", 2); d += 2;
+    memcpy(d, value->data, (size_t)value->len); d += value->len;
+    memcpy(d, "\r\n", 2);
+    r->resp_hdr_len = need;
 }
 
 static const char *reason(int64_t s) {
@@ -1231,8 +1650,8 @@ __attribute__((noreturn)) void pn_uncaught(PinError *e) {
 // body, and the message only in the log — internal details never reach the client (E3).
 Str *pn_handler_error(PinError *e) {
     int64_t s = e->code >= 400 && e->code <= 599 ? e->code : 500;
-    http_status = s;
-    resp_hdr_len = 0; resp_has_ctype = 0;       // like a panic: the error answer carries none of the handler's headers
+    cur_req->status = s;
+    cur_req->resp_hdr_len = 0; cur_req->resp_has_ctype = 0;   // like a panic: none of the handler's headers
     fprintf(stderr, "error %lld: %.*s\n", (long long)e->code, (int)e->message->len, e->message->data);
     char buf[96];
     int n = snprintf(buf, sizeof buf, "{\"error\":\"%s\"}", reason(s));
@@ -1260,34 +1679,92 @@ static int ieq_prefix(const char *p, const char *end, const char *name) {
 
 static const char internal_error_body[] = "{\"error\":\"Internal Server Error\"}";
 
-// Call the program's handler for one request. A panic inside it frees everything the request
-// allocated and becomes a 500 response; the panic message (already on stderr) is the only trace,
-// so the client never sees internal details.
-static Str *run_handler(const char *line, const char *sp1, const char *sp2, const char *hdr, const char *hdr_end,
-                        const char *body, int64_t blen) {
+typedef struct {
+    Conn *c;
+    Str *method, *path, *body, *resp;
+    int keep;
+    char what[120];         // "GET /path" for the log
+} RunArgs;
+
+static void conn_free(Conn *c);
+
+// Runs as the request's task. A panic in it (or in a task it started) frees everything the request
+// allocated and becomes a 500; the panic message (already on stderr) is the only trace, so the client never
+// sees internal details.
+static void handler_task(void *arg) {
+    RunArgs *volatile ra = arg;
+    Req *volatile r = cur_req;
     jmp_buf jb;
-    req_begin();
-    req_hdr = hdr; req_hdr_end = hdr_end;
-    resp_hdr_len = 0; resp_has_ctype = 0; in_handler = 1;
     if (setjmp(jb)) {
-        req_jmp = NULL;
-        in_handler = 0;
-        resp_hdr_len = 0; resp_has_ctype = 0;        // a 500 carries none of the handler's headers
-        req_free_all();
-        fprintf(stderr, "  in request %.*s -> 500\n", (int)(sp2 - line), line);
-        http_status = 500;
-        return str_from(internal_error_body, (int64_t)sizeof internal_error_body - 1);
+        cur_jmp = NULL;
+        req_kill_tasks(r);
+        r->resp_hdr_len = 0; r->resp_has_ctype = 0;        // a 500 carries none of the handler's headers
+        req_free_all(r);
+        fprintf(stderr, "  in request %s -> 500\n", ra->what);
+        r->status = 500;
+        ra->resp = NULL;
+        return;
     }
-    req_jmp = &jb;
-    Str *method = str_from(line, sp1 - line);
-    Str *path = str_from(sp1 + 1, sp2 - sp1 - 1);
-    Str *b = str_from(body, blen);
-    http_status = 200;
-    Str *resp = pn_user_handler(method, path, b);
-    req_jmp = NULL;
-    in_handler = 0;
-    pn_str_free(method); pn_str_free(path); pn_str_free(b);
-    return resp;
+    cur_jmp = &jb;
+    ra->resp = pn_user_handler(ra->method, ra->path, ra->body);
+    cur_jmp = NULL;
+    if (r->panicked) die();                     // a task it started panicked after it finished waiting
+}
+
+// The request's task ended: write the response (unless the client is gone) and free the request.
+static void request_done(Task *t) {
+    RunArgs *ra = t->ctx;
+    Req *r = t->req;
+    Conn *c = ra->c;
+    if (!c->orphan) {
+        int64_t st = r->status;
+        const char *body = ra->resp ? ra->resp->data : internal_error_body;
+        size_t blen = ra->resp ? (size_t)ra->resp->len : sizeof internal_error_body - 1;
+        char head[160];
+        int hn = snprintf(head, sizeof head, "HTTP/1.1 %lld %s\r\n%s", (long long)st, reason(st),
+                          r->resp_has_ctype ? "" : "Content-Type: application/json\r\n");
+        out_add(c, head, (size_t)hn);
+        if (r->resp_hdr_len) out_add(c, r->resp_hdr, r->resp_hdr_len);
+        hn = snprintf(head, sizeof head, "Content-Length: %lld\r\n%s\r\n", (long long)blen,
+                      ra->keep ? "" : "Connection: close\r\n");
+        out_add(c, head, (size_t)hn);
+        out_add(c, body, blen);
+        if (!ra->keep) c->close_after = 1;
+    }
+    c->busy = NULL;
+    task_unlink_req(t);
+    req_free_all(r);                            // the response body, method, path, body and anything left over
+    free(r->hdr); free(r->resp_hdr); free(r);
+    t->req = NULL;
+    free(ra);
+    if (c->orphan) conn_free(c);
+    else if (!c->parsing) { c->next_done = done_conns; done_conns = c; }   // answered by the worker loop
+}
+
+// Start the handler for one complete request; it may finish now or wait (then the connection waits too).
+static void start_request(Conn *c, const char *line, const char *sp1, const char *sp2, const char *hdr,
+                          const char *hdr_end, const char *body, int64_t blen, int keep) {
+    Req *r = req_new();
+    r->hdr_len = hdr_end > hdr ? (size_t)(hdr_end - hdr) : 0;     // a request may have no header lines at all
+    r->hdr = malloc(r->hdr_len + 1);
+    if (!r->hdr) oom();
+    memcpy(r->hdr, hdr, r->hdr_len);            // the connection's buffer moves on while the handler waits
+    RunArgs *ra = calloc(1, sizeof *ra);
+    if (!ra) oom();
+    ra->c = c; ra->keep = keep;
+    snprintf(ra->what, sizeof ra->what, "%.*s", (int)(sp2 - line), line);
+    cur_req = r;
+    ra->method = str_from(line, sp1 - line);
+    ra->path = str_from(sp1 + 1, sp2 - sp1 - 1);
+    ra->body = str_from(body, blen);
+    Task *t = task_spawn(handler_task, ra, TASK_STACK);
+    cur_req = NULL;
+    r->root = t;
+    t->ctx = ra;
+    t->on_done = request_done;
+    t->auto_release = 1;
+    c->busy = t;
+    run_ready();                                // run it now: most handlers finish without waiting
 }
 
 // Answer with an error status and close: for requests the server will not pass to the handler.
@@ -1301,27 +1778,28 @@ static void refuse(Conn *c, int status) {
     c->in_len = 0;
 }
 
-// Parse and answer every complete request in the input buffer. -1 = close the connection.
+// Parse and answer the complete requests in the input buffer, one at a time. -1 = close the connection.
 static int handle_input(Conn *c) {
     size_t off = 0;
-    while (!c->close_after) {
+    c->parsing = 1;
+    while (!c->close_after && !c->busy) {
         char *buf = c->in + off;
         size_t avail = c->in_len - off;
         char *hend = memmem(buf, avail, "\r\n\r\n", 4);
         if (!hend) {
-            if (avail > 65536) { refuse(c, 431); return 0; }
+            if (avail > 65536) { refuse(c, 431); c->parsing = 0; return 0; }
             break;
         }
-        if (hend - buf > 65536) { refuse(c, 431); return 0; }   // also when it all arrived in one read
+        if (hend - buf > 65536) { refuse(c, 431); c->parsing = 0; return 0; }   // also when it arrived in one read
         char *line_end = memmem(buf, (size_t)(hend - buf) + 2, "\r\n", 2);
         char *sp1 = memchr(buf, ' ', (size_t)(line_end - buf));
         char *sp2 = sp1 ? memchr(sp1 + 1, ' ', (size_t)(line_end - sp1 - 1)) : NULL;
-        if (!sp2) { refuse(c, 400); return 0; }
+        if (!sp2) { refuse(c, 400); c->parsing = 0; return 0; }
         int http10 = (line_end - sp2 - 1 == 8) && memcmp(sp2 + 1, "HTTP/1.0", 8) == 0;
         int keep = !http10;
         int64_t clen = 0;
-        int seen_len = 0;
-        for (char *p = line_end + 2; p < hend;) {
+        int seen_len = 0, bad = 0;
+        for (char *p = line_end + 2; p < hend && !bad;) {
             char *e = memmem(p, (size_t)(hend + 2 - p), "\r\n", 2);
             if (ieq_prefix(p, e, "content-length:")) {
                 // only digits, and one value: anything else is how request smuggling starts (RFC 9112 6.3)
@@ -1329,16 +1807,15 @@ static int handle_input(Conn *c) {
                 while (v < ve && (*v == ' ' || *v == '\t')) v++;
                 while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t')) ve--;
                 int64_t n = 0;
-                if (v == ve || ve - v > 12) { refuse(c, 400); return 0; }
-                for (char *d = v; d < ve; d++) {
-                    if (*d < '0' || *d > '9') { refuse(c, 400); return 0; }
-                    n = n * 10 + (*d - '0');
+                if (v == ve || ve - v > 12) bad = 400;
+                for (char *d = v; d < ve && !bad; d++) {
+                    if (*d < '0' || *d > '9') bad = 400;
+                    else n = n * 10 + (*d - '0');
                 }
-                if (seen_len && n != clen) { refuse(c, 400); return 0; }
+                if (!bad && seen_len && n != clen) bad = 400;
                 clen = n; seen_len = 1;
             } else if (ieq_prefix(p, e, "transfer-encoding:")) {
-                refuse(c, 501);                       // chunked bodies are not supported: refuse, never guess
-                return 0;
+                bad = 501;                            // chunked bodies are not supported: refuse, never guess
             } else if (ieq_prefix(p, e, "connection:")) {
                 char *v = p + 11; while (*v == ' ') v++;
                 if (ieq_prefix(v, e, "close")) keep = 0;
@@ -1346,26 +1823,15 @@ static int handle_input(Conn *c) {
             }
             p = e + 2;
         }
-        if (clen > (64 << 20)) { refuse(c, 413); return 0; }
+        if (!bad && clen > (64 << 20)) bad = 413;
+        if (bad) { refuse(c, bad); c->parsing = 0; return 0; }
         size_t hlen = (size_t)(hend - buf) + 4;
         if (avail < hlen + (size_t)clen) break;      // body not complete yet
-
-        Str *resp = run_handler(buf, sp1, sp2, line_end + 2, hend, hend + 4, clen);
-        char head[160];
-        int hn = snprintf(head, sizeof head, "HTTP/1.1 %lld %s\r\n%s", (long long)http_status, reason(http_status),
-                          resp_has_ctype ? "" : "Content-Type: application/json\r\n");
-        out_add(c, head, (size_t)hn);
-        if (resp_hdr_len) out_add(c, resp_hdr, resp_hdr_len);
-        hn = snprintf(head, sizeof head, "Content-Length: %lld\r\n%s\r\n", (long long)(resp ? resp->len : 0),
-                      keep ? "" : "Connection: close\r\n");
-        out_add(c, head, (size_t)hn);
-        if (resp) out_add(c, resp->data, (size_t)resp->len);
-        pn_str_free(resp);
-        req_active = 0;
+        start_request(c, buf, sp1, sp2, line_end + 2, hend, hend + 4, clen, keep);
         off += hlen + (size_t)clen;
-        if (!keep) c->close_after = 1;
     }
     if (off) { memmove(c->in, c->in + off, c->in_len - off); c->in_len -= off; }
+    c->parsing = 0;
     return 0;
 }
 
@@ -1500,8 +1966,36 @@ static void conn_free(Conn *c) {
     __atomic_sub_fetch(&open_conns, 1, __ATOMIC_RELAXED);
 }
 
+// Close a connection. If its request is still being handled, the Conn stays until the request ends.
+static void conn_close(int ep, Conn *c, int status) {
+    c->dead = 1;
+    poll_del(ep, c);
+    c->prev->next = c->next; c->next->prev = c->prev;
+    if (status) say_and_close(c->fd, status); else close(c->fd);
+    if (c->busy) c->orphan = 1;
+    else conn_free(c);
+}
+
+static void conn_times(Conn *c, int64_t now);
+
+// After input arrived or a request ended: answer what is complete, write what is queued, close if done.
+static void conn_progress(int ep, Conn *c, int64_t now) {
+    int dead = 0;
+    if (!c->busy && c->in_len && handle_input(c) < 0) dead = 1;
+    if (!dead && c->out_len) {
+        int f = flush_out(c);
+        if (f < 0) dead = 1;
+        else if (f == 0 && !c->want_out) { c->want_out = 1; poll_want_out(ep, c, 1); }
+        else if (f == 1 && c->want_out) { c->want_out = 0; poll_want_out(ep, c, 0); }
+    }
+    if (!dead && c->close_after && c->out_len == 0 && !c->busy) dead = 1;
+    if (dead) conn_close(ep, c, 0);
+    else conn_times(c, now);
+}
+
 // Keep the timers of one connection current after something happened on it.
 static void conn_times(Conn *c, int64_t now) {
+    if (c->busy) { c->req_start = 0; c->last_active = now; return; }   // the handler is working: no limit
     if (c->out_len) { if (!c->out_start) c->out_start = now; }
     else c->out_start = 0;
     if (c->in_len) { if (!c->req_start) c->req_start = now; }   // a request has begun; its clock does not restart
@@ -1513,14 +2007,23 @@ static void *worker(void *arg) {
     int ep = poll_new();
     poll_listen(ep, lfd);
     PollEv evs[256];
-    Conn *closed[256];
     Conn conns = {0};                                     // circular list of this worker's open connections
     conns.prev = conns.next = &conns;
     int64_t last_scan = now_ms();
     (void)arg;
     for (;;) {
-        int n = poll_wait(ep, evs, 256, 1000), nclosed = 0;
+        run_ready();
         int64_t now = now_ms();
+        while (done_conns) {                                  // requests that ended after waiting: answer now
+            Conn *c = done_conns;
+            done_conns = c->next_done;
+            if (!c->dead) conn_progress(ep, c, now);
+        }
+        int64_t wait = timers_fire(now);
+        if (ready_head) continue;
+        int n = poll_wait(ep, evs, 256, wait < 0 || wait > 1000 ? 1000 : (int)wait);
+        now = now_ms();
+        timers_fire(now);
         for (int i = 0; i < n; i++) {
             Conn *c = evs[i].c;
             if (!c) {                                         // new connections
@@ -1546,10 +2049,11 @@ static void *worker(void *arg) {
                 continue;
             }
             if (c->dead) continue;                            // closed earlier in this batch (kqueue: read + write events)
-            int dead = evs[i].err, peer_done = 0;
+            int dead = evs[i].err;
             if (!dead && evs[i].in) {
                 for (;;) {
                     if (c->in_len == c->in_cap) {
+                        if (c->in_cap >= ((size_t)80 << 20)) { dead = 1; break; }   // way past every limit
                         c->in_cap *= 2;
                         char *p = realloc(c->in, c->in_cap);
                         if (!p) oom();
@@ -1557,44 +2061,25 @@ static void *worker(void *arg) {
                     }
                     ssize_t r = read(c->fd, c->in + c->in_len, c->in_cap - c->in_len);
                     if (r > 0) { c->in_len += (size_t)r; continue; }
-                    if (r == 0) { peer_done = 1; break; }      // client finished sending: still answer it
+                    if (r == 0) { c->close_after = 1; break; }   // client finished sending: still answer it
                     if (errno == EINTR) continue;
                     if (errno != EAGAIN && errno != EWOULDBLOCK) dead = 1;
                     break;
                 }
-                if (!dead && handle_input(c) < 0) dead = 1;
-                if (peer_done) c->close_after = 1;
             }
-            if (!dead && c->out_len) {
-                int f = flush_out(c);
-                if (f < 0) dead = 1;
-                else if (f == 0 && !c->want_out) { c->want_out = 1; poll_want_out(ep, c, 1); }
-                else if (f == 1 && c->want_out) { c->want_out = 0; poll_want_out(ep, c, 0); }
-            }
-            if (!dead && c->close_after && c->out_len == 0) dead = 1;
-            if (!dead) conn_times(c, now);
-            if (dead) {
-                c->dead = 1;
-                poll_del(ep, c);
-                close(c->fd);
-                c->prev->next = c->next; c->next->prev = c->prev;
-                closed[nclosed++] = c;
-            }
+            if (dead) { conn_close(ep, c, 0); continue; }
+            conn_progress(ep, c, now);
         }
-        for (int i = 0; i < nclosed; i++) conn_free(closed[i]);
-        if (now - last_scan >= 1000) {                    // once a second: drop clients that are too slow
+        if (now - last_scan >= 1000) {                        // once a second: drop clients that are too slow
             last_scan = now;
             for (Conn *c = conns.next, *nx; c != &conns; c = nx) {
                 nx = c->next;
+                if (c->busy) continue;
                 int late_out = c->out_start && now - c->out_start > write_timeout_ms;
                 int late_in = !late_out && c->req_start && now - c->req_start > read_timeout_ms;
                 int idle = !c->req_start && !c->out_len && now - c->last_active > idle_timeout_ms;
                 if (!late_out && !late_in && !idle) continue;
-                poll_del(ep, c);
-                c->prev->next = c->next; c->next->prev = c->prev;
-                if (late_in && !c->out_len) say_and_close(c->fd, 408);   // the request never arrived in full
-                else close(c->fd);
-                conn_free(c);
+                conn_close(ep, c, late_in && !c->out_len ? 408 : 0);   // 408: the request never arrived in full
             }
         }
     }
@@ -1603,6 +2088,10 @@ static void *worker(void *arg) {
 
 void pn_serve(int64_t port, Handler handler) {
     if (!handler) panic_msg("serve(): no handler compiled in");
+    if (cur_task) {               // called from main's task: from here on this stack runs the scheduler
+        cur_task = NULL;
+        cur_req = NULL; cur_jmp = NULL;
+    }
     pn_user_handler = handler;
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, NULL, _IOLBF, 0);

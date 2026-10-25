@@ -1,0 +1,1 @@
+go starts one of your functions, not the built-in strlen()

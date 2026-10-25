@@ -1,0 +1,1 @@
+$s is an item of a temporary list that is gone after its foreach; a task cannot borrow it. Store the list in a variable first, or pass copy($s)

@@ -1,0 +1,1 @@
+await $t can fail (the task's function is declared throws). Write try await $t, or handle the error: try await $t catch ($e) { ... }
