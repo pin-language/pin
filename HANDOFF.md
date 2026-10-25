@@ -97,7 +97,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 
 | # | problem | where | severity |
 |---|---|---|---|
-| B5 | ~~headers, timeouts, connection limit~~ done in 0.6.0. Still: no TLS / HTTP/2 (use a reverse proxy) | server | security |
+| B5 | ~~headers, timeouts, connection limit~~ done in 0.6.0. No TLS / HTTP/2 by design (design/tls.md: a proxy does it) | server | security |
 | B6 | `maplit` key type comes from a heuristic `expr_type_probe` | `pinac.py` | low |
 | B8 | `.ll` files are written next to sources | `pinac.py main()` | cosmetic |
 | B9 | `+ - *` wrap silently (overflow panics removed for speed until check elision exists, int-overflow.md O3) | codegen | correctness |
@@ -133,7 +133,7 @@ overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
    `json_decode`.
 8. ~~Concurrency~~ done in 0.7.0 (C1–C11; see concurrency.md status for what differs). Runtime: tasks +
    scheduler + timer heap + wait_fds in runtime.c ("tasks"), Hub ("hub"), client ("HTTP client and run()").
-   Compiler: go_expr / await_expr / tasks_done / task_borrows in pinac.py. Next ideas: TLS (decide), loop-head
+   Compiler: go_expr / await_expr / tasks_done / task_borrows in pinac.py. TLS: decided no (owner, 2026-10-25, design/tls.md). Next ideas: loop-head
    cancellation checks, stack-overflow → panic message, durable await (research first).
 9. ~~Modules/imports~~ done in 0.4.0: `import`/`export`/`mod::fn()`, packages via `pin get` + `pin.lock`
    (commit + sha256, checked every build). Not yet: transitive package resolution (a package's own package

@@ -194,7 +194,8 @@ serve(8080, "handle");''',
    "is the response body, sent as `application/json`.",
    "One thread per CPU core (`PN_THREADS=n` to change), keep-alive and pipelining. A panic in the handler "
    "answers 500 and the server keeps running.",
-   "No TLS, no request headers and no timeouts yet: for local testing only."], run=False)
+   "Speaks HTTP/1.1 without TLS, by design: put a reverse proxy (Caddy, nginx, a load balancer) in front for "
+   "https. It has request/response headers, timeouts and connection limits (see the language guide)."], run=False)
 f("http_status", H, "http_status(int $code): void", "Set the status code of the current response (default 200).",
   r'''function handle(string $method, string $path, string $body): string {
     http_status(404);
@@ -476,7 +477,8 @@ f("http_get", CL, "http_get(string $url, map<string,string> $headers, int $ms): 
 echo $health, "\n";''',
   ["A status of 400 or more fails with that status as the code (the start of the body is in the message); "
    "502 when the connection fails, 504 when there is no answer within `$ms`.",
-   "Only `http://` for now (https:// fails with 400): put a TLS proxy next to the program for https.",
+   "Only `http://`, by design: for an https API, call a local egress proxy (Caddy) on 127.0.0.1 that opens the "
+   "https connection — see design/tls.md. An https:// URL fails with 400.",
    "Header values with CR/LF panic. The name lookup itself still blocks the thread briefly."], run=False,
   php="Instead of `file_get_contents($url)` or curl.")
 f("http_post", CL, "http_post(string $url, map<string,string> $headers, string $body, int $ms): string throws",

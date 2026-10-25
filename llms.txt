@@ -9,7 +9,8 @@ client and run(); throws/try/catch errors; classes (no inheritance) with methods
 ordered map<K,V>, nested freely; ownership checks; a multi-threaded
 JSON HTTP server (serve) with query/form/JSON-body helpers; SQLite (db_*) where SQL injection does not compile;
 modules (import/export, module::fn()); Git packages (pin get, pin.lock with sha256).
-Not yet: inheritance/interfaces, null, finally, closures, default parameter values, PostgreSQL, TLS.
+Not yet: inheritance/interfaces, null, finally, closures, default parameter values, PostgreSQL.
+By design: no TLS — a proxy does https in both directions (design/tls.md).
 
 - [AI guide](https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md): the complete language on one page — rules, idioms, PHP → Pin table, error → fix table
 - [Built-in reference](https://github.com/pin-language/docs/blob/HEAD/reference/README.md): every function with a tested example

@@ -13,7 +13,7 @@ https://github.com/pin-language/docs/blob/HEAD/reference/README.md
 Current version: see `VERSION` in `pinac.py` and `CHANGELOG.md`. Pin has `go`/`await` tasks, a Hub, SSE, an http:// client, `run()`, `throws`/`try`/`catch`, classes (no inheritance), nested containers, `&` parameters, modules (`import`/`export`),
 Git packages (`pin get`, `pin.lock`), `list<string>`, request helpers (`query_param`, `json_string`, …) and
 SQLite (`db_*`). It does not yet have inheritance, `null`, `finally`, closures, default parameter values,
-TLS or PostgreSQL.
+or PostgreSQL. TLS is left to a proxy by design (pin-language/docs design/tls.md).
 
 **Changing the compiler?** Read `CLAUDE.md` (conventions, invariants, how to test) and `HANDOFF.md` (state and
 task queue). `python3 tests/run_tests.py` must stay green.

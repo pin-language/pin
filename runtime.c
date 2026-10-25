@@ -2564,7 +2564,7 @@ void pn_serve(int64_t port, Handler handler) {
 }
 
 // ============================================================================ HTTP client and run()
-// Plain http:// only for now (TLS is a later decision). Every wait goes through wait_fds(), so a task
+// Plain http:// only, by design: TLS belongs to a proxy (design/tls.md). Every wait goes through wait_fds(), so a task
 // talking to another server or a program does not hold its thread. Name lookup (getaddrinfo) still blocks.
 
 #include <netdb.h>
@@ -2629,7 +2629,7 @@ static HConn *h_open(const char *method, Str *url, Map *headers, Str *body, cons
     const char *u = url->data, *ue = url->data + url->len;
     if (url->len < 7 || strncmp(u, "http://", 7) != 0) {
         *err = make_error(400, strncmp(u, "https://", url->len < 8 ? (size_t)url->len : 8) == 0
-                          ? "https:// is not supported yet: use http:// (for example through a local TLS proxy)"
+                          ? "Pin does not speak https: call an egress proxy on 127.0.0.1 over http:// and let it open the https connection (pin-language/docs design/tls.md)"
                           : "the URL must start with http://");
         return NULL;
     }

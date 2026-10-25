@@ -11,7 +11,7 @@ production มาจับตอน compile ทุก error บอกวิธ�
 compile (คล้าย Rust แต่ย่อให้ง่าย) และ compile ผ่าน LLVM ออกมาเป็น binary ไฟล์เดียว รวมถึง HTTP server แบบหลาย thread
 
 > **สถานะ: preview (0.7) สำหรับให้คนเริ่มทดลอง** ภาษายังเล็กและยังเปลี่ยนได้ ห้ามใช้ใน production · HTTP server มี
-> timeout และ limit แล้วแต่ยังไม่มี TLS ให้ใช้ reverse proxy ข้างหน้า · English: [README.md](README.md)
+> timeout และ limit แล้ว · TLS (https) ให้ proxy ทำทั้งขาเข้าและขาออก ตามที่ออกแบบไว้ · English: [README.md](README.md)
 
 หลักการออกแบบ: **memory safety > ความเร็ว > อ่านง่าย > เหมือน PHP**
 
@@ -149,7 +149,7 @@ macOS ล็อก CPU core ไม่ได้ ส่วนต่างต่ำ
 
 ## ยังไม่มี
 
-inheritance/interface, `null`, `finally`, ค่า default ของ parameter, closure, TLS, `json_decode` เต็มรูปแบบ (ตอนนี้อ่าน key ชั้นบนสุดได้ด้วย `json_string` / `json_int` / …), PostgreSQL (SQLite มีแล้ว), `go`/`await` · ส่วนใหญ่ออกแบบไว้แล้วใน [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/)
+inheritance/interface, `null`, `finally`, ค่า default ของ parameter, closure, `json_decode` เต็มรูปแบบ (ตอนนี้อ่าน key ชั้นบนสุดได้ด้วย `json_string` / `json_int` / …), PostgreSQL (SQLite มีแล้ว), `go`/`await` · ส่วนใหญ่ออกแบบไว้แล้วใน [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/)
 
 ## อยากได้ feedback
 
