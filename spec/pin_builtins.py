@@ -467,7 +467,54 @@ f("sse_comment", H, "sse_comment(string $text): void throws",
 }
 serve(8080, "handle");''', run=False)
 
+CL = "client"
+f("http_get", CL, "http_get(string $url, map<string,string> $headers, int $ms): string throws",
+  "GET an http:// URL and return the body (waits without holding the thread).",
+  r'''$health = try http_get("http://127.0.0.1:8080/health", ["Authorization" => "Bearer abc"], 2000) catch ($e) {
+    "down: " . $e->code;
+};
+echo $health, "\n";''',
+  ["A status of 400 or more fails with that status as the code (the start of the body is in the message); "
+   "502 when the connection fails, 504 when there is no answer within `$ms`.",
+   "Only `http://` for now (https:// fails with 400): put a TLS proxy next to the program for https.",
+   "Header values with CR/LF panic. The name lookup itself still blocks the thread briefly."], run=False,
+  php="Instead of `file_get_contents($url)` or curl.")
+f("http_post", CL, "http_post(string $url, map<string,string> $headers, string $body, int $ms): string throws",
+  "POST a body (sent as application/json) and return the response body.",
+  r'''$r = try http_post("http://127.0.0.1:8080/orders", [], json_encode(["item" => "tea"]), 2000);
+echo $r, "\n";''', ["Errors as for `http_get`."], run=False)
+f("http_stream", CL, "http_stream(string $url, map<string,string> $headers, int $last_id, int $ms): stream throws",
+  "Open a Server-Sent Events stream (for example a board an agent listens to) and keep it open.",
+  r'''$s = try http_stream("http://127.0.0.1:8080/events", ["X-Api-Key" => "k1"], 0, 5000);
+while (true) {
+    $event = try stream_next($s, 60000);
+    echo "got ", $event, " (id ", stream_last_id($s), ")\n";
+}''',
+  ["With `$last_id` above 0 it sends `Last-Event-ID`, so the server can send what was missed.",
+   "The `stream` closes when it goes out of scope. `$ms` limits connecting and the response head."], run=False)
+f("stream_next", CL, "stream_next(stream $s, int $ms): string throws",
+  "The data of the next event of the stream (several `data:` lines joined with newlines; comments skipped).",
+  r'''$s = try http_stream("http://127.0.0.1:8080/events", [], 0, 5000);
+$e1 = try stream_next($s, 30000) catch ($e) { "none (" . $e->code . ")"; };
+echo $e1, "\n";''',
+  ["504 when no event comes within `$ms` (the stream stays usable); 502 when the server ended the stream: "
+   "reconnect with `http_stream($url, $headers, stream_last_id($s), $ms)`."], run=False)
+f("stream_last_id", CL, "stream_last_id(stream $s): int", "The id of the last event read (0 before any had one).",
+  r'''$s = try http_stream("http://127.0.0.1:8080/events", [], 0, 5000);
+$e1 = try stream_next($s, 30000);
+echo stream_last_id($s), "\n";''', run=False)
+f("run", CL, "run(string $program, list<string> $args, int $ms): string throws",
+  "Run a program and return what it printed. There is no shell: each argument reaches the program as it is.",
+  r'''echo try run("echo", ["hello", "world; rm -rf /"], 2000);
+echo try run("sh", ["-c", "exit 3"], 2000) catch ($e) { "exit code " . $e->code; }, "\n";''',
+  ["Arguments are never interpreted by a shell, so text from a request cannot inject commands. Write "
+   "`run(\"sh\", [\"-c\", ...])` only with text you wrote yourself.",
+   "A non-zero exit fails with the exit code as the error code and the start of stderr as the message; 127 when "
+   "the program cannot be started; 504 when it runs longer than `$ms` (it is killed).",
+   "The program reads nothing on stdin; output above 64 MB is cut."],
+  php="Instead of `exec()` / `shell_exec()` / `proc_open()`, which go through a shell.")
+
 CATEGORIES = [{"id": S, "title": "Strings"}, {"id": L, "title": "Lists and maps"}, {"id": N, "title": "Numbers"},
               {"id": V, "title": "Conversions"}, {"id": J, "title": "JSON"}, {"id": H, "title": "HTTP"},
               {"id": "database", "title": "Database (SQLite)"}, {"id": E, "title": "Errors"}, {"id": T, "title": "Tasks (go / await)"},
-              {"id": HB, "title": "Hub (messages between requests)"}]
+              {"id": HB, "title": "Hub (messages between requests)"}, {"id": CL, "title": "Other servers and programs"}]

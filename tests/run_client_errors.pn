@@ -1,0 +1,4 @@
+echo try run("echo", ["hello", "pin; rm -rf /"], 2000) catch ($e) { "?"; };
+echo try run("sh", ["-c", "echo oops >&2; exit 3"], 2000) catch ($e) { $e->code . " " . $e->message; }, "\n";
+echo try run("sleep", ["5"], 100) catch ($e) { strval($e->code); }, "\n";
+echo try run("no-such-program-x", [], 100) catch ($e) { strval($e->code); }, "\n";

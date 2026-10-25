@@ -87,7 +87,7 @@ class Node:
         return f"{self.kind}({ {k: v for k, v in self.__dict__.items() if k not in ('kind', 'line')} })"
 
 
-TYPE_NAMES = {"int", "float", "bool", "string", "list", "map", "void", "db", "rows", "sub"}
+TYPE_NAMES = {"int", "float", "bool", "string", "list", "map", "void", "db", "rows", "sub", "stream"}
 ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'", "$": "$", "0": "\0"}
 INTERP_RE = re.compile(r"(?<!\\)(\{\$[^{}\"]*\}|\$[A-Za-z_]\w*(?:->[A-Za-z_]\w*)?)")
 
@@ -810,7 +810,7 @@ def is_map(t):
 
 
 def is_heap(t):
-    return t in ("string", "db", "rows", "sub") or is_list(t) or is_map(t) or is_class(t) or is_task(t)
+    return t in ("string", "db", "rows", "sub", "stream") or is_list(t) or is_map(t) or is_class(t) or is_task(t)
 
 
 def elem_of(t):
@@ -837,6 +837,8 @@ def free_fn(t):
         return "@pn_rows_free"
     if t == "sub":
         return "@pn_hub_unsubscribe"
+    if t == "stream":
+        return "@pn_stream_close"
     if is_list(t):
         e = elem_of(t)
         return "@pn_list_free_str" if e == "string" else need("free", t) if owns_ptr(e) else "@pn_list_free"
@@ -847,7 +849,7 @@ def free_fn(t):
 
 def uncopyable(t, seen=()):
     """The part of type t that cannot be copied (a db connection, a result set, a running task), or None."""
-    if t in ("db", "rows", "sub") or is_task(t):
+    if t in ("db", "rows", "sub", "stream") or is_task(t):
         return t
     if is_list(t):
         return uncopyable(elem_of(t), seen)
@@ -939,7 +941,12 @@ PHP_FUNCTION_HINTS = {
     "getallheaders": "request_header(\"Name\") reads one request header (\"\" if absent)",
     "apache_request_headers": "request_header(\"Name\") reads one request header (\"\" if absent)",
     "setcookie": "response_header(\"Set-Cookie\", \"name=value; HttpOnly; Secure; SameSite=Lax\")",
-    "file_get_contents": "no file or network access yet", "fopen": "no file access yet",
+    "file_get_contents": "http_get($url, [], 5000) for http:// URLs (no file access yet)", "fopen": "no file access yet",
+    "curl_init": "http_get($url, $headers, $ms) / http_post($url, $headers, $body, $ms)",
+    "exec": "run($program, [\"arg\", ...], $ms): no shell, the arguments go to the program as they are",
+    "shell_exec": "run($program, [\"arg\", ...], $ms): no shell, so nothing can be injected",
+    "system": "run($program, [\"arg\", ...], $ms)", "passthru": "run($program, [\"arg\", ...], $ms)",
+    "proc_open": "run($program, [\"arg\", ...], $ms)",
 }
 
 
@@ -967,7 +974,7 @@ NOT_IN_PIN = {
 CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
              "PHP_EOL": ("str", "\n")}
 
-BUILTINS = {"await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
+BUILTINS = {"http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
             "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
@@ -1076,6 +1083,13 @@ declare ptr @pn_sse_start()
 declare ptr @pn_sse_send(ptr)
 declare ptr @pn_sse_send_id(i64, ptr)
 declare ptr @pn_sse_comment(ptr)
+declare { ptr, ptr } @pn_http_get(ptr, ptr, i64)
+declare { ptr, ptr } @pn_http_post(ptr, ptr, ptr, i64)
+declare { ptr, ptr } @pn_http_stream(ptr, ptr, i64, i64)
+declare { ptr, ptr } @pn_stream_next(ptr, i64)
+declare i64 @pn_stream_last_id(ptr)
+declare void @pn_stream_close(ptr)
+declare { ptr, ptr } @pn_run(ptr, ptr, i64)
 declare ptr @pn_request_header(ptr)
 declare i64 @pn_request_has_header(ptr)
 declare void @pn_response_header(ptr, ptr)
@@ -1343,7 +1357,7 @@ def json_string_literal(s):
 
 def unjsonable(t, seen=()):
     """The part of type t that json_encode() cannot write, or None. Private properties are left out."""
-    if t in ("db", "rows", "sub") or is_task(t):
+    if t in ("db", "rows", "sub", "stream") or is_task(t):
         return t
     if is_list(t):
         return unjsonable(elem_of(t), seen)
@@ -3236,6 +3250,38 @@ class FuncGen:
                 self.call("void", "@pn_list_free", f"ptr {res}")
                 return None, "void", False
             return res, f"list<{rt}>", True
+        if name in ("http_get", "http_post", "http_stream"):
+            n = {"http_get": 3, "http_post": 4, "http_stream": 4}[name]
+            self.argc(e, n)
+            url = self.str_arg(e, 0)
+            hv, ht = self.borrow(args[1], "map<string,string>")
+            if ht != "map<string,string>":
+                raise CompileError(f"{name}() argument 2 is the request headers, a map<string,string> (use [] for "
+                                   f"none), not {ht}", e.line)
+            if name == "http_get":
+                a = [f"ptr {url}", f"ptr {hv}", f"i64 {self.int_arg(e, 2)}"]
+            elif name == "http_post":
+                a = [f"ptr {url}", f"ptr {hv}", f"ptr {self.str_arg(e, 2)}", f"i64 {self.int_arg(e, 3)}"]
+            else:
+                a = [f"ptr {url}", f"ptr {hv}", f"i64 {self.int_arg(e, 2)}", f"i64 {self.int_arg(e, 3)}"]
+            ret = "stream" if name == "http_stream" else "string"
+            return self.failing_call(ret, f"@pn_{name}", a, e.line, f"{name}(...)"), ret, True
+        if name in ("stream_next", "stream_last_id"):
+            self.argc(e, 2 if name == "stream_next" else 1)
+            sv = self.typed_arg(e, 0, "stream")
+            if name == "stream_last_id":
+                return self.call("i64", "@pn_stream_last_id", f"ptr {sv}"), "int", False
+            return self.failing_call("string", "@pn_stream_next", [f"ptr {sv}", f"i64 {self.int_arg(e, 1)}"], e.line,
+                                     "stream_next(...)"), "string", True
+        if name == "run":
+            self.argc(e, 3)
+            cmd = self.str_arg(e, 0)
+            lv, lt = self.borrow(args[1], "list<string>")
+            if lt != "list<string>":
+                raise CompileError(f"run() argument 2 is the program's arguments, a list<string> ([] for none), "
+                                   f"not {lt}", e.line)
+            return self.failing_call("string", "@pn_run", [f"ptr {cmd}", f"ptr {lv}", f"i64 {self.int_arg(e, 2)}"],
+                                     e.line, "run(...)"), "string", True
         if name == "hub_publish":
             self.argc(e, 2)
             t_, m = self.str_arg(e, 0), self.str_arg(e, 1)
@@ -4083,19 +4129,19 @@ def split_type_args(inner):
 def resolve_type(t, mid, imports, line, file=None):
     """Turn a type as written in a file into its canonical form: class names become class keys
     ("Order" in the main file, "shop::Order" for class Order of module shop)."""
-    if t in ("int", "float", "bool", "string", "void", "db", "rows", "sub"):
+    if t in ("int", "float", "bool", "string", "void", "db", "rows", "sub", "stream"):
         return t
     if t.startswith("Task<"):
         return f"Task<{resolve_type(t[5:-1], mid, imports, line, file)}>"
     if t.startswith("list<"):
         e = resolve_type(t[5:-1], mid, imports, line, file)
-        if e in ("db", "rows", "sub"):
+        if e in ("db", "rows", "sub", "stream"):
             raise CompileError(f"a list cannot hold {e} values", line, file)
         return f"list<{e}>"
     if t.startswith("map<"):
         k, v = split_type_args(t[4:-1])
         v = resolve_type(v, mid, imports, line, file)
-        if v in ("db", "rows", "sub") or holds_task(v):
+        if v in ("db", "rows", "sub", "stream") or holds_task(v):
             raise CompileError(f"a map cannot hold {v} values", line, file)
         return f"map<{k},{v}>"
     if "::" in t:

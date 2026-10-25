@@ -1,0 +1,29 @@
+// The client side, against tests/server/hub.pn on :8089 (run by tests/run_tests.py while that server runs).
+$base = "http://127.0.0.1:8089";
+
+function waitFor(string $base, string $agent): string throws {
+    return try http_get("$base/wait?agent=$agent", ["X-Who" => "client"], 3000);
+}
+
+// long-poll in one task, send from another: the waiting request is woken
+$w = go waitFor($base, "cli");
+sleep_ms(100);
+echo try http_post("$base/send?to=cli", [], "ping from the client", 2000), "\n";
+echo try await $w, "\n";
+
+// a stream: subscribe, then read three events and the last id
+$s = try http_stream("$base/stream?agent=cs", [], 0, 2000);
+sleep_ms(100);
+for ($i = 1; $i <= 3; $i++) {
+    $r = try http_post("$base/send?to=cs", [], "event $i", 2000);
+}
+for ($i = 1; $i <= 3; $i++) {
+    echo try stream_next($s, 2000), " (id ", stream_last_id($s), ")\n";
+}
+echo try stream_next($s, 400) catch ($e) { "nothing more: " . $e->code; }, "\n";
+
+// resuming after id 2 gets event 3 again
+$again = try http_stream("$base/stream?agent=cs", [], 2, 2000);
+echo try stream_next($again, 2000), "\n";
+
+echo try http_get("$base/nope", [], 2000) catch ($e) { "status " . $e->code; }, "\n";

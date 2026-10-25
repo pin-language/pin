@@ -696,6 +696,12 @@ if "--no-server" not in sys.argv:
             alive = http(8089, "GET", "/wait?agent=x&nothing") if False else http(8089, "POST", "/send?to=x", "y")
             (ok if grew < 30 and alive == (200, '{"ok":true}') else lambda n: fail(n, f"RSS grew {grew:.0f} MB, {alive}"))(
                 f"200 SSE clients that leave: their requests end and free (RSS grew {grew:.0f} MB)")
+            cb = build(os.path.join(ROOT, "tests", "server", "client.pn"), os.path.join(BUILD, "client"))
+            want = ("{\"ok\":true}\nping from the client\nevent 1 (id 1)\nevent 2 (id 2)\nevent 3 (id 3)\n"
+                    "nothing more: 504\nevent 3\nstatus 404\n")
+            cr = run(os.path.join(BUILD, "client"), timeout=30) if not cb.returncode else cb
+            (ok if not cb.returncode and cr.stdout == want else lambda n: fail(n, (cr.stdout + cr.stderr)[-400:]))(
+                "the HTTP client against our own server: long-poll, a stream with ids, resume, 404")
         finally:
             proc.terminate()
             proc.wait(timeout=5)

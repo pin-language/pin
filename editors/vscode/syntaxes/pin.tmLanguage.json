@@ -296,7 +296,7 @@
       }
     },
     "builtin-calls": {
-      "match": "\\b(strlen|substr|strpos|str_contains|str_starts_with|str_ends_with|str_repeat|strtolower|strtoupper|trim|explode|implode|count|fill|copy|sort|rsort|isset|array_key_exists|unset|intdiv|sqrt|wrapping_add|wrapping_sub|wrapping_mul|intval|floatval|strval|json_encode|json_has|json_string|json_int|json_float|json_bool|serve|http_status|request_header|request_has_header|response_header|url_path|query_param|query_has|form_param|form_has|db_open|db_exec|db_query|db_next|db_int|db_float|db_string|db_is_null|db_json|db_last_id|db_error|error|sleep_ms|await_all|await_timeout|hub_publish|hub_subscribe|hub_resume|hub_next|hub_last_id|sse_start|sse_send|sse_send_id|sse_comment)\\s*(?=\\()",
+      "match": "\\b(strlen|substr|strpos|str_contains|str_starts_with|str_ends_with|str_repeat|strtolower|strtoupper|trim|explode|implode|count|fill|copy|sort|rsort|isset|array_key_exists|unset|intdiv|sqrt|wrapping_add|wrapping_sub|wrapping_mul|intval|floatval|strval|json_encode|json_has|json_string|json_int|json_float|json_bool|serve|http_status|request_header|request_has_header|response_header|url_path|query_param|query_has|form_param|form_has|db_open|db_exec|db_query|db_next|db_int|db_float|db_string|db_is_null|db_json|db_last_id|db_error|error|sleep_ms|await_all|await_timeout|hub_publish|hub_subscribe|hub_resume|hub_next|hub_last_id|sse_start|sse_send|sse_send_id|sse_comment|http_get|http_post|http_stream|stream_next|stream_last_id|run)\\s*(?=\\()",
       "captures": {
         "1": {
           "name": "support.function.builtin.pin"

@@ -63,5 +63,6 @@
  "hub_subscribe": "hi hi\n",
  "hub_resume": "two\n",
  "hub_next": "error 504\n",
- "hub_last_id": "b has id 2\n"
+ "hub_last_id": "b has id 2\n",
+ "run": "hello world; rm -rf /\nexit code 3\n"
 }
