@@ -115,6 +115,8 @@ overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
    (ownership-v2 R2 — needs "last use" liveness, a backward pass over the function body), pending tasks
    (concurrency.md C1). Each is one more field in `Flow` plus its merge rule.
 2. **Error handling** (error-handling.md): `throws`, `try`, `catch`, `error(code, msg)`, handler `throws`.
+   Owner, 2026-10-25: design async now, build `throws`/`try` first, then **request headers + timeouts (item 6)
+   before async** — do not skip item 6.
 3. **Strings** (strings.md): UTF-8 validation at the edges (invalid request → 400), `substr` boundary
    panic, `mb_*`, `grapheme_*`.
 4. **Null** (null.md). Classes (ownership-v2 R1–R7) done in 0.5.0 — null needs `?T` properties now.
