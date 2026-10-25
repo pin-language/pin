@@ -4609,8 +4609,17 @@ def link(ir, out):
         with open(ll, "w") as f:
             f.write(ir)
         db = ["-DPIN_SQLITE", "-lsqlite3"] if needs_sqlite(ir) else []
-        r = subprocess.run(["clang", "-O2", "-pthread", "-Wno-override-module", ll, os.path.join(HERE, "runtime.c"),
-                            "-lm", *db, "-o", out], capture_output=True, text=True)
+        if os.environ.get("PIN_SANITIZE") == "1":
+            # tests only (run_tests.py --sanitize): ASAN + UBSAN, built the way tools/sanitize.sh does (on Linux,
+            # -O2 with -fsanitize=address fails on the runtime's assembly: "Undefined temporary symbol")
+            obj = os.path.join(d, "prog.o")
+            r = subprocess.run(["clang", "-O1", "-c", "-Wno-override-module", ll, "-o", obj], capture_output=True, text=True)
+            if not r.returncode:
+                r = subprocess.run(["clang", "-g", "-fsanitize=address,undefined", os.path.join(HERE, "runtime.c"), obj,
+                                    "-lm", "-pthread", *db, "-o", out], capture_output=True, text=True)
+        else:
+            r = subprocess.run(["clang", "-O2", "-pthread", "-Wno-override-module", ll, os.path.join(HERE, "runtime.c"),
+                                "-lm", *db, "-o", out], capture_output=True, text=True)
     if r.returncode:
         if db and ("sqlite3.h" in r.stderr or "lsqlite3" in r.stderr):
             print("error: this program uses the database, which needs SQLite's development files. "

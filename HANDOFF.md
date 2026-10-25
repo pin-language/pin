@@ -71,6 +71,7 @@ Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang
   before `break` or `return` is fine). Tests: `tests/flow.pn`, `tests/errors/maybe_*.pn`,
   `loop_zero_times.pn`, `move_then_continue.pn`.
 - ASAN+UBSAN clean on macOS and Linux (LeakSanitizer on Linux too): hello, strmap, arith, listsum, all panic tests, and both servers
+  (that server claim was from before 0.7.0 and had stopped being true: see B12; servers are sanitized by `run_tests.py --sanitize` now)
   under load (pipelining, half-close, garbage, chunked bodies, ~1,450 panicking requests).
 
 ### Classes (0.5.0)
@@ -126,11 +127,19 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | B9 | `+ - *` wrap silently (overflow panics removed for speed until check elision exists, int-overflow.md O3) | codegen | correctness |
 | B10 | ~~per-thread request blocks~~ done: `struct Req` per request, `cur_req` follows the running task | `runtime.c` | done |
 | B11 | Panic outside a request still `exit(1)` (correct for CLI programs) | runtime | by design |
+| B12 | ~~use-after-free on every HTTP request (`request_done` / `cur_req`), crashed under load~~ fixed 2026-10-25; found by the pool measurement (pin-language/docs design/pool.md step 0). CI had not sanitized any server since 0.7.0: now `run_tests.py --sanitize` | runtime | memory safety |
+| B13 | HTTP/1.0 keep-alive: the server keeps the connection open but does not answer `Connection: keep-alive`, so `ab -k` hangs | server | low |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int
 overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
 
 ## 4. Task queue (in order)
+
+**Next set (owner, 2026-10-25), before the web framework Tack** (pin-language/docs design/tack.md, on hold):
+P1 a database connection pool that outlives requests (design/pool.md; per worker thread; decide this first, it shapes
+PostgreSQL) → P2 `json_decode` into a class → P3 `null` + parameter defaults → P4 PostgreSQL on the pool with
+a safe way to build filter/sort queries → P5 crypto built-ins. Then Tack M1 only, used for one real app. The
+numbered list below is the older order; items 3, 4 and 7 are folded into P1–P5, strings (3) stays after P3.
 
 1. ~~Shared control-flow analysis~~ — **done** as `class Flow` (per-path assigned/moved/live, merged at
    joins; loops require the back-edge state to be no worse than the loop head, which avoids a fixpoint).
