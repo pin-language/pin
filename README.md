@@ -210,7 +210,7 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 Classes, `null` / nullable types, `try`/`catch`, nested containers (lists of lists, maps of lists), closures,
 request headers, a full `json_decode` (nested JSON; top-level keys can already be read with
 `json_string` / `json_int` / …), PostgreSQL (SQLite is there), `go`/`await`.
-Most of these are already designed (in Thai) in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
+Most of these are already designed in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
 [CHANGELOG.md](CHANGELOG.md) for what changed.
 
 ## Feedback wanted
