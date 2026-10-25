@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Fix (memory safety):** every HTTP request wrote into freed memory after its answer (`request_done` left
+  `cur_req` pointing at the freed request; the task switch copied it back and `task_release` wrote through it).
+  Under load with database handlers the server crashed (SIGSEGV). Most likely there since 0.7.0 (tasks); not bisected.
+- `python3 tests/run_tests.py --sanitize` builds the HTTP servers with ASAN + UBSAN and fails on any report;
+  CI runs it (tools/sanitize.sh only runs programs that exit, so the servers were never sanitized since 0.7.0).
+
 ## 0.8.0 — 2026-10-25
 
 MCP servers in Pin: nested JSON, standard input, and the first package built on Pin.

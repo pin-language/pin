@@ -11,6 +11,8 @@
 
 Flags:  --update   rewrite expected files from current output (review the diff before committing!)
         --no-server  skip the HTTP check
+        --sanitize   build the HTTP servers with ASAN + UBSAN and fail on any report in their logs
+                     (tools/sanitize.sh only runs programs that exit; servers never do)
 Exit code 0 = all passed.
 """
 import glob, os, platform, socket, subprocess, sys, time, urllib.request, urllib.error
@@ -18,6 +20,7 @@ import glob, os, platform, socket, subprocess, sys, time, urllib.request, urllib
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PINAC = [sys.executable, os.path.join(ROOT, "pinac.py")]
 UPDATE = "--update" in sys.argv
+SANITIZE = "--sanitize" in sys.argv
 BUILD = os.path.join(ROOT, "build")
 os.makedirs(BUILD, exist_ok=True)
 
@@ -55,7 +58,9 @@ def fail(name, why):
 
 def build(src, out, emit_ll_only=False):
     cmd = PINAC + [src, "-o", out] + (["--emit-ll"] if emit_ll_only else [])
-    return subprocess.run(cmd, capture_output=True, text=True)
+    san = SANITIZE and os.sep + os.path.join("tests", "server") + os.sep in src
+    env = dict(os.environ, PIN_SANITIZE="1") if san else None
+    return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
 
 def run(binary, timeout=60):
@@ -304,6 +309,8 @@ def http_get(port, path):
 def rss_mb(pid):
     """Memory the process really holds. macOS compresses idle pages, so RSS there hides leaks;
     footprint's phys_footprint counts compressed memory too."""
+    if SANITIZE:
+        return 0.0                              # ASAN keeps freed memory in quarantine: growth means nothing here
     if platform.system() == "Linux":
         for line in open(f"/proc/{pid}/status"):
             if line.startswith("VmRSS:"):
@@ -715,6 +722,14 @@ if "--no-server" not in sys.argv:
         finally:
             proc.terminate()
             proc.wait(timeout=5)
+
+if SANITIZE:
+    print("sanitizer reports in the servers' logs")
+    for log in sorted(glob.glob(os.path.join(BUILD, "*.log"))):
+        text = open(log, errors="replace").read()
+        bad = [l for l in text.splitlines() if "ERROR: AddressSanitizer" in l or "runtime error:" in l]
+        name = os.path.basename(log)
+        (ok if not bad else lambda n: fail(n, "\n".join(bad[:5])))(f"no ASAN/UBSAN report in {name}")
 
 print(f"\n{passed} passed, {len(failed)} failed")
 sys.exit(1 if failed else 0)
