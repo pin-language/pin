@@ -20,6 +20,7 @@ Language rules in this prototype:
     usable in the other branch.
   * There are no global variables, so request handlers running on many threads share nothing.
 """
+import copy
 import os
 import re
 import struct
@@ -260,7 +261,7 @@ class Parser:
         name = self.eat(kind="IDENT").val
         ctor = in_class is not None and name == "__construct"
         self.eat("(")
-        params, promoted = [], []
+        params, promoted, defaults = [], [], []
         while not self.at(")"):
             pvis = None
             if self.cur.kind == "IDENT" and self.cur.val in ("public", "private", "protected", "readonly"):
@@ -277,10 +278,17 @@ class Parser:
             ptype = self.type_()
             ref = self.accept("&")
             pname = self.eat(kind="VAR").val
-            if self.at("="):
-                raise CompileError(f"parameters cannot have default values in Pin yet ({pname} = ...); pass the "
-                                   f"value at every call" + (", or set the property in the constructor body"
-                                                             if pvis else ""), self.cur.line)
+            default = None
+            if self.accept("="):                    # a default: a literal, like a property default
+                dline = self.cur.line
+                default = self.expr()
+                check_default(default, dline, what="parameter")
+                if ref:
+                    raise CompileError(f"{pname} is changed by the function (&), so it cannot have a default", dline)
+            elif defaults and defaults[-1] is not None:
+                raise CompileError(f"{pname} has no default but a parameter before it has one: put the "
+                                   f"parameters with defaults last", self.cur.line)
+            defaults.append(default)
             if pname == "$this":
                 raise CompileError("$this cannot be a parameter name", line)
             if pvis:
@@ -308,7 +316,7 @@ class Parser:
             body.body.insert(0, Node("assign", line, target=Node("field", line, obj=this, name=pname[1:]), op="=",
                                      val=Node("var", line, name=pname), promoted=True))
         return Node("func", line, name=name, params=params, ret=ret, body=body, exported=exported,
-                    promoted=promoted, vis="public", throws=throws)
+                    promoted=promoted, vis="public", throws=throws, defaults=defaults)
 
     def type_(self):
         t = self.cur
@@ -1000,7 +1008,7 @@ BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_po
             "db_is_null", "db_last_id", "db_error", "db_pool", "hash", "hash_hmac", "hash_equals", "random_token",
             "random_int", "password_hash", "password_verify", "json_decode", "__jd_doc", "__jd_object", "__jd_field",
             "__jd_int", "__jd_float", "__jd_bool", "__jd_string", "__jd_first", "__jd_next", "__jd_mfirst",
-            "__jd_key", "__jd_val", "__jd_mnext", "json_string", "json_int", "json_float",
+            "__jd_key", "__jd_val", "__jd_mnext", "__jd_has", "json_string", "json_int", "json_float",
             "json_bool"}
 
 RUNTIME_DECLS = """
@@ -1033,6 +1041,7 @@ declare { i64, ptr } @pn_jd_mfirst(ptr, i64)
 declare ptr @pn_jd_key(ptr, i64)
 declare i64 @pn_jd_val(ptr, i64)
 declare i64 @pn_jd_mnext(ptr, i64)
+declare i64 @pn_jd_has(ptr, i64, ptr)
 declare ptr @pn_hash_sha256(ptr)
 declare ptr @pn_hash_hmac_sha256(ptr, ptr)
 declare i64 @pn_hash_equals(ptr, ptr)
@@ -1161,6 +1170,7 @@ class Module:
         self.funcs = {}         # key ("name" in the main file, "module::name" elsewhere) -> (param types, ret)
         self.exported = {}      # key -> bool
         self.params = {}        # key -> [(type, name, ref)]
+        self.defaults = {}      # key -> [default expression or None] per parameter
         self.throws = {}        # key -> declared `throws`
         self.handler = None
         self.inferring = False  # compiling methods only to find out which ones change $this (R6)
@@ -2068,10 +2078,21 @@ class FuncGen:
                     raise CompileError(f"{what}, so the other arguments cannot use {n} at the same time. "
                                        f"Pass copy(...) of what they need, or read it into a variable first", line)
 
-    def args_for(self, e, params, who):
+    def with_defaults(self, e, params, defaults, who):
+        """The call's arguments, with the defaults of the parameters it leaves out at the end."""
+        need = sum(1 for d in defaults if d is None) if defaults else len(params)
+        if len(e.args) > len(params) or len(e.args) < need:
+            want = f"{need} to {len(params)}" if need != len(params) else f"{len(params)}"
+            raise CompileError(f"{who}() takes {want} argument(s) but got {len(e.args)}", e.line)
+        if len(e.args) == len(params):
+            return e
+        kw = {k: v for k, v in e.__dict__.items() if k not in ("kind", "line")}
+        kw["args"] = list(e.args) + [copy.deepcopy(d) for d in defaults[len(e.args):]]   # literals, fresh per call
+        return Node(e.kind, e.line, **kw)
+
+    def args_for(self, e, params, who, defaults=None):
         """Evaluate call arguments: read-only borrows, and &-arguments as the address of the caller's value."""
-        if len(e.args) != len(params):
-            raise CompileError(f"{who}() takes {len(params)} argument(s) but got {len(e.args)}", e.line)
+        e = self.with_defaults(e, params, defaults, who)
         vals = []
         for i, (a, (pt, pn, ref)) in enumerate(zip(e.args, params)):
             if ref:
@@ -2127,7 +2148,7 @@ class FuncGen:
                 self.exclusive(root, e.args, e.line, f"{e.name}() changes {show(e.obj)}")
             o, _ = self.obj_value(e.obj) if e.obj.kind != "var" or e.obj.name != "$this" else \
                 self.use_var("$this", e.line)
-        vals = self.args_for(e, m.params, f"{ci.name}::{e.name}")
+        vals = self.args_for(e, m.params, f"{ci.name}::{e.name}", getattr(m.node, "defaults", None))
         if m.throws:
             how = f"{show(e.obj)}->{e.name}(...)"
             return self.failing_call(m.ret, m.llname, [f"ptr {o}"] + vals, e.line, how), m.ret, is_heap(m.ret)
@@ -2145,8 +2166,7 @@ class FuncGen:
         if key is None:
             raise CompileError(f"unknown function {c.name}()", e.line)
         params, (_, ret), throws = self.mod.params[key], self.mod.funcs[key], self.mod.throws.get(key, False)
-        if len(c.args) != len(params):
-            raise CompileError(f"{c.name}() takes {len(params)} argument(s) but got {len(c.args)}", e.line)
+        c = self.with_defaults(c, params, self.mod.defaults.get(key), c.name)
         mark = len(self.temps)
         slots, roots, lent = [], set(), set()
         for i, (a, (pt, pn, ref)) in enumerate(zip(c.args, params)):
@@ -2248,7 +2268,7 @@ class FuncGen:
             raise CompileError(f"class {ci.name} has no __construct(), so new {ci.name}() takes no arguments", e.line)
         if ctor:
             self.visible(ci, "__construct()", ctor.vis, e.line, "method")
-            vals = self.args_for(e, ctor.params, f"new {ci.name}")
+            vals = self.args_for(e, ctor.params, f"new {ci.name}", getattr(ctor.node, "defaults", None))
         o = self.call("ptr", "@pn_obj_new", f"i64 {ci.size}")
         if any(f.default is not None for f in ci.fields.values()):
             self.call("void", f'@"init.{key}"', f"ptr {o}")
@@ -2870,7 +2890,7 @@ class FuncGen:
             raise CompileError(f"unknown function {name}()" + (f": {hint}" if hint else
                                ". See the built-in list in the AI guide, github.com/pin-language/docs"), e.line)
         _, ret = self.mod.funcs[key]
-        vals = self.args_for(e, self.mod.params[key], name)   # heap values are lent to the callee
+        vals = self.args_for(e, self.mod.params[key], name, self.mod.defaults.get(key))   # heap values are lent
         if self.mod.throws.get(key):
             return self.failing_call(ret, f'@"f.{key}"', vals, e.line, f"{name}(...)"), ret, is_heap(ret)
         r = self.call(llty(ret), f'@"f.{key}"', *vals)
@@ -3109,7 +3129,7 @@ class FuncGen:
                     "string": ("string", ["s", "i"], True), "first": ("int", ["s", "i"], True),
                     "next": ("int", ["s", "i"], False), "mfirst": ("int", ["s", "i"], True),
                     "key": ("string", ["s", "i"], False), "val": ("int", ["s", "i"], False),
-                    "mnext": ("int", ["s", "i"], False)}
+                    "mnext": ("int", ["s", "i"], False), "has": ("bool", ["s", "i", "s"], False)}
             ret, kinds, throws = spec[name[5:]]
             self.argc(e, len(kinds))
             vals = []
@@ -3129,6 +3149,8 @@ class FuncGen:
                     self.emit(f"{f} = bitcast i64 {r} to double")
                     return f, "float", False
                 return (self.i64_to_bool(r) if ret == "bool" else r), ret, ret == "string"
+            if ret == "bool":
+                return self.i64_to_bool(self.call("i64", fn, *vals)), "bool", False
             return self.call(llty(ret), fn, *vals), ret, ret == "string"
         if name in ("hash", "hash_hmac"):
             self.argc(e, 2 if name == "hash" else 3)
@@ -4318,16 +4340,17 @@ def resolve_type(t, mid, imports, line, file=None):
                        " (types: int, float, bool, string, list<T>, map<K,V>, db, rows, or a class name)"), line, file)
 
 
-def check_default(e, line):
-    """Property defaults are literals, like PHP's constant expressions."""
+def check_default(e, line, what="property"):
+    """Property and parameter defaults are literals, like PHP's constant expressions."""
     ok = e.kind in ("int", "float", "bool", "str") or (e.kind == "unary" and e.op == "-" and e.e.kind in ("int", "float"))
     if e.kind == "listlit":
-        ok = all(check_default(i, line) for i in e.items)
+        ok = all(check_default(i, line, what) for i in e.items)
     if e.kind == "maplit":
-        ok = all(check_default(k, line) and check_default(v, line) for k, v in e.pairs)
+        ok = all(check_default(k, line, what) and check_default(v, line, what) for k, v in e.pairs)
     if not ok:
-        raise CompileError("a property default must be a literal such as 0, 1.5, \"text\", true, [] or [1, 2]; set "
-                           "other values in __construct()", line)
+        raise CompileError(f"a {what} default must be a literal such as 0, 1.5, \"text\", true, [] or [1, 2]; "
+                           + ("set other values in __construct()" if what == "property" else
+                              "compute other values inside the function"), line)
     return True
 
 
@@ -4434,9 +4457,15 @@ def gen_decoders(mods, order):
             body = [f"    $ok = try __jd_object($j, $p, [{keys}]);"] if names else \
                 ["    $ok = try __jd_object($j, $p, []);"]
             if ctor:
-                for i, (pt, pn, _) in enumerate(ctor.params):
+                defaults = getattr(ctor.node, "defaults", None) or [None] * len(ctor.params)
+                for i, ((pt, pn, _), d) in enumerate(zip(ctor.params, defaults)):
                     key = pn.lstrip("$")
-                    body.append(f"    $a{i} = {reader(pt, f'try __jd_field($j, $p, \"{key}\")')};")
+                    if d is None:
+                        body.append(f"    $a{i} = {reader(pt, f'try __jd_field($j, $p, \"{key}\")')};")
+                    else:                           # a parameter with a default: the field may be left out
+                        body.append(f"    {tname(pt)} $a{i} = {literal_src(d)};")
+                        body.append(f"    if (__jd_has($j, $p, \"{key}\")) {{ $a{i} = "
+                                    f"{reader(pt, f'try __jd_field($j, $p, \"{key}\")')}; }}")
                 args = ", ".join(f"$a{i}" for i in range(len(ctor.params)))
                 body.append(f"    return {'try ' if ctor.throws else ''}new {ci.name}({args});")
             else:
@@ -4458,6 +4487,27 @@ def gen_decoders(mods, order):
             for g in gfuncs:
                 g.generated = True
             funcs.extend(gfuncs)
+
+
+def literal_src(e):
+    """Pin source for a literal node (a default value), for generated code."""
+    if e.kind == "int":
+        return str(e.val)
+    if e.kind == "float":
+        return repr(float(e.val))
+    if e.kind == "bool":
+        return "true" if e.val else "false"
+    if e.kind == "str":
+        out = "".join({"\\": "\\\\", '"': '\\"', "$": "\\$", "\n": "\\n", "\t": "\\t", "\r": "\\r"}.get(c, c)
+                      for c in e.val)
+        return f'"{out}"'
+    if e.kind == "unary":
+        return "-" + literal_src(e.e)
+    if e.kind == "listlit":
+        return "[" + ", ".join(literal_src(i) for i in e.items) + "]"
+    if e.kind == "maplit":
+        return "[" + ", ".join(f"{literal_src(k)} => {literal_src(v)}" for k, v in e.pairs) + "]"
+    raise CompileError("internal error: not a literal", e.line)
 
 
 def decoder_types(t, seen=None):
@@ -4585,6 +4635,7 @@ def compile_file(path, src=None):
                 raise CompileError("a task cannot be passed to or returned from a function: await it in the function "
                                    "that started it (concurrency.md C1)", f.line, file)
             mod.params[key] = ps
+            mod.defaults[key] = getattr(f, "defaults", None)
             mod.funcs[key] = ([t for t, _, _ in ps], resolve_type(f.ret, mid, table, f.line, file))
             mod.exported[key] = getattr(f, "exported", False) or not mid
             mod.throws[key] = bool(getattr(f, "throws", False))

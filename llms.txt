@@ -10,7 +10,7 @@ github.com/pin-language/mcp); throws/try/catch errors; classes (no inheritance) 
 ordered map<K,V>, nested freely; ownership checks; a multi-threaded
 JSON HTTP server (serve) with query/form/JSON-body helpers; SQLite (db_*) where SQL injection does not compile;
 modules (import/export, module::fn()); Git packages (pin get, pin.lock with sha256).
-Not yet: inheritance/interfaces, null, finally, closures, default parameter values, PostgreSQL.
+Not yet: inheritance/interfaces, null, finally, closures, PostgreSQL.
 By design: no TLS — a proxy does https in both directions (design/tls.md).
 
 Read the AI guide before writing Pin — https://github.com/pin-language/docs/blob/HEAD/ai-guide.md (raw URL below): it is the complete language on one page. The PHP habits

@@ -214,7 +214,7 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 
 ## Not there yet
 
-Inheritance and interfaces, `null` / nullable types, `finally`, default parameter values, closures,
+Inheritance and interfaces, `null` / nullable types, `finally`, closures,
 PostgreSQL (SQLite is there, with a connection pool). `json_decode()` into a class and `go`/`await` are built.
 Most of these are already designed in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
 [CHANGELOG.md](CHANGELOG.md) for what changed.

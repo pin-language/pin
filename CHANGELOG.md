@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Parameter defaults** (P3, first half): `function page(string $q, int $limit = 20)`; literals only, last in the
+  list, not on `&` parameters; works for functions, methods, constructors and `go`. In `json_decode()` a
+  constructor parameter with a default is an optional field.
 - **`json_decode()` into a class** (P2): `Order $o = try json_decode($body);` builds the object and checks
   it strictly — a missing, unknown or repeated field, a wrong type, invalid JSON or nesting past 64 levels is
   `error(400, "$.lines[1].qty: want an integer, got a string")`. A class with `__construct` is built through it

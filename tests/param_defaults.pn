@@ -1,0 +1,29 @@
+// Parameter defaults (P3): literals, last in the list; a call leaves out trailing ones. In json_decode() a
+// constructor parameter with a default is an optional field.
+function page(string $q, int $limit = 20, bool $desc = false, string $sep = ", "): string {
+    return $q . $sep . $limit . $sep . ($desc ? "desc" : "asc");
+}
+echo page("tea"), "\n", page("tea", 5), "\n", page("tea", 5, true), "\n", page("tea", 5, true, "|"), "\n";
+function total(list<int> $xs = [1, 2, 3]): int { $s = 0; foreach ($xs as $x) { $s += $x; } return $s; }
+echo total(), " ", total([10]), "\n";
+class Box {
+    public function __construct(public string $name, public int $size = 1) {}
+    public function grow(int $by = 2): int { return $this->size + $by; }
+}
+$b = new Box("a");
+echo $b->name, $b->size, " ", $b->grow(), " ", $b->grow(10), " ", (new Box("b", 7))->size, "\n";
+function slow(int $ms = 1): int { sleep_ms($ms); return $ms; }
+$t = go slow();
+echo await $t, "\n";
+class Search {
+    public function __construct(public string $q, public int $limit = 20, public bool $desc = false,
+                                public string $sort = "na\"me\$", public float $min = -1.5) {}
+}
+function s(string $b): void {
+    Search $x = try json_decode($b) catch ($e) { echo $e->message, "\n"; return; };
+    echo $x->q, " ", $x->limit, " ", $x->desc ? "desc" : "asc", " ", $x->sort, " ", $x->min, "\n";
+}
+s("{\"q\":\"tea\"}");
+s("{\"q\":\"tea\",\"limit\":5,\"desc\":true,\"sort\":\"price\",\"min\":2}");
+s("{\"limit\":5}");
+s("{\"q\":\"tea\",\"limit\":\"5\"}");

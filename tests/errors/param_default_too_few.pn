@@ -1,0 +1,2 @@
+function f(int $a, int $b = 1): int { return $a + $b; }
+echo f(), "\n";
