@@ -1,0 +1,63 @@
+// json_decode() into a class (design P2): strict — a missing, unknown or repeated field, or a wrong type, is
+// error(400, "<path>: <what>"); a constructor's own checks run too.
+class Line {
+    public string $sku = "";
+    public int $qty = 0;
+}
+class Order {
+    public function __construct(public string $customer, public float $total, public bool $paid) throws {
+        if ($total < 0.0) { throw error(400, "total must not be negative"); }
+    }
+}
+class Cart {
+    public list<Line> $lines = [];
+    public map<string,int> $stock = [];
+    public list<list<int>> $grid = [];
+}
+class Empty {
+    public function __construct() {}
+}
+
+function order(string $body): void {
+    Order $o = try json_decode($body) catch ($e) { echo $e->code, " ", $e->message, "\n"; return; };
+    echo $o->customer, " ", $o->total, " ", $o->paid ? "paid" : "unpaid", "\n";
+}
+function cart(string $body): void {
+    Cart $c = try json_decode($body) catch ($e) { echo $e->code, " ", $e->message, "\n"; return; };
+    echo json_encode($c), "\n";
+}
+function read_line_item(string $body): Line throws { return try json_decode($body); }
+
+order("{\"customer\":\"Somchai\",\"total\":12.5,\"paid\":true}");
+order(" { \"total\" : 12 , \"paid\" : false , \"customer\" : \"\\u0e2a\\u0e21 \\ud83d\\ude00\\n\" } ");
+order("{\"customer\":\"A\",\"total\":-1,\"paid\":true}");
+order("{\"customer\":\"A\",\"total\":1}");
+order("{\"customer\":\"A\",\"total\":1,\"paid\":true,\"extra\":1}");
+order("{\"customer\":5,\"total\":1,\"paid\":true}");
+order("{\"customer\":null,\"total\":1,\"paid\":true}");
+order("{\"customer\":\"A\",\"total\":1,\"paid\":true,\"customer\":\"B\"}");
+order("{\"customer\":\"A\",\"total\":1e999,\"paid\":true}");
+order("{\"customer\":\"A\",\"total\":1,\"paid\":\"yes\"}");
+order("[1,2]");
+order("");
+order("{\"customer\":\"A\",");
+order("{\"customer\":\"A\",\"total\":1,\"paid\":true} x");
+order("{\"customer\":\"A\",\"total\":01,\"paid\":true}");
+order("{\"customer\":\"A\",\"total\":1,\"paid\":true,}");
+order("{\"customer\":\"\\ud800\",\"total\":1,\"paid\":true}");
+order("{\"customer\":\"\\q\",\"total\":1,\"paid\":true}");
+order("{'customer':\"A\",\"total\":1,\"paid\":true}");
+
+cart("{\"lines\":[{\"sku\":\"tea\",\"qty\":2},{\"sku\":\"cake\",\"qty\":1}],\"stock\":{\"tea\":9,\"\":0},\"grid\":[[1,2],[],[3]]}");
+cart("{\"lines\":[{\"sku\":\"tea\",\"qty\":2},{\"sku\":\"cake\",\"qty\":1.5}],\"stock\":{},\"grid\":[]}");
+cart("{\"lines\":[],\"stock\":{\"a\":1,\"a\":2},\"grid\":[]}");
+cart("{\"lines\":[],\"stock\":{},\"grid\":[[1],[2,\"x\"]]}");
+cart("{\"lines\":[],\"stock\":{},\"grid\":[],\"lines\":[]}");
+cart("{\"lines\":[],\"stock\":{},\"grid\":[[9223372036854775807,-9223372036854775808]]}");
+cart("{\"lines\":[],\"stock\":{},\"grid\":[[9223372036854775808]]}");
+cart(str_repeat("[", 100000));
+cart("{\"lines\":" . str_repeat("[", 70) . str_repeat("]", 70) . ",\"stock\":{},\"grid\":[]}");
+Empty $e = try json_decode("{}");
+echo "empty ok\n";
+$l = try read_line_item("{\"qty\":3,\"sku\":\"x\"}");
+echo $l->sku, $l->qty, "\n";

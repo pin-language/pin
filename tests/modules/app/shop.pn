@@ -1,0 +1,9 @@
+// Classes json_decode() builds from another file (design P2): the decoder lives in this module.
+export class Item {
+    public string $name = "";
+    public int $qty = 0;
+}
+
+export class Basket {
+    public list<Item> $items = [];
+}

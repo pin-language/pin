@@ -1,0 +1,31 @@
+Somchai 12.5 paid
+สม 😀
+ 12 unpaid
+400 total must not be negative
+400 $: missing field "paid"
+400 $: unknown field "extra"
+400 $.customer: want a string, got a number
+400 $.customer: want a string, got null
+400 $: field "customer" appears twice
+400 $.total: the number is too big for a float
+400 $.paid: want true or false, got a string
+400 $: want an object, got an array
+400 invalid JSON: it ends where a value should be (byte 0)
+400 invalid JSON: a key (in double quotes) expected at byte 16
+400 invalid JSON: more text after the value at byte 39
+400 invalid JSON: ',' or '}' expected at byte 25
+400 invalid JSON: a key (in double quotes) expected at byte 38
+400 $.customer: invalid \u escape (a lone surrogate)
+400 invalid JSON: bad string at byte 12 (an unknown \ escape, a raw control character or no closing quote)
+400 invalid JSON: a key (in double quotes) expected at byte 1
+{"lines":[{"sku":"tea","qty":2},{"sku":"cake","qty":1}],"stock":{"tea":9,"":0},"grid":[[1,2],[],[3]]}
+400 $.lines[1].qty: want an integer, got a number with a fraction or exponent
+400 $.stock: key "a" appears twice
+400 $.grid[1][1]: want an integer, got a string
+400 $: field "lines" appears twice
+{"lines":[],"stock":{},"grid":[[9223372036854775807,-9223372036854775808]]}
+400 $.grid[0][0]: the number is too big for an int
+400 invalid JSON: nested deeper than 64 levels
+400 invalid JSON: nested deeper than 64 levels
+empty ok
+x3

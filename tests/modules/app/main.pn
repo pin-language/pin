@@ -15,3 +15,17 @@ echo t::shout(implode(", ", $menu)), "\n";
 echo prices::total(["tea", "cake"]), " ", total([1, 2]), "\n";
 echo t::shout(prices::label("cake")), "\n";
 echo post::title("from a subfolder"), "\n";
+
+import shop;
+
+class Gift {                                   // a class here whose field is a class from shop.pn
+    public shop::Item $item;
+    public function __construct(public string $to, shop::Item $item) {
+        $this->item = copy($item);
+    }
+}
+
+shop::Basket $b = try json_decode("{\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}]}");
+echo count($b->items), " ", $b->items[1]->name, "\n";
+Gift $g = try json_decode("{\"to\":\"Nok\",\"item\":{\"name\":\"tea\",\"qty\":3}}");
+echo $g->to, " gets ", $g->item->qty, " ", $g->item->name, "\n";

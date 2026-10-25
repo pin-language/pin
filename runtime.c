@@ -6,6 +6,7 @@
 //   crypto.c   sha256, HMAC, password hashing, secure random numbers
 //   request.c  query / form / JSON helpers, printing
 //   hub.c      messages between requests, await_timeout
+//   jdecode.c  json_decode() into classes: strict checking and reading by position
 //   server.c   the HTTP server, headers, limits, SSE
 //   client.c   the http:// client, run(), read_line()
 //   sqlite.c   db_* (only with -DPIN_SQLITE)
@@ -15,6 +16,7 @@
 #include "runtime/crypto.c"
 #include "runtime/request.c"
 #include "runtime/hub.c"
+#include "runtime/jdecode.c"
 #include "runtime/server.c"
 #include "runtime/client.c"
 #include "runtime/sqlite.c"

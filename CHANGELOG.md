@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`json_decode()` into a class** (P2): `Order $o = try json_decode($body);` builds the object and checks
+  it strictly — a missing, unknown or repeated field, a wrong type, invalid JSON or nesting past 64 levels is
+  `error(400, "$.lines[1].qty: want an integer, got a string")`. A class with `__construct` is built through it
+  (its checks run); fields can be classes, `list<T>` and `map<string,T>` to any depth. The compiler writes one
+  decoder per class in Pin (`gen_decoders`) on top of `runtime/jdecode.c`, which reads the text by position.
 - **Security built-ins** (P5): `hash("sha256", $s)`, `hash_hmac("sha256", $data, $key)`, `hash_equals()` (constant
   time), `random_token($bytes)` (hex), `random_int($min, $max)` (OS randomness, no bias), `password_hash()` /
   `password_verify()` (PBKDF2-HMAC-SHA256, 600,000 rounds, random salt). SHA-256 / HMAC / PBKDF2 are written in

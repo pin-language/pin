@@ -1,0 +1,2 @@
+class Stock { public map<int,int> $by_id = []; }
+Stock $s = try json_decode("{\"by_id\":{}}");

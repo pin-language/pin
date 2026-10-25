@@ -55,9 +55,10 @@ def check_names():
     fns = {i["name"] for i in SPEC.ITEMS if i["kind"] == "function"}
     consts = {i["name"] for i in SPEC.ITEMS if i["kind"] == "constant"}
     problems = []
-    if fns != set(PINAC.BUILTINS):
-        problems.append(f"functions in pinac.BUILTINS but not in the spec: {sorted(set(PINAC.BUILTINS) - fns)}; "
-                        f"in the spec but not the compiler: {sorted(fns - set(PINAC.BUILTINS))}")
+    public = {b for b in PINAC.BUILTINS if not b.startswith("__")}     # __jd_*: internal to json_decode()
+    if fns != public:
+        problems.append(f"functions in pinac.BUILTINS but not in the spec: {sorted(public - fns)}; "
+                        f"in the spec but not the compiler: {sorted(fns - public)}")
     if consts != set(PINAC.CONSTANTS):
         problems.append(f"constants differ: compiler {sorted(PINAC.CONSTANTS)}, spec {sorted(consts)}")
     return problems

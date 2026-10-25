@@ -1,0 +1,1 @@
+json_decode() can fail. Write try json_decode(...)

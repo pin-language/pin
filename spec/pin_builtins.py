@@ -187,6 +187,30 @@ f("json_has", J, "json_has(string $json, string $key): bool", "Whether a JSON ob
   r'''$b = "{\"title\": \"tea\", \"qty\": null}";
 echo json_has($b, "title") ? "y" : "n", json_has($b, "qty") ? "y" : "n", json_has($b, "x") ? "y" : "n", json_has("not json", "title") ? "y" : "n", "\n";''',
   ["True even when the value is `null`. False when the text is not a JSON object."])
+f("json_decode", J, "json_decode(string $json): T throws", "Build an object of a class from JSON text, checking every field.",
+  r'''class Order {
+    public function __construct(public string $item, public int $qty) throws {
+        if ($qty < 1 || $qty > 100) { throw error(400, "qty must be 1-100"); }
+    }
+}
+Order $o = try json_decode("{\"item\":\"tea\",\"qty\":2}");
+echo $o->item, " x", $o->qty, "\n";
+Order $bad = try json_decode("{\"item\":\"tea\",\"qty\":\"2\"}") catch ($e) { echo $e->code, " ", $e->message, "\n"; return; };''',
+  ["The class comes from where the value goes: `Order $o = try json_decode($body);`, or `return try "
+   "json_decode($body);` in a function declared `: Order throws`. The top level must be a JSON object.",
+   "Strict: a missing field, an unknown field, a field given twice, a wrong type (`\"2\"` for an int, `1.5` for "
+   "an int, `null`), invalid JSON or nesting deeper than 64 levels fail with `error(400, \"<path>: <what>\")`, "
+   "e.g. `$.lines[1].qty: want an integer, got a string`. Every public field must be there (optional fields "
+   "come with `null`, which Pin does not have yet).",
+   "A class with `__construct` is built by calling it with the JSON fields named like its parameters, so its "
+   "checks run (throw `error(400, ...)` there). A class without one gets its public properties filled.",
+   "Fields may be int, float (an integer is accepted), bool, string, other classes, `list<T>` and "
+   "`map<string,T>` of those, nested to any depth. `map<int,...>` does not compile (JSON keys are strings).",
+   "Inside a `throws` handler an escaping 400 answers `{\"error\":\"Bad Request\"}` without the message; catch "
+   "it to send the message: `try json_decode($body) catch ($e) { http_status(400); return json_encode([\"error\" "
+   "=> $e->message]); }`."],
+  php="PHP's `json_decode()` gives an untyped array/stdClass and checks nothing; Pin's builds your class and "
+      "checks it (like a typed DTO / Pydantic model).")
 f("json_string", J, "json_string(string $json, string $key): string", 'A top-level string value, or `""`.',
   r'''echo json_string("{\"name\": \"Som\\u0e01\", \"n\": 5}", "name"), "|", json_string("{\"n\": 5}", "n"), "|\n";''',
   ['`""` when the key is missing, the value is not a string, or the text is not a JSON object.',

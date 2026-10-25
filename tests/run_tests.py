@@ -155,7 +155,7 @@ try:
     sys.path.insert(0, ROOT)
     import pinac  # noqa: E402
     listed = gram["repository"]["builtin-calls"]["match"]
-    missing = [b for b in sorted(pinac.BUILTINS) if b not in listed]
+    missing = [b for b in sorted(pinac.BUILTINS) if b not in listed and not b.startswith("__")]
     (ok if not missing else lambda n: fail(n, f"builtins missing from the grammar (run tools/gen_docs.py --docs ...): {missing}"))("vscode grammar")
 except (OSError, ValueError, KeyError) as e:
     fail("vscode grammar", repr(e))

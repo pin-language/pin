@@ -934,8 +934,6 @@ PHP_FUNCTION_HINTS = {
     "printf": "no printf() yet: use echo with . or \"$var\" interpolation",
     "print_r": "no print_r(): echo json_encode($value)", "var_dump": "no var_dump(): echo json_encode($value)",
     "print": "use echo",
-    "json_decode": "no json_decode() yet: read values with json_string / json_int / json_float / json_bool, and go "
-                   "into nested objects and arrays with json_raw($json, \"key\"), json_at($array, $i), json_len($array)",
     "fgets": "try read_line() reads one line of standard input", "readline": "try read_line()",
     "stream_get_line": "try read_line()",
     "is_numeric": "no is_numeric() yet: check the characters with substr() in a loop",
@@ -1000,7 +998,9 @@ BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_po
             "url_path", "query_param", "form_param", "query_has", "form_has", "floatval", "json_has",
             "db_open", "db_exec", "db_query", "db_json", "db_next", "db_int", "db_float", "db_string",
             "db_is_null", "db_last_id", "db_error", "db_pool", "hash", "hash_hmac", "hash_equals", "random_token",
-            "random_int", "password_hash", "password_verify", "json_string", "json_int", "json_float",
+            "random_int", "password_hash", "password_verify", "json_decode", "__jd_doc", "__jd_object", "__jd_field",
+            "__jd_int", "__jd_float", "__jd_bool", "__jd_string", "__jd_first", "__jd_next", "__jd_mfirst",
+            "__jd_key", "__jd_val", "__jd_mnext", "json_string", "json_int", "json_float",
             "json_bool"}
 
 RUNTIME_DECLS = """
@@ -1020,6 +1020,19 @@ declare ptr @pn_query_param(ptr, ptr)
 declare ptr @pn_form_param(ptr, ptr)
 declare i64 @pn_jget_has(ptr, ptr)
 declare ptr @pn_db_open(ptr)
+declare { i64, ptr } @pn_jd_doc(ptr)
+declare { i64, ptr } @pn_jd_object(ptr, i64, ptr)
+declare { i64, ptr } @pn_jd_field(ptr, i64, ptr)
+declare { i64, ptr } @pn_jd_int(ptr, i64)
+declare { i64, ptr } @pn_jd_float(ptr, i64)
+declare { i64, ptr } @pn_jd_bool(ptr, i64)
+declare { ptr, ptr } @pn_jd_string(ptr, i64)
+declare { i64, ptr } @pn_jd_first(ptr, i64)
+declare i64 @pn_jd_next(ptr, i64)
+declare { i64, ptr } @pn_jd_mfirst(ptr, i64)
+declare ptr @pn_jd_key(ptr, i64)
+declare i64 @pn_jd_val(ptr, i64)
+declare i64 @pn_jd_mnext(ptr, i64)
 declare ptr @pn_hash_sha256(ptr)
 declare ptr @pn_hash_hmac_sha256(ptr, ptr)
 declare i64 @pn_hash_equals(ptr, ptr)
@@ -3069,6 +3082,54 @@ class FuncGen:
             r = self.tmp()
             self.emit(f"{r} = load i64, ptr {v}" + (", !tbaa !1" if is_list(t) else ""))
             return r, "int", False
+        if name == "json_decode":
+            self.argc(e, 1)
+            if not (hint and is_class(hint) and hint in CLASSES and not getattr(CLASSES[hint], "builtin", False)):
+                raise CompileError("json_decode() needs to know the class to build: write it where the type is "
+                                   "known, e.g. Order $o = try json_decode($body);  or return try json_decode($body); "
+                                   "from a function declared : Order throws", e.line)
+            why = decodable(hint)
+            if why:
+                raise CompileError(f"json_decode() cannot build a {CLASSES[hint].name}: {why}", e.line)
+            ci = CLASSES[hint]
+            key = f"__jd_C_{ci.name}" if not ci.mid else f"{ci.mid}::__jd_C_{ci.name}"
+            if key not in self.mod.funcs:
+                raise CompileError(f"json_decode() cannot build a {ci.name} here: one of its fields names a class "
+                                   f"its module does not import", e.line)
+            j = self.str_arg(e, 0)
+            pos = self.failing_call("int", "@pn_jd_doc", [f"ptr {j}"], e.line, "json_decode(...)")
+            v = self.failing_call(hint, f'@"f.{key}"', [f"ptr {j}", f"i64 {pos}"], e.line, "json_decode(...)")
+            return v, hint, True
+        if name.startswith("__jd_"):
+            if not self.name.startswith("__jd_"):
+                raise CompileError(f"{name}() is internal to json_decode(): use json_decode()", e.line)
+            spec = {"doc": ("int", ["s"], True), "object": ("int", ["s", "i", "l"], True),
+                    "field": ("int", ["s", "i", "s"], True), "int": ("int", ["s", "i"], True),
+                    "float": ("float", ["s", "i"], True), "bool": ("bool", ["s", "i"], True),
+                    "string": ("string", ["s", "i"], True), "first": ("int", ["s", "i"], True),
+                    "next": ("int", ["s", "i"], False), "mfirst": ("int", ["s", "i"], True),
+                    "key": ("string", ["s", "i"], False), "val": ("int", ["s", "i"], False),
+                    "mnext": ("int", ["s", "i"], False)}
+            ret, kinds, throws = spec[name[5:]]
+            self.argc(e, len(kinds))
+            vals = []
+            for i, k in enumerate(kinds):
+                if k == "s":
+                    vals.append(f"ptr {self.str_arg(e, i)}")
+                elif k == "i":
+                    vals.append(f"i64 {self.int_arg(e, i)}")
+                else:
+                    v, t = self.borrow(e.args[i], "list<string>")
+                    vals.append(f"ptr {v}")
+            fn = f"@pn_jd_{name[5:]}"
+            if throws:
+                r = self.failing_call("int" if ret in ("bool", "float") else ret, fn, vals, e.line, f"{name}(...)")
+                if ret == "float":                  # the bits of the double (see pn_jd_float)
+                    f = self.tmp()
+                    self.emit(f"{f} = bitcast i64 {r} to double")
+                    return f, "float", False
+                return (self.i64_to_bool(r) if ret == "bool" else r), ret, ret == "string"
+            return self.call(llty(ret), fn, *vals), ret, ret == "string"
         if name in ("hash", "hash_hmac"):
             self.argc(e, 2 if name == "hash" else 3)
             if args[0].kind != "str" or args[0].val != "sha256":
@@ -4270,6 +4331,154 @@ def check_default(e, line):
     return True
 
 
+def decodable(t, seen=()):
+    """Can json_decode() build a value of type t? Why not, as a string, or None."""
+    if t in ("int", "float", "bool", "string"):
+        return None
+    if is_list(t):
+        return decodable(elem_of(t), seen)
+    if is_map(t):
+        k, v = map_kv(t)
+        return "a map with int keys (JSON keys are strings)" if k != "string" else decodable(v, seen)
+    if is_class(t) and t in CLASSES and not getattr(CLASSES[t], "builtin", False):
+        if t in seen:
+            return None
+        ci = CLASSES[t]
+        ctor = ci.methods.get("__construct")
+        if ctor:
+            for pt, pn, ref in ctor.params:
+                if ref:
+                    return f"{ci.name}::__construct() takes &${pn}"
+                why = decodable(pt, seen + (t,))
+                if why:
+                    return f"{ci.name}::__construct() parameter ${pn}: {why}"
+        else:
+            for f in ci.fields.values():
+                if f.vis == "public":
+                    why = decodable(f.type, seen + (t,))
+                    if why:
+                        return f"{ci.name}::${f.name}: {why}"
+        return None
+    return f"a value of type {t}"
+
+
+def gen_decoders(mods, order):
+    """json_decode() (design P2): for every class, Pin source for a function that reads it from JSON text, plus
+    one per list / map type its fields use. They call the __jd_* built-ins (runtime/jdecode.c), which work on
+    positions in the text. The source is parsed and added to the class's own module like hand-written code."""
+    for file in order:
+        mid, funcs, _, table, _ = mods[file]
+        helpers, out = {}, []
+
+        def tname(t):                               # the type as this module's source writes it
+            if is_list(t):
+                return f"list<{tname(elem_of(t))}>"
+            if is_map(t):
+                k, v = map_kv(t)
+                return f"map<{k},{tname(v)}>"
+            if is_class(t):
+                ci = CLASSES[t]
+                if ci.mid == mid:
+                    return ci.name
+                alias = next(a for a, (tid, _) in table.items() if tid == ci.mid)
+                return f"{alias}::{ci.name}"
+            return t
+
+        def reader(t, pos):                          # an expression that decodes a value of type t at pos
+            if t in ("int", "float", "bool", "string"):
+                return f"try __jd_{t}($j, {pos})"
+            if is_class(t):
+                ci = CLASSES[t]
+                fn = f"__jd_C_{ci.name}"
+                if ci.mid != mid:
+                    fn = f"{tname(t).split('::')[0]}::{fn}"
+                return f"try {fn}($j, {pos})"
+            if t not in helpers:
+                name = f"__jd_T{len(helpers)}"
+                helpers[t] = name
+                if is_list(t):
+                    out.append(f"""function {name}(string $j, int $p): {tname(t)} throws {{
+    {tname(t)} $xs = [];
+    $q = try __jd_first($j, $p);
+    while ($q >= 0) {{
+        $v = {reader(elem_of(t), "$q")};
+        $xs[] = $v;
+        $q = __jd_next($j, $q);
+    }}
+    return $xs;
+}}""")
+                else:
+                    out.append(f"""function {name}(string $j, int $p): {tname(t)} throws {{
+    {tname(t)} $m = [];
+    $q = try __jd_mfirst($j, $p);
+    while ($q >= 0) {{
+        $v = {reader(map_kv(t)[1], "__jd_val($j, $q)")};
+        $m[__jd_key($j, $q)] = $v;
+        $q = __jd_mnext($j, $q);
+    }}
+    return $m;
+}}""")
+            return f"try {helpers[t]}($j, {pos})"
+
+        for ci in list(CLASSES.values()):
+            if ci.mid != mid or getattr(ci, "builtin", False) or decodable(ci.key):
+                continue
+            if not all(not is_class(t) or CLASSES[t].mid == mid or
+                       any(tid == CLASSES[t].mid for tid, _ in table.values())
+                       for t in decoder_types(ci.key)):
+                continue                            # names a class this module cannot write: no decoder
+            ctor = ci.methods.get("__construct")
+            names = [pn.lstrip("$") for _, pn, _ in ctor.params] if ctor else \
+                [f.name for f in ci.fields.values() if f.vis == "public"]
+            keys = ", ".join('"' + n + '"' for n in names)
+            body = [f"    $ok = try __jd_object($j, $p, [{keys}]);"] if names else \
+                ["    $ok = try __jd_object($j, $p, []);"]
+            if ctor:
+                for i, (pt, pn, _) in enumerate(ctor.params):
+                    key = pn.lstrip("$")
+                    body.append(f"    $a{i} = {reader(pt, f'try __jd_field($j, $p, \"{key}\")')};")
+                args = ", ".join(f"$a{i}" for i in range(len(ctor.params)))
+                body.append(f"    return {'try ' if ctor.throws else ''}new {ci.name}({args});")
+            else:
+                body.append(f"    $o = new {ci.name}();")
+                for f in ci.fields.values():
+                    if f.vis == "public":
+                        body.append(f"    $o->{f.name} = {reader(f.type, f'try __jd_field($j, $p, \"{f.name}\")')};")
+                body.append("    return $o;")
+            out.append(f"export function __jd_C_{ci.name}(string $j, int $p): {ci.name} throws {{\n"
+                       + "\n".join(body) + "\n}")
+        if out:
+            src = "\n\n".join(out) + "\n"
+            if os.environ.get("PIN_SHOW_DECODERS"):        # for working on this generator
+                print(src, file=sys.stderr)
+            try:
+                gfuncs, _, _, _ = Parser(lex(src)).program()
+            except CompileError as err:              # a bug in this generator, not in the program
+                raise CompileError(f"internal error generating json_decode() code: {err}\n{src}", 0, file)
+            for g in gfuncs:
+                g.generated = True
+            funcs.extend(gfuncs)
+
+
+def decoder_types(t, seen=None):
+    """Every type a decoder for t touches (t itself, field and element types)."""
+    seen = set() if seen is None else seen
+    if t in seen:
+        return seen
+    seen.add(t)
+    if is_list(t):
+        decoder_types(elem_of(t), seen)
+    elif is_map(t):
+        decoder_types(map_kv(t)[1], seen)
+    elif is_class(t) and t in CLASSES:
+        ci = CLASSES[t]
+        ctor = ci.methods.get("__construct")
+        for ft in ([pt for pt, _, _ in ctor.params] if ctor else
+                   [f.type for f in ci.fields.values() if f.vis == "public"]):
+            decoder_types(ft, seen)
+    return seen
+
+
 def compile_file(path, src=None):
     """Compile the program whose main file is `path`, with every module it imports, into one LLVM module."""
     main_path = os.path.abspath(path)
@@ -4360,6 +4569,8 @@ def compile_file(path, src=None):
             raise CompileError(f"class {ci.name} contains itself through its properties, so no {ci.name} could ever "
                                f"be built. Hold it in a list (list<{ci.name}>) or store an id instead",
                                ci.node.line, ci.file)
+    if any("json_decode" in read_source(file) for file in order):
+        gen_decoders(mods, order)
     for file in order:
         mid, funcs, _, table, _ = mods[file]
         for f in funcs:
