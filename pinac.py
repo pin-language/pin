@@ -2428,8 +2428,8 @@ class FuncGen:
                 if t != vt and not (t == "int" and vt == "float"):
                     raise CompileError(
                         f"a map holds one value type: this literal is {mt} (from its first value), but a value "
-                        f"here is {t}. For a JSON object with mixed values, build the string: "
-                        f"\"{{\\\"a\\\":\" . json_encode($text) . \",\\\"n\\\":\" . $n . \"}}\"", e.line)
+                        f"here is {t}. For a JSON object with values of different types, declare a class with those "
+                        f"properties and json_encode() an object of it (see the AI guide, Classes)", e.line)
                 v = self.coerce(v, t, vt, e.line, "map value")
                 key = self.map_key(mt, ke, e.line)
                 p = self.call("ptr", "@pn_map_slot", f"ptr {m}", f"i64 {key}", "i64 1")
