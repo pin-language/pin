@@ -197,9 +197,17 @@ static Str *jstr_decode(const char *p, const char *q) {
 }
 
 // pointer to the value of top-level `key` and its end, or 0
+// The value under top-level `key` of a JSON object. The key "" means the text itself is the value (an array
+// item from json_at(), or any value from json_raw()).
 static int jfind(Str *json, Str *key, const char **vs, const char **ve) {
     const char *p = json->data, *e = json->data + json->len;
     p = jws(p, e);
+    if (key->len == 0) {
+        const char *end = p < e ? jskip(p, e, 0) : NULL;
+        if (!end || jws(end, e) != e) return 0;
+        *vs = p; *ve = end;
+        return 1;
+    }
     if (p >= e || *p != '{') return 0;
     p = jws(p + 1, e);
     if (p < e && *p == '}') return 0;
@@ -257,6 +265,59 @@ double pn_jget_float(Str *json, Str *key) {
 int64_t pn_jget_bool(Str *json, Str *key) {
     const char *s, *e;
     return jfind(json, key, &s, &e) && e - s == 4 && memcmp(s, "true", 4) == 0;
+}
+
+// Nested JSON: json_raw() hands back the JSON text of one value, which the json_* functions read again.
+Str *pn_jget_raw(Str *json, Str *key) {
+    const char *s, *e;
+    if (!jfind(json, key, &s, &e)) return str_alloc(0);
+    return str_from(s, e - s);
+}
+
+// Walk the items of a top-level array: calls back with each item's span; returns the count, or -1.
+static int64_t jarray(Str *json, int64_t want, const char **is, const char **ie) {
+    const char *p = jws(json->data, json->data + json->len), *e = json->data + json->len;
+    if (p >= e || *p != '[') return -1;
+    p = jws(p + 1, e);
+    if (p < e && *p == ']') return jws(p + 1, e) == e ? 0 : -1;
+    for (int64_t n = 0;; n++) {
+        const char *v = jws(p, e), *vend = jskip(v, e, 0);
+        if (!vend) return -1;
+        if (n == want) { *is = v; *ie = vend; }
+        p = jws(vend, e);
+        if (p < e && *p == ']') return jws(p + 1, e) == e ? n + 1 : -1;
+        if (p >= e || *p != ',') return -1;
+        p++;
+    }
+}
+
+int64_t pn_jget_len(Str *json) {
+    const char *s, *e;
+    int64_t n = jarray(json, -1, &s, &e);
+    if (n >= 0) return n;
+    const char *p = jws(json->data, json->data + json->len), *end = json->data + json->len;
+    if (p >= end || *p != '{') return -1;               // an object: count its keys
+    p = jws(p + 1, end);
+    if (p < end && *p == '}') return 0;
+    for (int64_t k = 1;; k++) {
+        const char *kq = jstr_end(jws(p, end), end);
+        if (!kq) return -1;
+        p = jws(kq, end);
+        if (p >= end || *p != ':') return -1;
+        const char *vend = jskip(jws(p + 1, end), end, 0);
+        if (!vend) return -1;
+        p = jws(vend, end);
+        if (p < end && *p == '}') return k;
+        if (p >= end || *p != ',') return -1;
+        p++;
+    }
+}
+
+Str *pn_jget_at(Str *json, int64_t i) {
+    const char *s = NULL, *e = NULL;
+    int64_t n = jarray(json, i, &s, &e);
+    if (n < 0 || i < 0 || i >= n || !s) return str_alloc(0);
+    return str_from(s, e - s);
 }
 
 // ============================================================================ printing

@@ -248,6 +248,16 @@ for name, answer in BENCH_ANSWERS.items():
     else:
         ok(rel(src))
 
+print("standard input (read_line)")
+_src = os.path.join(BUILD, "read_lines.pn")
+open(_src, "w").write('$n = 0;\nwhile (true) {\n    $l = try read_line() catch ($e) { break; };\n'
+                      '    $n += 1;\n    echo $n, ": [", $l, "]\\n";\n}\necho "end\\n";\n')
+_b = build(_src, os.path.join(BUILD, "read_lines"))
+_r = subprocess.run([os.path.join(BUILD, "read_lines")], input="one\r\n\nthree", capture_output=True, text=True,
+                    timeout=10) if not _b.returncode else _b
+(ok if not _b.returncode and _r.stdout == "1: [one]\n2: []\n3: [three]\nend\n" else
+ lambda n: fail(n, (_r.stdout + _r.stderr)[-300:]))("read_line: CRLF, an empty line, a last line without newline, end of input")
+
 if "--no-server" not in sys.argv:
     print("http server (tests/server/api.pn on :8081)")
     out = os.path.join(BUILD, "api_server")

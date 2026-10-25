@@ -322,6 +322,49 @@ StrOrError pn_stream_next(HStream *st, int64_t ms) {
     }
 }
 
+// --- read_line(): one line of standard input (for programs driven through a pipe, like MCP over stdio)
+// Output is flushed first, so a program that answers a line per line is never stuck with its answer in a
+// buffer. Waiting does not hold the thread (other tasks run). End of input fails with code 1.
+static pthread_mutex_t stdin_mu = PTHREAD_MUTEX_INITIALIZER;
+static char *stdin_buf;
+static size_t stdin_len, stdin_cap;
+static int stdin_eof;
+
+StrOrError pn_read_line(void) {
+    StrOrError r = {NULL, NULL};
+    fflush(stdout);
+    pthread_mutex_lock(&stdin_mu);
+    for (;;) {
+        char *nl = stdin_len ? memchr(stdin_buf, '\n', stdin_len) : NULL;
+        if (nl || (stdin_eof && stdin_len)) {
+            size_t n = nl ? (size_t)(nl - stdin_buf) : stdin_len;
+            size_t take = nl ? n + 1 : n;
+            if (n && stdin_buf[n - 1] == '\r') n--;
+            r.value = str_from(stdin_buf, (int64_t)n);
+            memmove(stdin_buf, stdin_buf + take, stdin_len - take);
+            stdin_len -= take;
+            pthread_mutex_unlock(&stdin_mu);
+            return r;
+        }
+        if (stdin_eof) { pthread_mutex_unlock(&stdin_mu); r.err = make_error(1, "read_line(): end of input"); return r; }
+        if (stdin_len == stdin_cap) {
+            if (stdin_cap >= ((size_t)64 << 20)) { pthread_mutex_unlock(&stdin_mu); r.err = make_error(413, "read_line(): a line longer than 64 MB"); return r; }
+            stdin_cap = stdin_cap ? stdin_cap * 2 : 65536;
+            char *p = realloc(stdin_buf, stdin_cap);
+            if (!p) oom();
+            stdin_buf = p;
+        }
+        int fd = 0;
+        pthread_mutex_unlock(&stdin_mu);
+        int w = wait_fds(&fd, 1, 0, INT64_MAX / 4);      // until there is input (stdin stays blocking)
+        pthread_mutex_lock(&stdin_mu);
+        if (w < 0) { pthread_mutex_unlock(&stdin_mu); r.err = make_error(499, "read_line(): cancelled"); return r; }
+        ssize_t n = read(0, stdin_buf + stdin_len, stdin_cap - stdin_len);
+        if (n > 0) stdin_len += (size_t)n;
+        else if (n == 0 || (errno != EINTR && errno != EAGAIN)) stdin_eof = 1;
+    }
+}
+
 // --- run(): start a program (no shell: arguments go to it as they are), collect its output
 StrOrError pn_run(Str *cmd, List *args, int64_t ms) {
     StrOrError r = {NULL, NULL};

@@ -6,7 +6,7 @@
 //   request.c  query / form / JSON helpers, printing
 //   hub.c      messages between requests, await_timeout
 //   server.c   the HTTP server, headers, limits, SSE
-//   client.c   the http:// client and run()
+//   client.c   the http:// client, run(), read_line()
 //   sqlite.c   db_* (only with -DPIN_SQLITE)
 #include "runtime/core.c"
 #include "runtime/tasks.c"
