@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: an HTTP/1.0 client asking for keep-alive is now told `Connection: keep-alive` (`ab -k` hung).
 - **SQL from literals in a variable** (postgres.md G6): `$sql = "SELECT ... WHERE 1 = 1"; if ($q != "") { $sql .=
   " AND name = ?"; $ps[] = $q; }` now compiles — a variable whose every write is literal pieces is accepted as SQL,
   so search endpoints with optional filters and sorting need no SQL injection risk. Anything else still does not

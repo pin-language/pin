@@ -181,7 +181,7 @@ static const char internal_error_body[] = "{\"error\":\"Internal Server Error\"}
 typedef struct {
     Conn *c;
     Str *method, *path, *body, *resp;
-    int keep;
+    int keep;               // 0 close after, 1 keep (HTTP/1.1), 2 keep and say so (HTTP/1.0 keep-alive)
     char what[120];         // "GET /path" for the log
 } RunArgs;
 
@@ -227,7 +227,7 @@ static void request_done(Task *t) {
         out_add(c, head, (size_t)hn);
         if (r->resp_hdr_len) out_add(c, r->resp_hdr, r->resp_hdr_len);
         hn = snprintf(head, sizeof head, "Content-Length: %lld\r\n%s\r\n", (long long)blen,
-                      ra->keep ? "" : "Connection: close\r\n");
+                      ra->keep == 2 ? "Connection: keep-alive\r\n" : ra->keep ? "" : "Connection: close\r\n");
         out_add(c, head, (size_t)hn);
         out_add(c, body, blen);
         if (!ra->keep) c->close_after = 1;
@@ -322,7 +322,7 @@ static int handle_input(Conn *c) {
             } else if (ieq_prefix(p, e, "connection:")) {
                 char *v = p + 11; while (*v == ' ') v++;
                 if (ieq_prefix(v, e, "close")) keep = 0;
-                else if (ieq_prefix(v, e, "keep-alive")) keep = 1;
+                else if (ieq_prefix(v, e, "keep-alive")) keep = http10 ? 2 : 1;   // 2: HTTP/1.0 must be told
             }
             p = e + 2;
         }

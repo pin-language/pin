@@ -523,6 +523,9 @@ if "--no-server" not in sys.argv:
             check("response_header: Location and two Set-Cookie",
                   r.startswith("HTTP/1.1 302 Found\r\n") and "\r\nLocation: /target\r\n" in r
                   and r.count("Set-Cookie:") == 2, r)
+            r = raw(8087, b"GET /html HTTP/1.0\r\nConnection: keep-alive\r\n\r\n", wait=0.5)
+            check("HTTP/1.0 keep-alive: the answer says Connection: keep-alive (B13) and the connection stays",
+                  "\r\nConnection: keep-alive\r\n" in r and "<reset>" not in r, r)
             r = raw(8087, b"GET /html HTTP/1.1\r\nConnection: close\r\n\r\n")
             check("response_header: Content-Type replaces application/json",
                   "Content-Type: text/html; charset=utf-8\r\n" in r and "application/json" not in r, r)

@@ -1,18 +1,33 @@
-# HANDOFF — state as of 2026-10-25 (v0.8.0)
+# HANDOFF — state as of 2026-10-26 (v0.8.0 released; the 0.9.0 set on `next`, not released)
 
-## 0. Next session (updated 2026-10-25, after the framework brainstorm)
+## 0. Next session (updated 2026-10-26, after the overnight run on the prerequisites)
 
-The framework was talked through: name **Tack** (owner agreed), design in pin-language/docs branch
-`design/tack`, `design/tack.md` — **on hold** until the language prerequisites P1–P5 (§4) are built.
-Start with **P1 connection pool**, `design/pool.md` (owner agreed Q1–Q3; step 0 measured: SQLite ~6.8×
-faster per request with a pool). The owner creates every new GitHub repository (pin-language/tack too);
-Claude pushes to it.
+**Tack M1 can start** (design: pin-language/docs `design/tack.md`, branch `next` there). The owner creates the
+repository `pin-language/tack`; Claude pushes to it. Built overnight on `next` (pin and docs), CI green on Linux
+and macOS for each push, ASAN suite (`run_tests.py --sanitize`) 216/216, not released:
+
+| P | what | state |
+|---|---|---|
+| P1 | connection pool (`design/pool.md`) | **built** for SQLite: same programs, 181k–189k req/s vs 24.6k–26.0k (one-query handler, M2). `db_pool()`, K3/K4 compile errors. Not built: K6 statement cache |
+| P2 | `json_decode()` into a class | **built**: strict, paths in errors (`$.lines[1].qty: ...`), constructors run, nested classes / lists / `map<string,T>` |
+| P3 | parameter defaults + `null` | **defaults built** (also make `json_decode` fields optional). `null` **not built**: `design/null.md` has a 6-step build plan; too wide (types + flow + layout) to rush safely |
+| P4 | PostgreSQL (`design/postgres.md`) | **designed**; **built:** G6 (SQL from literals in a variable: search endpoints with optional filters, also SQLite) and `env()`. Not built: the libpq driver G1–G5 (PostgreSQL 16 + libpq are on the owner's Mac for it) |
+| P5 | security built-ins | **built**: `hash`/`hash_hmac`("sha256"), `hash_equals`, `random_token`, `random_int`, `password_hash`/`password_verify` (PBKDF2-SHA256 600k) |
+
+Fresh-agent test (Sonnet, AI guide only, 2026-10-26): sign-up/login/me API with password_hash, sessions and
+json_decode; product search with optional filters (G6) and a POST with an optional field — **both compiled on the
+first try, zero compile errors**, every curl case right. Its guide gaps were fixed (json_decode error forms,
+storing a token's hash for database lookups).
+
+Owner questions waiting: postgres.md Q1 (TLS through libpq), Q2 (`db_open` panic vs 503), Q3 (G6 — built, can
+be undone); tack.md Q1–Q4.
 
 Releases (decided 2026-10-25, owner: "you decide"): **no 0.8.1**. The use-after-free fix (B12) is on
 `release/v0.1.0` (new installs get it, install.sh takes HEAD) and on `next`; it ships in **0.9.0** with
 P1–P5. Old tags v0.1.0–v0.8.0 stay (docs refer to those numbers). Release less often: one per set.
 `release/v0.1.0` is protected now: `test (ubuntu-latest)` and `test (macos-latest)` must pass (admins may
-bypass); auto-merge is allowed on the repo.
+bypass); auto-merge is allowed on the repo. Releasing 0.9.0 = PR `next` → `release/v0.1.0` (pin and docs),
+VERSION, CHANGELOG heading, tags — the owner's call when.
 
 State at the end of 2026-10-25: released **0.8.0** (pin, docs tags). On `next`, not released: `<?pin` / `?>`
 ignored by the lexer, a clearer message for a missing `;` after `try ... catch { }`, the README's github.com
@@ -132,14 +147,17 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | B10 | ~~per-thread request blocks~~ done: `struct Req` per request, `cur_req` follows the running task | `runtime.c` | done |
 | B11 | Panic outside a request still `exit(1)` (correct for CLI programs) | runtime | by design |
 | B12 | ~~use-after-free on every HTTP request (`request_done` / `cur_req`), crashed under load~~ fixed 2026-10-25; found by the pool measurement (pin-language/docs design/pool.md step 0). CI had not sanitized any server since 0.7.0: now `run_tests.py --sanitize` | runtime | memory safety |
-| B13 | HTTP/1.0 keep-alive: the server keeps the connection open but does not answer `Connection: keep-alive`, so `ab -k` hangs | server | low |
+| B13 | ~~HTTP/1.0 keep-alive: no `Connection: keep-alive` in the answer, so `ab -k` hung~~ fixed 2026-10-26 (test in limits) | server | low |
+| B14 | `password_hash` / `password_verify` take ~0.5 s and hold the server thread meanwhile (portable SHA-256; OpenSSL with ARMv8/SHA-NI instructions: 0.06 s). Fix: hardware SHA, or run PBKDF2 off the worker thread | runtime | speed |
+| B15 | a full pool makes `db_open()` panic (500) after 5 s, not answer 503 (`db_open` does not `throws`) | runtime | low |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int
 overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
 
 ## 4. Task queue (in order)
 
-**Next set (owner, 2026-10-25), before the web framework Tack** (pin-language/docs design/tack.md, on hold):
+**Next set (owner, 2026-10-25), before the web framework Tack** (status 2026-10-26 in §0: P1, P2, P5, defaults
+and G6 built; null and the PostgreSQL driver not):
 P1 a database connection pool that outlives requests (design/pool.md; per worker thread; decide this first, it shapes
 PostgreSQL) → P2 `json_decode` into a class → P3 `null` + parameter defaults → P4 PostgreSQL on the pool with
 a safe way to build filter/sort queries → P5 crypto built-ins. Then Tack M1 only, used for one real app. The
