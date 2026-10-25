@@ -163,6 +163,26 @@ echo json_encode([new Line("tea", 2, 80)]), " ", json_encode([[1, 2], [3]]), "\n
    "Objects become JSON objects of their public properties, in declaration order; private properties are left out.",
    "A map has one value type; for a JSON object with mixed values, use a class."],
   php=r"PHP escapes non-ASCII as `\uXXXX` and drops `.0` unless `JSON_PRESERVE_ZERO_FRACTION` is set.")
+f("json_raw", J, "json_raw(string $json, string $key): string",
+  "The JSON text of one value of an object (an object, an array or anything), to read further with the json_* functions.",
+  r'''$body = "{\"params\": {\"name\": \"add\", \"arguments\": {\"a\": 5, \"b\": 10}}}";
+$params = json_raw($body, "params");
+$args = json_raw($params, "arguments");
+echo json_string($params, "name"), " ", json_int($args, "a") + json_int($args, "b"), "\n";''',
+  ['`""` when the key is missing or the text is not a JSON object.',
+   'The key `""` means "the text itself": `json_string(json_at($list, 0), "")` reads an array item.',
+   "The text is copied as it was sent, so `json_raw($body, \"id\")` can be written back into an answer as is."],
+  php="Instead of `json_decode($body, true)['params']['arguments']`: one level at a time.")
+f("json_len", J, "json_len(string $json): int",
+  "The number of items of a JSON array (or keys of an object); -1 when the text is neither.",
+  r'''echo json_len("[1, 2, 3]"), " ", json_len("{\"a\": 1}"), " ", json_len("7"), "\n";''')
+f("json_at", J, "json_at(string $json, int $i): string",
+  "The JSON text of item `$i` (from 0) of a JSON array, or `\"\"` when there is no such item.",
+  r'''$tags = "[\"tea\", \"cake\"]";
+for ($i = 0; $i < json_len($tags); $i++) {
+    echo json_string(json_at($tags, $i), ""), "\n";
+}''',
+  ['Read an item with key `""`: `json_int(json_at($nums, 0), "")`; an item that is an object with its keys.'])
 f("json_has", J, "json_has(string $json, string $key): bool", "Whether a JSON object has a top-level key.",
   r'''$b = "{\"title\": \"tea\", \"qty\": null}";
 echo json_has($b, "title") ? "y" : "n", json_has($b, "qty") ? "y" : "n", json_has($b, "x") ? "y" : "n", json_has("not json", "title") ? "y" : "n", "\n";''',
@@ -194,7 +214,8 @@ serve(8080, "handle");''',
    "is the response body, sent as `application/json`.",
    "One thread per CPU core (`PN_THREADS=n` to change), keep-alive and pipelining. A panic in the handler "
    "answers 500 and the server keeps running.",
-   "No TLS, no request headers and no timeouts yet: for local testing only."], run=False)
+   "Speaks HTTP/1.1 without TLS, by design: put a reverse proxy (Caddy, nginx, a load balancer) in front for "
+   "https. It has request/response headers, timeouts and connection limits (see the language guide)."], run=False)
 f("http_status", H, "http_status(int $code): void", "Set the status code of the current response (default 200).",
   r'''function handle(string $method, string $path, string $body): string {
     http_status(404);
@@ -476,7 +497,8 @@ f("http_get", CL, "http_get(string $url, map<string,string> $headers, int $ms): 
 echo $health, "\n";''',
   ["A status of 400 or more fails with that status as the code (the start of the body is in the message); "
    "502 when the connection fails, 504 when there is no answer within `$ms`.",
-   "Only `http://` for now (https:// fails with 400): put a TLS proxy next to the program for https.",
+   "Only `http://`, by design: for an https API, call a local egress proxy (Caddy) on 127.0.0.1 that opens the "
+   "https connection — see design/tls.md. An https:// URL fails with 400.",
    "Header values with CR/LF panic. The name lookup itself still blocks the thread briefly."], run=False,
   php="Instead of `file_get_contents($url)` or curl.")
 f("http_post", CL, "http_post(string $url, map<string,string> $headers, string $body, int $ms): string throws",
@@ -503,6 +525,16 @@ f("stream_last_id", CL, "stream_last_id(stream $s): int", "The id of the last ev
   r'''$s = try http_stream("http://127.0.0.1:8080/events", [], 0, 5000);
 $e1 = try stream_next($s, 30000);
 echo stream_last_id($s), "\n";''', run=False)
+f("read_line", CL, "read_line(): string throws",
+  "One line of standard input, without its line ending. Fails with code 1 at the end of the input.",
+  r'''while (true) {
+    $line = try read_line() catch ($e) { break; };    // the input ended
+    echo strtoupper($line), "\n";
+}''',
+  ["What was echoed so far is flushed before it waits, so a program answering line by line (MCP over stdio) "
+   "is never stuck with its answer in a buffer.",
+   "Waiting does not hold the thread: other tasks keep running."], run=False,
+  php="Instead of `fgets(STDIN)`.")
 f("run", CL, "run(string $program, list<string> $args, int $ms): string throws",
   "Run a program and return what it printed. There is no shell: each argument reaches the program as it is.",
   r'''echo try run("echo", ["hello", "world; rm -rf /"], 2000);

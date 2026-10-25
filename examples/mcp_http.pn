@@ -1,0 +1,67 @@
+// An MCP server over HTTP (JSON-RPC 2.0), Pin 0.7.
+class Prop { public function __construct(public string $type) {} }
+
+class Schema {
+    public string $type = "object";
+    public map<string, Prop> $properties = [];
+    public list<string> $required = [];
+}
+
+class Tool {
+    public string $name;
+    public string $description;
+    public Schema $inputSchema;
+    function __construct(string $name, string $description) {
+        $this->name = $name;
+        $this->description = $description;
+        $this->inputSchema = new Schema();
+    }
+}
+
+class ToolList { public list<Tool> $tools = []; }
+class ListReply { public string $jsonrpc = "2.0"; public int $id = 0; public ToolList $result; function __construct() { $this->result = new ToolList(); } }
+
+class Text { public function __construct(public string $type, public string $text) {} }
+class CallResult { public list<Text> $content = []; }
+class CallReply { public string $jsonrpc = "2.0"; public int $id = 0; public CallResult $result; function __construct() { $this->result = new CallResult(); } }
+
+class RpcError { public function __construct(public int $code, public string $message) {} }
+class ErrorReply { public string $jsonrpc = "2.0"; public int $id = 0; public RpcError $error; function __construct(int $code, string $m) { $this->error = new RpcError($code, $m); } }
+
+function squares(int $n): string {
+    list<int> $out = [];
+    for ($i = 1; $i <= $n; $i++) { $out[] = $i * $i; }
+    return json_encode($out);
+}
+
+function rpc(string $body): string {
+    $method = json_string($body, "method");          // top-level keys: these work
+    $id = json_int($body, "id");
+    if ($method == "tools/list") {
+        $t = new Tool("calculate_squares", "Squares from 1 to n");
+        $t->inputSchema->properties["n"] = new Prop("integer");
+        $t->inputSchema->required[] = "n";
+        $r = new ListReply();
+        $r->id = $id;
+        $r->result->tools[] = $t;
+        return json_encode($r);
+    }
+    if ($method == "tools/call") {
+        $n = 10;                                     // params.arguments.n is nested: Pin cannot read it yet
+        $c = new CallReply();
+        $c->id = $id;
+        $c->result->content[] = new Text("text", squares($n));
+        return json_encode($c);
+    }
+    $e = new ErrorReply(-32601, "Method not found");
+    $e->id = $id;
+    return json_encode($e);
+}
+
+function handle(string $method, string $path, string $body): string {
+    if ($method == "POST" && url_path($path) == "/mcp") { return rpc($body); }
+    http_status(404);
+    return "{\"error\":\"POST /mcp\"}";
+}
+
+serve(8080, "handle");

@@ -927,7 +927,11 @@ PHP_FUNCTION_HINTS = {
     "sprintf": "no sprintf() yet: build the string with . and \"$var\" interpolation",
     "printf": "no printf() yet: use echo with . or \"$var\" interpolation",
     "print_r": "no print_r(): echo json_encode($value)", "var_dump": "no var_dump(): echo json_encode($value)",
-    "print": "use echo", "json_decode": "no json_decode() yet (request bodies cannot be parsed yet)",
+    "print": "use echo",
+    "json_decode": "no json_decode() yet: read values with json_string / json_int / json_float / json_bool, and go "
+                   "into nested objects and arrays with json_raw($json, \"key\"), json_at($array, $i), json_len($array)",
+    "fgets": "try read_line() reads one line of standard input", "readline": "try read_line()",
+    "stream_get_line": "try read_line()",
     "is_numeric": "no is_numeric() yet: check the characters with substr() in a loop",
     "str_replace": "no str_replace() yet: rebuild the string with strpos()/substr()",
     "ucfirst": "no ucfirst() yet: strtoupper(substr($s, 0, 1)) . substr($s, 1)",
@@ -975,7 +979,7 @@ NOT_IN_PIN = {
 CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
              "PHP_EOL": ("str", "\n")}
 
-BUILTINS = {"http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
+BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
             "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
@@ -1091,6 +1095,10 @@ declare { ptr, ptr } @pn_stream_next(ptr, i64)
 declare i64 @pn_stream_last_id(ptr)
 declare void @pn_stream_close(ptr)
 declare { ptr, ptr } @pn_run(ptr, ptr, i64)
+declare ptr @pn_jget_raw(ptr, ptr)
+declare ptr @pn_jget_at(ptr, i64)
+declare i64 @pn_jget_len(ptr)
+declare { ptr, ptr } @pn_read_line()
 declare ptr @pn_request_header(ptr)
 declare i64 @pn_request_has_header(ptr)
 declare void @pn_response_header(ptr, ptr)
@@ -2428,8 +2436,8 @@ class FuncGen:
                 if t != vt and not (t == "int" and vt == "float"):
                     raise CompileError(
                         f"a map holds one value type: this literal is {mt} (from its first value), but a value "
-                        f"here is {t}. For a JSON object with mixed values, build the string: "
-                        f"\"{{\\\"a\\\":\" . json_encode($text) . \",\\\"n\\\":\" . $n . \"}}\"", e.line)
+                        f"here is {t}. For a JSON object with values of different types, declare a class with those "
+                        f"properties and json_encode() an object of it (see the AI guide, Classes)", e.line)
                 v = self.coerce(v, t, vt, e.line, "map value")
                 key = self.map_key(mt, ke, e.line)
                 p = self.call("ptr", "@pn_map_slot", f"ptr {m}", f"i64 {key}", "i64 1")
@@ -3251,6 +3259,20 @@ class FuncGen:
                 self.call("void", "@pn_list_free", f"ptr {res}")
                 return None, "void", False
             return res, f"list<{rt}>", True
+        if name == "json_raw":
+            self.argc(e, 2)
+            src, key = self.str_arg(e, 0), self.str_arg(e, 1)
+            return self.call("ptr", "@pn_jget_raw", f"ptr {src}", f"ptr {key}"), "string", True
+        if name == "json_at":
+            self.argc(e, 2)
+            src = self.str_arg(e, 0)
+            return self.call("ptr", "@pn_jget_at", f"ptr {src}", f"i64 {self.int_arg(e, 1)}"), "string", True
+        if name == "json_len":
+            self.argc(e, 1)
+            return self.call("i64", "@pn_jget_len", f"ptr {self.str_arg(e, 0)}"), "int", False
+        if name == "read_line":
+            self.argc(e, 0)
+            return self.failing_call("string", "@pn_read_line", [], e.line, "read_line()"), "string", True
         if name in ("http_get", "http_post", "http_stream"):
             n = {"http_get": 3, "http_post": 4, "http_stream": 4}[name]
             self.argc(e, n)
@@ -4517,7 +4539,7 @@ def pin_get(spec):
     return 0
 
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.0 — 2026-10-25
+
+MCP servers in Pin: nested JSON, standard input, and the first package built on Pin.
+
+
+- Nested JSON: `json_raw($json, $key)` (the JSON text of any value), `json_len($array)`, `json_at($array, $i)`;
+  the key `""` reads the text itself. MCP's `params.arguments` can now be read.
+- `read_line()` reads standard input (flushes output first; end of input fails with code 1) — what an MCP
+  server over stdio needs. First package on top: `github.com/pin-language/mcp` (pin-mcp), checked against
+  the official MCP Python SDK.
+- No TLS by design (design/tls.md): a proxy does https both ways; the https:// error says so.
+- A map literal with mixed value types now suggests a class (it still pointed to building JSON by hand).
+- runtime.c split into runtime/*.c (one translation unit, object code unchanged).
+- examples/mcp_http.pn: an MCP-style JSON-RPC server over HTTP.
+
 ## 0.7.0 — 2026-10-25
 
 Tasks and real time (design: concurrency.md): a program can wait for several things at once, and requests

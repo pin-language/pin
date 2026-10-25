@@ -1,4 +1,4 @@
-# HANDOFF — state as of 2026-10-25 (v0.7.0)
+# HANDOFF — state as of 2026-10-25 (v0.8.0)
 
 **Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
 `ai-guide.md` (pin-language/docs) complete and correct for every release: it is what agents read. Error messages should
@@ -97,7 +97,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 
 | # | problem | where | severity |
 |---|---|---|---|
-| B5 | ~~headers, timeouts, connection limit~~ done in 0.6.0. Still: no TLS / HTTP/2 (use a reverse proxy) | server | security |
+| B5 | ~~headers, timeouts, connection limit~~ done in 0.6.0. No TLS / HTTP/2 by design (design/tls.md: a proxy does it) | server | security |
 | B6 | `maplit` key type comes from a heuristic `expr_type_probe` | `pinac.py` | low |
 | B8 | `.ll` files are written next to sources | `pinac.py main()` | cosmetic |
 | B9 | `+ - *` wrap silently (overflow panics removed for speed until check elision exists, int-overflow.md O3) | codegen | correctness |
@@ -133,7 +133,7 @@ overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
    `json_decode`.
 8. ~~Concurrency~~ done in 0.7.0 (C1–C11; see concurrency.md status for what differs). Runtime: tasks +
    scheduler + timer heap + wait_fds in runtime.c ("tasks"), Hub ("hub"), client ("HTTP client and run()").
-   Compiler: go_expr / await_expr / tasks_done / task_borrows in pinac.py. Next ideas: TLS (decide), loop-head
+   Compiler: go_expr / await_expr / tasks_done / task_borrows in pinac.py. TLS: decided no (owner, 2026-10-25, design/tls.md). Next ideas: loop-head
    cancellation checks, stack-overflow → panic message, durable await (research first).
 9. ~~Modules/imports~~ done in 0.4.0: `import`/`export`/`mod::fn()`, packages via `pin get` + `pin.lock`
    (commit + sha256, checked every build). Not yet: transitive package resolution (a package's own package
@@ -142,9 +142,20 @@ overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
 After each: tests for the feature and every new compile error, ASAN/UBSAN on macOS, run the suite in the
 Linux container, update this file.
 
+## 4b. Where things live (owner, 2026-10-25)
+
+- HTTP stays in the language (server, client, Hub, SSE are tied to the scheduler and the per-request
+  allocator). `runtime.c` is split into `runtime/*.c` but still built as one translation unit (object code
+  identical to the single file).
+- Frameworks on top (routing, middleware, auth helpers, apps like the PACT board) go in their own repos as
+  Pin packages (`pin get`), not into the language. Packages are Pin source only: no C in packages.
+
 ## 5. Reproducing
 
-- Linux: `tools/linux_test.sh` — the full suite + sanitizers on arm64 and x86_64 in kept images `pin-test:*`
+- Big test round = GitHub Actions (`.github/workflows/test.yml`: the suite + sanitizers on ubuntu-latest x86_64
+  and macos-latest, on every push to any branch, ~4 min). Docker Desktop on the owner's Mac hangs when the
+  disk is nearly full, so it is not the release gate any more; `tools/linux_test.sh` is still there for arm64:
+  the full suite + sanitizers on arm64 and x86_64 in kept images `pin-test:*`
   (built once from tools/linux/Dockerfile). Owner, 2026-10-25: run it for big rounds (before a release), not
   after every change — installing clang in a fresh container each time filled the Mac's disk.
 - Tests: `python3 tests/run_tests.py` (≈2 min). Server stderr goes to `build/server_*.log` (a pipe

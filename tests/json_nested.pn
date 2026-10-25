@@ -1,0 +1,7 @@
+$body = "{\"jsonrpc\":\"2.0\",\"id\":\"abc-7\",\"method\":\"tools/call\",\"params\":{\"name\":\"add\",\"arguments\":{\"a\":5,\"b\":10,\"tags\":[\"x\",\"y\"]}}}";
+$params = json_raw($body, "params");
+$args = json_raw($params, "arguments");
+echo json_string($params, "name"), " ", json_int($args, "a") + json_int($args, "b"), "\n";
+$tags = json_raw($args, "tags");
+for ($i = 0; $i < json_len($tags); $i++) { echo json_string(json_at($tags, $i), ""), ";"; }
+echo "\n", json_raw($body, "id"), " ", json_len($args), " ", json_len("5"), " [", json_at($tags, 9), "]\n";
