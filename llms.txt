@@ -13,7 +13,7 @@ modules (import/export, module::fn()); Git packages (pin get, pin.lock with sha2
 Not yet: inheritance/interfaces, null, finally, closures, default parameter values, PostgreSQL.
 By design: no TLS — a proxy does https in both directions (design/tls.md).
 
-Read the AI guide before writing Pin (raw URL below): it is the complete language on one page. The PHP habits
+Read the AI guide before writing Pin — https://github.com/pin-language/docs/blob/HEAD/ai-guide.md (raw URL below): it is the complete language on one page. The PHP habits
 that do not compile, most common first:
 - no null / ?T: use -1, "", an empty list or a bool
 - a map holds ONE value type: for JSON objects with mixed values declare a class and json_encode(new Obj(...))

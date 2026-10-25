@@ -1,7 +1,8 @@
 # Pin
 
 > **🤖 AI coding agents: before writing any Pin code, read the complete guide —
-> https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md** (one page). Pin looks like PHP but
+> https://github.com/pin-language/docs/blob/HEAD/ai-guide.md** (one page; plain text:
+> https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md). Pin looks like PHP but
 > many PHP habits do not compile: no `null`, a map holds one value type (use a class for mixed JSON), empty
 > containers need a type, calls that can fail need `try`. Loop on `pin check --json file.pn`. See also
 > [AGENTS.md](AGENTS.md) and [llms.txt](llms.txt).
