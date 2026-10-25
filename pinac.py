@@ -4606,7 +4606,9 @@ def link(ir, out):
         with open(ll, "w") as f:
             f.write(ir)
         db = ["-DPIN_SQLITE", "-lsqlite3"] if needs_sqlite(ir) else []
-        r = subprocess.run(["clang", "-O2", "-pthread", "-Wno-override-module", ll, os.path.join(HERE, "runtime.c"),
+        # tests only (run_tests.py --sanitize): build with ASAN + UBSAN, e.g. servers that tools/sanitize.sh cannot run
+        san = ["-g", "-fsanitize=address,undefined"] if os.environ.get("PIN_SANITIZE") == "1" else []
+        r = subprocess.run(["clang", "-O2", *san, "-pthread", "-Wno-override-module", ll, os.path.join(HERE, "runtime.c"),
                             "-lm", *db, "-o", out], capture_output=True, text=True)
     if r.returncode:
         if db and ("sqlite3.h" in r.stderr or "lsqlite3" in r.stderr):

@@ -237,6 +237,7 @@ static void request_done(Task *t) {
     req_free_all(r);                            // the response body, method, path, body and anything left over
     free(r->hdr); free(r->resp_hdr); free(r);
     t->req = NULL;
+    if (cur_req == r) cur_req = NULL;           // we run inside t: leave_task() copies cur_req back into t->req
     free(ra);
     if (c->orphan) conn_free(c);
     else if (!c->parsing) { c->next_done = done_conns; done_conns = c; }   // answered by the worker loop

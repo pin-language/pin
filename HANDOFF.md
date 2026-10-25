@@ -48,6 +48,7 @@ Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang
   before `break` or `return` is fine). Tests: `tests/flow.pn`, `tests/errors/maybe_*.pn`,
   `loop_zero_times.pn`, `move_then_continue.pn`.
 - ASAN+UBSAN clean on macOS and Linux (LeakSanitizer on Linux too): hello, strmap, arith, listsum, all panic tests, and both servers
+  (that server claim was from before 0.7.0 and had stopped being true: see B12; servers are sanitized by `run_tests.py --sanitize` now)
   under load (pipelining, half-close, garbage, chunked bodies, ~1,450 panicking requests).
 
 ### Classes (0.5.0)
@@ -103,6 +104,8 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | B9 | `+ - *` wrap silently (overflow panics removed for speed until check elision exists, int-overflow.md O3) | codegen | correctness |
 | B10 | ~~per-thread request blocks~~ done: `struct Req` per request, `cur_req` follows the running task | `runtime.c` | done |
 | B11 | Panic outside a request still `exit(1)` (correct for CLI programs) | runtime | by design |
+| B12 | ~~use-after-free on every HTTP request (`request_done` / `cur_req`), crashed under load~~ fixed 2026-10-25; found by the pool measurement (pin-language/docs design/pool.md step 0). CI had not sanitized any server since 0.7.0: now `run_tests.py --sanitize` | runtime | memory safety |
+| B13 | HTTP/1.0 keep-alive: the server keeps the connection open but does not answer `Connection: keep-alive`, so `ab -k` hangs | server | low |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int
 overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
