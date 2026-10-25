@@ -1,14 +1,18 @@
 # HANDOFF — state as of 2026-10-25 (v0.8.0)
 
-## 0. Next session (owner, 2026-10-25): the framework
+## 0. Next session (updated 2026-10-25, after the framework brainstorm)
 
-Talk about **the framework** (routing, middleware, auth helpers…) as Pin packages in their own repos
-(`pin-language/web`, like `pin-language/mcp`), per §4b. Things to settle first, before writing code:
-- Pin has no function values (no callbacks, no closures): a router cannot take handlers as arguments.
-  Options to weigh: the program's own `if/elseif` with helper functions (what pin-mcp does), a code
-  generator, or adding function references to the language (design change: ask the owner).
-- What a request/response object looks like now that classes exist (headers, query, JSON body).
-- The owner creates every new GitHub repository; Claude pushes to it.
+The framework was talked through: name **Tack** (owner agreed), design in pin-language/docs branch
+`design/tack`, `design/tack.md` — **on hold** until the language prerequisites P1–P5 (§4) are built.
+Start with **P1 connection pool**, `design/pool.md` (owner agreed Q1–Q3; step 0 measured: SQLite ~6.8×
+faster per request with a pool). The owner creates every new GitHub repository (pin-language/tack too);
+Claude pushes to it.
+
+Releases (decided 2026-10-25, owner: "you decide"): **no 0.8.1**. The use-after-free fix (B12) is on
+`release/v0.1.0` (new installs get it, install.sh takes HEAD) and on `next`; it ships in **0.9.0** with
+P1–P5. Old tags v0.1.0–v0.8.0 stay (docs refer to those numbers). Release less often: one per set.
+`release/v0.1.0` is protected now: `test (ubuntu-latest)` and `test (macos-latest)` must pass (admins may
+bypass); auto-merge is allowed on the repo.
 
 State at the end of 2026-10-25: released **0.8.0** (pin, docs tags). On `next`, not released: `<?pin` / `?>`
 ignored by the lexer, a clearer message for a missing `;` after `try ... catch { }`, the README's github.com
