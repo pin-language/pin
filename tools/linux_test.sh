@@ -19,7 +19,7 @@ for arch in $arches; do
         mkdir -p build &&
         sh tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn \
             tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn tests/classes.pn \
-            tests/nested.pn tests/errors_ok.pn tests/tasks.pn &&
+            tests/nested.pn tests/errors_ok.pn tests/tasks.pn tests/json_nested.pn &&
         python3 -u tests/run_tests.py > /tmp/t.log 2>&1; r=$?; grep -E "FAIL|passed" -A3 /tmp/t.log; exit $r' || status=1
 done
 exit $status

@@ -1,4 +1,4 @@
-# HANDOFF — state as of 2026-10-25 (v0.7.0)
+# HANDOFF — state as of 2026-10-25 (v0.8.0)
 
 **Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
 `ai-guide.md` (pin-language/docs) complete and correct for every release: it is what agents read. Error messages should
@@ -152,7 +152,10 @@ Linux container, update this file.
 
 ## 5. Reproducing
 
-- Linux: `tools/linux_test.sh` — the full suite + sanitizers on arm64 and x86_64 in kept images `pin-test:*`
+- Big test round = GitHub Actions (`.github/workflows/test.yml`: the suite + sanitizers on ubuntu-latest x86_64
+  and macos-latest, on every push to any branch, ~4 min). Docker Desktop on the owner's Mac hangs when the
+  disk is nearly full, so it is not the release gate any more; `tools/linux_test.sh` is still there for arm64:
+  the full suite + sanitizers on arm64 and x86_64 in kept images `pin-test:*`
   (built once from tools/linux/Dockerfile). Owner, 2026-10-25: run it for big rounds (before a release), not
   after every change — installing clang in a fresh container each time filled the Mac's disk.
 - Tests: `python3 tests/run_tests.py` (≈2 min). Server stderr goes to `build/server_*.log` (a pipe

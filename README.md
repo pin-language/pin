@@ -19,7 +19,7 @@ LLVM into a single native binary, including a multi-threaded HTTP server.
 
 
 
-> **Status: preview (0.7) for early testers.** The language is small and still changing. Do not use it
+> **Status: preview (0.8) for early testers.** The language is small and still changing. Do not use it
 > in production. TLS (https) is left to a proxy by design, in both directions: see
 > [design/tls.md](https://github.com/pin-language/docs/blob/HEAD/design/tls.md).
 > 🇹🇭 ภาษาไทย: [README.th.md](README.th.md)

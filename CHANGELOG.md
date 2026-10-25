@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-10-25
+
+MCP servers in Pin: nested JSON, standard input, and the first package built on Pin.
+
 
 - Nested JSON: `json_raw($json, $key)` (the JSON text of any value), `json_len($array)`, `json_at($array, $i)`;
   the key `""` reads the text itself. MCP's `params.arguments` can now be read.

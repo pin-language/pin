@@ -2,10 +2,11 @@
 
 > Pin is a small statically typed language with PHP 8 syntax, compiled to native code through LLVM, with
 > compile-time ownership instead of a garbage collector. It is meant to be written by AI coding agents.
-> Version 0.7 (preview, not for production). Not everything from PHP exists: read the AI guide before writing Pin.
+> Version 0.8 (preview, not for production). Not everything from PHP exists: read the AI guide before writing Pin.
 
 Has: functions; go/await tasks, a Hub for messages between requests, Server-Sent Events, an http://
-client and run(); throws/try/catch errors; classes (no inheritance) with methods and & parameters; int, float, bool, string; list<T> and
+client and run(); nested JSON reading (json_raw) and read_line() for stdin (MCP servers: package
+github.com/pin-language/mcp); throws/try/catch errors; classes (no inheritance) with methods and & parameters; int, float, bool, string; list<T> and
 ordered map<K,V>, nested freely; ownership checks; a multi-threaded
 JSON HTTP server (serve) with query/form/JSON-body helpers; SQLite (db_*) where SQL injection does not compile;
 modules (import/export, module::fn()); Git packages (pin get, pin.lock with sha256).

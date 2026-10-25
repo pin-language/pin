@@ -4539,7 +4539,7 @@ def pin_get(spec):
     return 0
 
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 

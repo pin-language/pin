@@ -10,7 +10,7 @@ production มาจับตอน compile ทุก error บอกวิธ�
 คนที่เขียน PHP อ่าน Pin ได้ทันที แต่ตัวแปรแต่ละตัวมี type เดียว หน่วยความจำจัดการด้วย ownership ที่เช็คตอน
 compile (คล้าย Rust แต่ย่อให้ง่าย) และ compile ผ่าน LLVM ออกมาเป็น binary ไฟล์เดียว รวมถึง HTTP server แบบหลาย thread
 
-> **สถานะ: preview (0.7) สำหรับให้คนเริ่มทดลอง** ภาษายังเล็กและยังเปลี่ยนได้ ห้ามใช้ใน production · HTTP server มี
+> **สถานะ: preview (0.8) สำหรับให้คนเริ่มทดลอง** ภาษายังเล็กและยังเปลี่ยนได้ ห้ามใช้ใน production · HTTP server มี
 > timeout และ limit แล้ว · TLS (https) ให้ proxy ทำทั้งขาเข้าและขาออก ตามที่ออกแบบไว้ · English: [README.md](README.md)
 
 หลักการออกแบบ: **memory safety > ความเร็ว > อ่านง่าย > เหมือน PHP**
