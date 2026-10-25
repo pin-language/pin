@@ -15,7 +15,7 @@ LLVM into a single native binary, including a multi-threaded HTTP server.
 > writing Pin — it is the complete language on one page — and loop on `pin check --json`. See also [AGENTS.md](AGENTS.md).
 
 > **Status: preview (0.6) for early testers.** The language is small and still changing. Do not use it
-> in production, and do not expose its HTTP server to the internet (no TLS, no timeouts yet).
+> in production. Its HTTP server has timeouts and limits but no TLS: put a reverse proxy in front of it.
 > 🇹🇭 ภาษาไทย: [README.th.md](README.th.md)
 
 ## Install
@@ -201,14 +201,14 @@ Rust's release build is not either and Go also wraps. Programs, the runner and r
 
 An earlier HTTP load test on a 2-core Linux container (each server pinned to one core, wrk with 64
 connections) gave Pin 132k req/s for a hello endpoint vs 42k for Go `net/http` and 10k for FrankenPHP.
-Pin's server does far less (no TLS, HTTP/2, header API or timeouts), so that gap is not a language
+Pin's server does far less (no TLS or HTTP/2), so that gap is not a language
 comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP. Details:
 [pin-language/benchmarks](https://github.com/pin-language/benchmarks) (`http/`).
 
 ## Not there yet
 
 Inheritance and interfaces, `null` / nullable types, `finally`, default parameter values, closures,
-request headers, a full `json_decode` (nested JSON; top-level keys can already be read with
+TLS, a full `json_decode` (nested JSON; top-level keys can already be read with
 `json_string` / `json_int` / …), PostgreSQL (SQLite is there), `go`/`await`.
 Most of these are already designed in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
 [CHANGELOG.md](CHANGELOG.md) for what changed.

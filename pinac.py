@@ -905,7 +905,11 @@ PHP_FUNCTION_HINTS = {
     "strrev": "no strrev() yet: loop from the end with substr($s, $i, 1)",
     "rand": "no random numbers yet", "mt_rand": "no random numbers yet", "time": "no clock yet",
     "date": "no dates yet", "microtime": "no clock yet", "exit": "return from the top level instead",
-    "die": "return from the top level instead", "header": "no response headers yet; http_status() sets the status",
+    "die": "return from the top level instead",
+    "header": "response_header(\"Name\", \"value\") adds a response header; http_status() sets the status",
+    "getallheaders": "request_header(\"Name\") reads one request header (\"\" if absent)",
+    "apache_request_headers": "request_header(\"Name\") reads one request header (\"\" if absent)",
+    "setcookie": "response_header(\"Set-Cookie\", \"name=value; HttpOnly; Secure; SameSite=Lax\")",
     "file_get_contents": "no file or network access yet", "fopen": "no file access yet",
 }
 
@@ -934,7 +938,7 @@ NOT_IN_PIN = {
 CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
              "PHP_EOL": ("str", "\n")}
 
-BUILTINS = {"error", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
+BUILTINS = {"error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1025,6 +1029,9 @@ declare void @pn_serve(i64, ptr)
 declare double @llvm.sqrt.f64(double)
 declare ptr @pn_obj_new(i64)
 declare void @pn_uncaught(ptr) noreturn cold
+declare ptr @pn_request_header(ptr)
+declare i64 @pn_request_has_header(ptr)
+declare void @pn_response_header(ptr, ptr)
 declare ptr @pn_handler_error(ptr)
 declare void @pn_obj_free(ptr)
 declare void @pn_list_free_with(ptr, ptr)
@@ -2974,6 +2981,17 @@ class FuncGen:
             else:
                 self.call("void", "@pn_map_del", f"ptr {m}", f"i64 {key}")
             return None, "void", False
+        if name == "request_header":
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_request_header", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "request_has_header":
+            self.argc(e, 1)
+            return self.i64_to_bool(self.call("i64", "@pn_request_has_header", f"ptr {self.str_arg(e, 0)}")), "bool", False
+        if name == "response_header":
+            self.argc(e, 2)
+            n, v = self.str_arg(e, 0), self.str_arg(e, 1)
+            self.call("void", "@pn_response_header", f"ptr {n}", f"ptr {v}")
+            return None, "void", False
         if name == "http_status":
             self.argc(e, 1)
             self.call("void", "@pn_http_status", f"i64 {self.int_arg(e, 0)}")
@@ -4045,7 +4063,7 @@ def pin_get(spec):
     return 0
 
 
-VERSION = "0.6.0-dev"
+VERSION = "0.6.0"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 

@@ -1,6 +1,26 @@
 # Changelog
 
-## Unreleased (next: 0.6.0, with request headers and timeouts)
+## 0.6.0 — 2026-10-25
+
+Errors you expect (`throws` / `try` / `catch`), and an HTTP server that reads headers and protects itself.
+
+### Request and response headers, server limits
+
+- `request_header("Authorization")` (case-insensitive, trimmed, `""` if absent), `request_has_header()`,
+  `response_header("Location", "/x")` (repeatable for `Set-Cookie`; `Content-Type` replaces the default).
+  A header value with CR/LF or another control byte panics, so request data cannot inject headers; the
+  headers the server writes itself cannot be set.
+- Limits against slow and hostile clients (B5): a request must arrive within 15 s of its first byte (408; a
+  connection that sends nothing is closed too), idle keep-alive connections close after 60 s, unread
+  responses after 30 s, at most 10 000 open connections (503). `PN_READ_TIMEOUT_MS`, `PN_IDLE_TIMEOUT_MS`,
+  `PN_WRITE_TIMEOUT_MS`, `PN_MAX_CONNS` change them.
+- Request smuggling closed: `Transfer-Encoding` is refused (501) instead of being misread, and a
+  `Content-Length` that is not plain digits or appears twice with different values gets 400. More than
+  64 KB of headers gets 431 (it was a silent close), a body over 64 MB gets 413.
+- HTTP throughput unchanged (Linux container, wrk, 2 threads: 0.5 runtime 369k–395k req/s, 0.6 371k–386k;
+  noise level).
+
+### Errors
 
 Errors you expect: `throws`, `try`, `catch` (design: error-handling.md), compiled to return values.
 

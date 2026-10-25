@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <sys/event.h>
@@ -1089,11 +1090,111 @@ static Handler pn_user_handler;   // set by pn_serve(); the compiler passes the 
 static __thread int64_t http_status = 200;
 void pn_http_status(int64_t s) { http_status = s; }
 
-typedef struct {
+typedef struct Conn {
     int fd, close_after, want_out, dead;
     char *in; size_t in_len, in_cap;
     char *out; size_t out_len, out_off, out_cap;
+    int64_t req_start;      // ms when the request being received began (0 = none pending)
+    int64_t out_start;      // ms since a response has been waiting for the client to read it (0 = none)
+    int64_t last_active;    // ms of the last completed request (for the keep-alive idle limit)
+    struct Conn *prev, *next;   // the worker's open connections, scanned for timeouts
 } Conn;
+
+// ---------------------------------------------------------------- limits (slow clients cannot hold the server)
+// A request must arrive completely within PN_READ_TIMEOUT_MS of its first byte (a new connection counts as a
+// request that has started: sending nothing is not a way to hold a connection), an idle keep-alive connection
+// is closed after PN_IDLE_TIMEOUT_MS, a response the client does not read after PN_WRITE_TIMEOUT_MS, and at
+// most PN_MAX_CONNS connections are open at once.
+static int64_t read_timeout_ms = 15000, idle_timeout_ms = 60000, write_timeout_ms = 30000, max_conns = 10000;
+static int64_t open_conns;          // all workers (atomic)
+
+static int64_t now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static int64_t env_ms(const char *name, int64_t dflt) {
+    const char *v = getenv(name);
+    if (!v || !*v) return dflt;
+    char *end;
+    long long n = strtoll(v, &end, 10);
+    if (*end || n <= 0) { fprintf(stderr, "serve: %s must be a positive number\n", name); exit(1); }
+    return (int64_t)n;
+}
+
+// ---------------------------------------------------------------- request and response headers
+// The handler reads the current request's headers and adds response headers through thread-local state set
+// up around each call; nothing is shared between requests or threads.
+static __thread const char *req_hdr, *req_hdr_end;     // the header lines of the request being handled
+static __thread char *resp_hdr;                        // extra response header lines (plain malloc, reused)
+static __thread size_t resp_hdr_len, resp_hdr_cap;
+static __thread int resp_has_ctype, in_handler;
+
+// The value of request header `name` (case-insensitive), trimmed; NULL if absent.
+static Str *find_header(Str *name) {
+    if (!in_handler) return NULL;
+    for (const char *p = req_hdr; p < req_hdr_end;) {
+        const char *e = memmem(p, (size_t)(req_hdr_end + 2 - p), "\r\n", 2);
+        if (!e) e = req_hdr_end;
+        const char *colon = memchr(p, ':', (size_t)(e - p));
+        if (colon && colon - p == name->len && strncasecmp(p, name->data, (size_t)name->len) == 0) {
+            const char *v = colon + 1, *ve = e;
+            while (v < ve && (*v == ' ' || *v == '\t')) v++;
+            while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t')) ve--;
+            return str_from(v, ve - v);
+        }
+        p = e + 2;
+    }
+    return NULL;
+}
+
+Str *pn_request_header(Str *name) {
+    Str *v = find_header(name);
+    return v ? v : str_alloc(0);
+}
+
+int64_t pn_request_has_header(Str *name) {
+    Str *v = find_header(name);
+    if (!v) return 0;
+    pn_str_free(v);
+    return 1;
+}
+
+static int is_token_char(unsigned char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strchr("!#$%&'*+-.^_`|~", c);
+}
+
+// Add a response header. A name or value that could break the header block (CR, LF and other control bytes:
+// "header injection") panics, as do the headers the server writes itself.
+void pn_response_header(Str *name, Str *value) {
+    if (!in_handler) panic_msg("response_header() only works inside a serve() handler");
+    if (name->len == 0) panic_msg("response_header(): empty header name");
+    for (int64_t i = 0; i < name->len; i++)
+        if (!is_token_char((unsigned char)name->data[i])) panic_msg("response_header(): invalid character in the header name");
+    for (int64_t i = 0; i < value->len; i++) {
+        unsigned char c = (unsigned char)value->data[i];
+        if ((c < 0x20 && c != '\t') || c == 0x7f)
+            panic_msg("response_header(): the value contains a control character (CR/LF would let it inject headers)");
+    }
+    static const char *const own[] = {"content-length", "connection", "transfer-encoding", "date", NULL};
+    for (int i = 0; own[i]; i++)
+        if ((size_t)name->len == strlen(own[i]) && strncasecmp(name->data, own[i], (size_t)name->len) == 0)
+            panic_msg("response_header(): Content-Length, Connection, Transfer-Encoding and Date are set by the server");
+    if (name->len == 12 && strncasecmp(name->data, "content-type", 12) == 0) resp_has_ctype = 1;
+    size_t need = resp_hdr_len + (size_t)name->len + (size_t)value->len + 4;
+    if (need > (64u << 10)) panic_msg("response_header(): more than 64 KB of response headers");
+    if (need > resp_hdr_cap) {
+        resp_hdr_cap = need * 2;
+        char *p = realloc(resp_hdr, resp_hdr_cap);
+        if (!p) oom();
+        resp_hdr = p;
+    }
+    memcpy(resp_hdr + resp_hdr_len, name->data, (size_t)name->len); resp_hdr_len += (size_t)name->len;
+    memcpy(resp_hdr + resp_hdr_len, ": ", 2); resp_hdr_len += 2;
+    memcpy(resp_hdr + resp_hdr_len, value->data, (size_t)value->len); resp_hdr_len += (size_t)value->len;
+    memcpy(resp_hdr + resp_hdr_len, "\r\n", 2); resp_hdr_len += 2;
+}
 
 static const char *reason(int64_t s) {
     switch (s) {
@@ -1131,6 +1232,7 @@ __attribute__((noreturn)) void pn_uncaught(PinError *e) {
 Str *pn_handler_error(PinError *e) {
     int64_t s = e->code >= 400 && e->code <= 599 ? e->code : 500;
     http_status = s;
+    resp_hdr_len = 0; resp_has_ctype = 0;       // like a panic: the error answer carries none of the handler's headers
     fprintf(stderr, "error %lld: %.*s\n", (long long)e->code, (int)e->message->len, e->message->data);
     char buf[96];
     int n = snprintf(buf, sizeof buf, "{\"error\":\"%s\"}", reason(s));
@@ -1161,11 +1263,16 @@ static const char internal_error_body[] = "{\"error\":\"Internal Server Error\"}
 // Call the program's handler for one request. A panic inside it frees everything the request
 // allocated and becomes a 500 response; the panic message (already on stderr) is the only trace,
 // so the client never sees internal details.
-static Str *run_handler(const char *line, const char *sp1, const char *sp2, const char *body, int64_t blen) {
+static Str *run_handler(const char *line, const char *sp1, const char *sp2, const char *hdr, const char *hdr_end,
+                        const char *body, int64_t blen) {
     jmp_buf jb;
     req_begin();
+    req_hdr = hdr; req_hdr_end = hdr_end;
+    resp_hdr_len = 0; resp_has_ctype = 0; in_handler = 1;
     if (setjmp(jb)) {
         req_jmp = NULL;
+        in_handler = 0;
+        resp_hdr_len = 0; resp_has_ctype = 0;        // a 500 carries none of the handler's headers
         req_free_all();
         fprintf(stderr, "  in request %.*s -> 500\n", (int)(sp2 - line), line);
         http_status = 500;
@@ -1178,8 +1285,20 @@ static Str *run_handler(const char *line, const char *sp1, const char *sp2, cons
     http_status = 200;
     Str *resp = pn_user_handler(method, path, b);
     req_jmp = NULL;
+    in_handler = 0;
     pn_str_free(method); pn_str_free(path); pn_str_free(b);
     return resp;
+}
+
+// Answer with an error status and close: for requests the server will not pass to the handler.
+static void refuse(Conn *c, int status) {
+    char msg[200];
+    int n = snprintf(msg, sizeof msg,
+                     "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n"
+                     "{\"error\":\"%s\"}", status, reason(status), (int)strlen(reason(status)) + 12, reason(status));
+    out_add(c, msg, (size_t)n);
+    c->close_after = 1;
+    c->in_len = 0;
 }
 
 // Parse and answer every complete request in the input buffer. -1 = close the connection.
@@ -1189,40 +1308,56 @@ static int handle_input(Conn *c) {
         char *buf = c->in + off;
         size_t avail = c->in_len - off;
         char *hend = memmem(buf, avail, "\r\n\r\n", 4);
-        if (!hend) { if (avail > 65536) return -1; break; }
+        if (!hend) {
+            if (avail > 65536) { refuse(c, 431); return 0; }
+            break;
+        }
+        if (hend - buf > 65536) { refuse(c, 431); return 0; }   // also when it all arrived in one read
         char *line_end = memmem(buf, (size_t)(hend - buf) + 2, "\r\n", 2);
         char *sp1 = memchr(buf, ' ', (size_t)(line_end - buf));
         char *sp2 = sp1 ? memchr(sp1 + 1, ' ', (size_t)(line_end - sp1 - 1)) : NULL;
-        if (!sp2) {
-            static const char bad[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-            out_add(c, bad, sizeof bad - 1);
-            c->close_after = 1;
-            c->in_len = 0;
-            return 0;
-        }
+        if (!sp2) { refuse(c, 400); return 0; }
         int http10 = (line_end - sp2 - 1 == 8) && memcmp(sp2 + 1, "HTTP/1.0", 8) == 0;
         int keep = !http10;
         int64_t clen = 0;
+        int seen_len = 0;
         for (char *p = line_end + 2; p < hend;) {
             char *e = memmem(p, (size_t)(hend + 2 - p), "\r\n", 2);
-            if (ieq_prefix(p, e, "content-length:")) clen = strtoll(p + 15, NULL, 10);
-            else if (ieq_prefix(p, e, "connection:")) {
+            if (ieq_prefix(p, e, "content-length:")) {
+                // only digits, and one value: anything else is how request smuggling starts (RFC 9112 6.3)
+                char *v = p + 15, *ve = e;
+                while (v < ve && (*v == ' ' || *v == '\t')) v++;
+                while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t')) ve--;
+                int64_t n = 0;
+                if (v == ve || ve - v > 12) { refuse(c, 400); return 0; }
+                for (char *d = v; d < ve; d++) {
+                    if (*d < '0' || *d > '9') { refuse(c, 400); return 0; }
+                    n = n * 10 + (*d - '0');
+                }
+                if (seen_len && n != clen) { refuse(c, 400); return 0; }
+                clen = n; seen_len = 1;
+            } else if (ieq_prefix(p, e, "transfer-encoding:")) {
+                refuse(c, 501);                       // chunked bodies are not supported: refuse, never guess
+                return 0;
+            } else if (ieq_prefix(p, e, "connection:")) {
                 char *v = p + 11; while (*v == ' ') v++;
                 if (ieq_prefix(v, e, "close")) keep = 0;
                 else if (ieq_prefix(v, e, "keep-alive")) keep = 1;
             }
             p = e + 2;
         }
-        if (clen < 0 || clen > (64 << 20)) return -1;
+        if (clen > (64 << 20)) { refuse(c, 413); return 0; }
         size_t hlen = (size_t)(hend - buf) + 4;
         if (avail < hlen + (size_t)clen) break;      // body not complete yet
 
-        Str *resp = run_handler(buf, sp1, sp2, hend + 4, clen);
-        char head[256];
-        int hn = snprintf(head, sizeof head,
-                          "HTTP/1.1 %lld %s\r\nContent-Type: application/json\r\nContent-Length: %lld\r\n%s\r\n",
-                          (long long)http_status, reason(http_status), (long long)(resp ? resp->len : 0),
-                          keep ? "" : "Connection: close\r\n");
+        Str *resp = run_handler(buf, sp1, sp2, line_end + 2, hend, hend + 4, clen);
+        char head[160];
+        int hn = snprintf(head, sizeof head, "HTTP/1.1 %lld %s\r\n%s", (long long)http_status, reason(http_status),
+                          resp_has_ctype ? "" : "Content-Type: application/json\r\n");
+        out_add(c, head, (size_t)hn);
+        if (resp_hdr_len) out_add(c, resp_hdr, resp_hdr_len);
+        hn = snprintf(head, sizeof head, "Content-Length: %lld\r\n%s\r\n", (long long)(resp ? resp->len : 0),
+                      keep ? "" : "Connection: close\r\n");
         out_add(c, head, (size_t)hn);
         if (resp) out_add(c, resp->data, (size_t)resp->len);
         pn_str_free(resp);
@@ -1266,9 +1401,10 @@ static void poll_add(int p, Conn *c) { kq_set(p, c->fd, EVFILT_READ, EV_ADD, c);
 static void poll_want_out(int p, Conn *c, int on) { kq_set(p, c->fd, EVFILT_WRITE, on ? EV_ADD : EV_DELETE, c); }
 static void poll_del(int p, Conn *c) { (void)p; (void)c; }   // close() drops kqueue registrations
 
-static int poll_wait(int p, PollEv *out, int max) {
+static int poll_wait(int p, PollEv *out, int max, int timeout_ms) {
     struct kevent ks[256];
-    int n = kevent(p, NULL, 0, ks, max < 256 ? max : 256, NULL);
+    struct timespec ts = {timeout_ms / 1000, (long)(timeout_ms % 1000) * 1000000};
+    int n = kevent(p, NULL, 0, ks, max < 256 ? max : 256, &ts);
     for (int i = 0; i < n; i++) {
         out[i].c = ks[i].udata;
         out[i].in = ks[i].filter == EVFILT_READ;
@@ -1297,9 +1433,9 @@ static void poll_want_out(int p, Conn *c, int on) {
 
 static void poll_del(int p, Conn *c) { epoll_ctl(p, EPOLL_CTL_DEL, c->fd, NULL); }
 
-static int poll_wait(int p, PollEv *out, int max) {
+static int poll_wait(int p, PollEv *out, int max, int timeout_ms) {
     struct epoll_event evs[256];
-    int n = epoll_wait(p, evs, max < 256 ? max : 256, -1);
+    int n = epoll_wait(p, evs, max < 256 ? max : 256, timeout_ms);
     for (int i = 0; i < n; i++) {
         uint32_t e = evs[i].events;
         out[i].c = evs[i].data.ptr;
@@ -1348,21 +1484,54 @@ static int open_listener(int port) {
     return fd;
 }
 
+// Best effort: tell a client why it is being dropped (the socket is non-blocking; a full buffer loses it).
+static void say_and_close(int fd, int status) {
+    char msg[200];
+    int n = snprintf(msg, sizeof msg,
+                     "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n"
+                     "{\"error\":\"%s\"}", status, reason(status), (int)strlen(reason(status)) + 12, reason(status));
+    ssize_t w = write(fd, msg, (size_t)n);
+    (void)w;
+    close(fd);
+}
+
+static void conn_free(Conn *c) {
+    free(c->in); free(c->out); free(c);
+    __atomic_sub_fetch(&open_conns, 1, __ATOMIC_RELAXED);
+}
+
+// Keep the timers of one connection current after something happened on it.
+static void conn_times(Conn *c, int64_t now) {
+    if (c->out_len) { if (!c->out_start) c->out_start = now; }
+    else c->out_start = 0;
+    if (c->in_len) { if (!c->req_start) c->req_start = now; }   // a request has begun; its clock does not restart
+    else if (c->req_start) { c->req_start = 0; c->last_active = now; }
+}
+
 static void *worker(void *arg) {
     int lfd = shared_listener >= 0 ? shared_listener : open_listener(listen_port);
     int ep = poll_new();
     poll_listen(ep, lfd);
     PollEv evs[256];
     Conn *closed[256];
+    Conn conns = {0};                                     // circular list of this worker's open connections
+    conns.prev = conns.next = &conns;
+    int64_t last_scan = now_ms();
     (void)arg;
     for (;;) {
-        int n = poll_wait(ep, evs, 256), nclosed = 0;
+        int n = poll_wait(ep, evs, 256, 1000), nclosed = 0;
+        int64_t now = now_ms();
         for (int i = 0; i < n; i++) {
             Conn *c = evs[i].c;
             if (!c) {                                         // new connections
                 for (;;) {
                     int fd = accept_conn(lfd);
                     if (fd < 0) break;
+                    if (__atomic_add_fetch(&open_conns, 1, __ATOMIC_RELAXED) > max_conns) {
+                        __atomic_sub_fetch(&open_conns, 1, __ATOMIC_RELAXED);
+                        say_and_close(fd, 503);               // too many open: refuse instead of running out
+                        continue;
+                    }
                     int one = 1;
                     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
                     Conn *nc = calloc(1, sizeof(Conn));
@@ -1370,6 +1539,8 @@ static void *worker(void *arg) {
                     nc->fd = fd;
                     nc->in_cap = 4096; nc->in = malloc(nc->in_cap);
                     if (!nc->in) oom();
+                    nc->req_start = now;                      // the first request must arrive in time too
+                    nc->prev = conns.prev; nc->next = &conns; conns.prev->next = nc; conns.prev = nc;
                     poll_add(ep, nc);
                 }
                 continue;
@@ -1401,14 +1572,31 @@ static void *worker(void *arg) {
                 else if (f == 1 && c->want_out) { c->want_out = 0; poll_want_out(ep, c, 0); }
             }
             if (!dead && c->close_after && c->out_len == 0) dead = 1;
+            if (!dead) conn_times(c, now);
             if (dead) {
                 c->dead = 1;
                 poll_del(ep, c);
                 close(c->fd);
+                c->prev->next = c->next; c->next->prev = c->prev;
                 closed[nclosed++] = c;
             }
         }
-        for (int i = 0; i < nclosed; i++) { free(closed[i]->in); free(closed[i]->out); free(closed[i]); }
+        for (int i = 0; i < nclosed; i++) conn_free(closed[i]);
+        if (now - last_scan >= 1000) {                    // once a second: drop clients that are too slow
+            last_scan = now;
+            for (Conn *c = conns.next, *nx; c != &conns; c = nx) {
+                nx = c->next;
+                int late_out = c->out_start && now - c->out_start > write_timeout_ms;
+                int late_in = !late_out && c->req_start && now - c->req_start > read_timeout_ms;
+                int idle = !c->req_start && !c->out_len && now - c->last_active > idle_timeout_ms;
+                if (!late_out && !late_in && !idle) continue;
+                poll_del(ep, c);
+                c->prev->next = c->next; c->next->prev = c->prev;
+                if (late_in && !c->out_len) say_and_close(c->fd, 408);   // the request never arrived in full
+                else close(c->fd);
+                conn_free(c);
+            }
+        }
     }
     return NULL;
 }
@@ -1419,6 +1607,10 @@ void pn_serve(int64_t port, Handler handler) {
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, NULL, _IOLBF, 0);
     listen_port = (int)port;
+    read_timeout_ms = env_ms("PN_READ_TIMEOUT_MS", read_timeout_ms);
+    idle_timeout_ms = env_ms("PN_IDLE_TIMEOUT_MS", idle_timeout_ms);
+    write_timeout_ms = env_ms("PN_WRITE_TIMEOUT_MS", write_timeout_ms);
+    max_conns = env_ms("PN_MAX_CONNS", max_conns);
     int threads = 0;
     const char *env = getenv("PN_THREADS");
     if (env) threads = atoi(env);

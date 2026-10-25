@@ -1,4 +1,4 @@
-# HANDOFF — state as of 2026-10-25 (v0.6.0)
+# HANDOFF — state as of 2026-10-25 (v0.6.0, released)
 
 **Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
 `ai-guide.md` (pin-language/docs) complete and correct for every release: it is what agents read. Error messages should
@@ -24,7 +24,7 @@ int-overflow, null, strings, concurrency.
 
 ## 1. What works (verified)
 
-`python3 tests/run_tests.py` → **135 passed, 0 failed** (0.6.0) on macOS arm64 (owner's MacBook) **and** on
+`python3 tests/run_tests.py` → **150 passed, 0 failed** (0.6.0) on macOS arm64 (owner's MacBook) **and** on
 Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang python3`).
 
 - Everything from the first prototype (functions, int/float/bool/string, `list<T>`, ordered `map<K,V>`,
@@ -97,7 +97,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 
 | # | problem | where | severity |
 |---|---|---|---|
-| B5 | No request headers, timeouts (slowloris), per-connection limits (query strings are read since 0.2) | server | security |
+| B5 | ~~headers, timeouts, connection limit~~ done in 0.6.0. Still: no TLS / HTTP/2 (use a reverse proxy) | server | security |
 | B6 | `maplit` key type comes from a heuristic `expr_type_probe` | `pinac.py` | low |
 | B8 | `.ll` files are written next to sources | `pinac.py main()` | cosmetic |
 | B9 | `+ - *` wrap silently (overflow panics removed for speed until check elision exists, int-overflow.md O3) | codegen | correctness |
@@ -119,14 +119,15 @@ overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
    innermost `Catch` (freeing temporaries past its marks) or out of the function. Catch blocks inside an
    expression set the statement's temporaries aside (`temp_stack`). Known gap: owned items already moved into
    a list literal under construction leak if a later item fails (error path only).
-   Owner, 2026-10-25: design async now, build `throws`/`try` first, then **request headers + timeouts (item 6)
-   before async** — do not skip item 6.
+   Owner, 2026-10-25: release cadence was too fast — batch features; work happens on branch `next`, release
+   when a set is done. Next set: async (concurrency.md C1–C11).
 3. **Strings** (strings.md): UTF-8 validation at the edges (invalid request → 400), `substr` boundary
    panic, `mb_*`, `grapheme_*`.
 4. **Null** (null.md). Classes (ownership-v2 R1–R7) done in 0.5.0 — null needs `?T` properties now.
 5. ~~`list<string>`~~ done in 0.2.0 (plus explode/implode/sort, query/form/JSON request helpers).
    Nested containers done in 0.5.0.
-6. **Request headers + query string + timeouts** (B5) — needed before any real deployment.
+6. ~~Request headers + timeouts~~ done in 0.6.0 (`tests/server/limits.pn`: slowloris, smuggling, injection,
+   connection cap). Timer: each worker keeps its connections in a list and scans it once a second.
 7. ~~SQLite~~ done in 0.3.0 (`db_*`, literal-SQL rule, resources closed on panic). **PostgreSQL next**
    (owner, 2026-10-24: "SQLite first, then PostgreSQL") with the same `db_*` functions; then a full
    `json_decode`.

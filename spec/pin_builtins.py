@@ -201,6 +201,43 @@ f("http_status", H, "http_status(int $code): void", "Set the status code of the 
     return "{\"error\":\"not found\"}";
 }
 serve(8080, "handle");''', run=False)
+f("request_header", H, "request_header(string $name): string",
+  'The value of a request header (name matched without case), or `""` when absent.',
+  r'''function handle(string $method, string $path, string $body): string {
+    $token = request_header("Authorization");          // "Bearer abc..." or ""
+    if (!str_starts_with($token, "Bearer ")) { http_status(401); return "{\"error\":\"login first\"}"; }
+    return json_encode(["agent" => request_header("User-Agent")]);
+}
+serve(8080, "handle");''',
+  ["Spaces around the value are removed. With the same header twice, the first one is returned.",
+   'Outside a `serve()` handler it returns `""`.'], run=False,
+  php="Instead of `$_SERVER['HTTP_AUTHORIZATION']` or `getallheaders()['Authorization']`.")
+f("request_has_header", H, "request_has_header(string $name): bool",
+  "Whether the request has the header, also when its value is empty.",
+  r'''function handle(string $method, string $path, string $body): string {
+    if (!request_has_header("X-Api-Key")) { http_status(401); return "{\"error\":\"no key\"}"; }
+    return "{\"ok\":true}";
+}
+serve(8080, "handle");''', run=False)
+f("response_header", H, "response_header(string $name, string $value): void",
+  "Add a header to the response (for example `Content-Type`, `Location`, `Cache-Control`, `Set-Cookie`).",
+  r'''function handle(string $method, string $path, string $body): string {
+    if (url_path($path) == "/old") {
+        http_status(301);
+        response_header("Location", "/new");
+        return "";
+    }
+    response_header("Content-Type", "text/html; charset=utf-8");   // replaces the default application/json
+    response_header("Cache-Control", "no-store");
+    return "<h1>hello</h1>";
+}
+serve(8080, "handle");''',
+  ["A value with CR, LF or another control character panics (it could inject headers), so it is safe to put "
+   "request data in a header.",
+   "`Content-Length`, `Connection`, `Transfer-Encoding` and `Date` are set by the server: setting them panics.",
+   "Call it more than once to send a header several times (`Set-Cookie`). A panic answers 500 without these "
+   "headers. Outside a handler it panics."], run=False,
+  php="Instead of `header('Name: value')` and `setcookie()`.")
 f("url_path", H, "url_path(string $path): string", "The request path without its query string.",
   r'''echo url_path("/orders?item=tea&qty=2"), " ", url_path("/health"), "\n";''')
 f("query_param", H, "query_param(string $path, string $key): string", 'One value from the query string, decoded, or `""`.',

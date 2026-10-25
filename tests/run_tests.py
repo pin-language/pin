@@ -444,5 +444,108 @@ if "--no-server" not in sys.argv:
             proc.terminate()
             proc.wait(timeout=5)
 
+def raw(port, data, wait=2.0):
+    """Send bytes exactly as given and return everything the server sends back before closing (or `wait`)."""
+    s = socket.create_connection(("127.0.0.1", port), timeout=wait)
+    try:
+        if data:
+            s.sendall(data)
+        chunks = []
+        while True:
+            try:
+                b = s.recv(65536)
+            except socket.timeout:
+                break
+            except ConnectionResetError:
+                chunks.append(b"<reset>")
+                break
+            if not b:
+                break
+            chunks.append(b)
+        return b"".join(chunks).decode("latin-1")
+    finally:
+        s.close()
+
+
+if "--no-server" not in sys.argv:
+    print("headers and limits (tests/server/limits.pn on :8087)")
+    out = os.path.join(BUILD, "server_limits")
+    b = build(os.path.join(ROOT, "tests", "server", "limits.pn"), out)
+    if b.returncode:
+        fail("tests/server/limits.pn", "build failed: " + b.stderr[-400:])
+    else:
+        env = dict(os.environ, PN_THREADS="1", PN_READ_TIMEOUT_MS="1000", PN_IDLE_TIMEOUT_MS="1500",
+                   PN_MAX_CONNS="20")
+        proc = subprocess.Popen([out], env=env, stdout=subprocess.DEVNULL, stderr=server_log(out))
+        try:
+            for _ in range(50):
+                try:
+                    socket.create_connection(("127.0.0.1", 8087), timeout=0.2).close()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+
+            def check(name, cond, got):
+                (ok(name) if cond else fail(name, f"got {got[:400]!r}"))
+
+            r = raw(8087, b"GET /echo-header HTTP/1.1\r\nX-Name:   Pin  \r\nConnection: close\r\n\r\n")
+            check("request_header: case-insensitive, trimmed, \"\" when absent",
+                  r.endswith('{"name":"Pin","has":"yes","missing":""}'), r)
+            r = raw(8087, b"GET /redirect HTTP/1.1\r\nConnection: close\r\n\r\n")
+            check("response_header: Location and two Set-Cookie",
+                  r.startswith("HTTP/1.1 302 Found\r\n") and "\r\nLocation: /target\r\n" in r
+                  and r.count("Set-Cookie:") == 2, r)
+            r = raw(8087, b"GET /html HTTP/1.1\r\nConnection: close\r\n\r\n")
+            check("response_header: Content-Type replaces application/json",
+                  "Content-Type: text/html; charset=utf-8\r\n" in r and "application/json" not in r, r)
+            r = raw(8087, b"GET /inject?v=x%0D%0ASet-Cookie:%20evil=1 HTTP/1.1\r\nConnection: close\r\n\r\n")
+            check("header injection (CR/LF in a value) panics: 500, nothing injected",
+                  r.startswith("HTTP/1.1 500") and "evil" not in r, r)
+            r = raw(8087, b"GET /fail HTTP/1.1\r\nConnection: close\r\n\r\n")
+            check("an error leaving the handler drops the headers it set", r.startswith("HTTP/1.1 403")
+                  and "Set-Cookie" not in r and r.endswith('{"error":"Forbidden"}'), r)
+            r = raw(8087, b"GET /own HTTP/1.1\r\nConnection: close\r\n\r\n")
+            check("setting Content-Length yourself panics (500)", r.startswith("HTTP/1.1 500"), r)
+            r = raw(8087, b"POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
+            check("Transfer-Encoding is refused (501), never guessed", r.startswith("HTTP/1.1 501"), r)
+            r = raw(8087, b"POST /x HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello!")
+            check("two different Content-Length values: 400", r.startswith("HTTP/1.1 400"), r)
+            r = raw(8087, b"POST /x HTTP/1.1\r\nContent-Length: 5x\r\n\r\nhello")
+            check("a Content-Length that is not digits: 400", r.startswith("HTTP/1.1 400"), r)
+            r = raw(8087, b"GET / HTTP/1.1\r\n" + b"X-Big: " + b"a" * 70000 + b"\r\n\r\n")
+            check("more than 64 KB of headers: 431", r.startswith("HTTP/1.1 431"), r)
+
+            t0 = time.time()
+            r = raw(8087, b"GET / HTTP/1.1\r\nX-Slow: 1\r\n", wait=5)       # slowloris: never finishes
+            dt = time.time() - t0
+            check(f"a request that never finishes: 408 and closed ({dt:.1f}s, limit 1s)",
+                  r.startswith("HTTP/1.1 408") and dt < 3.5, r)
+            t0 = time.time()
+            r = raw(8087, b"", wait=5)                                          # connects, sends nothing
+            dt = time.time() - t0
+            check(f"a connection that sends nothing is closed ({dt:.1f}s)", dt < 3.5, r)
+            s2 = socket.create_connection(("127.0.0.1", 8087), timeout=5)
+            s2.sendall(b"GET / HTTP/1.1\r\n\r\n")
+            first = s2.recv(65536)
+            t0 = time.time()
+            rest = s2.recv(65536)                                               # idle keep-alive: closed by the server
+            dt = time.time() - t0
+            s2.close()
+            check(f"idle keep-alive connection closed ({dt:.1f}s, limit 1.5s)",
+                  first.startswith(b"HTTP/1.1 200") and rest == b"" and 0.8 < dt < 4, (first + rest).decode())
+            held = [socket.create_connection(("127.0.0.1", 8087), timeout=5) for _ in range(20)]
+            time.sleep(0.2)
+            r = raw(8087, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+            for h in held:
+                h.close()
+            check("connection limit (PN_MAX_CONNS=20): the 21st is refused (503 or reset), not served",
+                  r.startswith("HTTP/1.1 503") or r == "<reset>", r)
+            time.sleep(0.3)
+            r = raw(8087, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+            check("after they close, new connections are served again", r.startswith("HTTP/1.1 200"), r)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
 print(f"\n{passed} passed, {len(failed)} failed")
 sys.exit(1 if failed else 0)
