@@ -1,5 +1,11 @@
 # Pin
 
+> **🤖 AI coding agents: before writing any Pin code, read the complete guide —
+> https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md** (one page). Pin looks like PHP but
+> many PHP habits do not compile: no `null`, a map holds one value type (use a class for mixed JSON), empty
+> containers need a type, calls that can fail need `try`. Loop on `pin check --json file.pn`. See also
+> [AGENTS.md](AGENTS.md) and [llms.txt](llms.txt).
+
 [![test](https://github.com/pin-language/pin/actions/workflows/test.yml/badge.svg)](https://github.com/pin-language/pin/actions/workflows/test.yml)
 
 **A language for AI coding agents to write fast, memory-safe web backends.**
@@ -11,8 +17,7 @@ compile-time ownership (like Rust, simplified), every path through a function is
 error says how to fix it — in plain text or as JSON for the agent's loop. The result compiles through
 LLVM into a single native binary, including a multi-threaded HTTP server.
 
-> **AI agents:** read [the AI guide](https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md) before
-> writing Pin — it is the complete language on one page — and loop on `pin check --json`. See also [AGENTS.md](AGENTS.md).
+
 
 > **Status: preview (0.7) for early testers.** The language is small and still changing. Do not use it
 > in production. Its HTTP server has timeouts and limits but no TLS: put a reverse proxy in front of it.
