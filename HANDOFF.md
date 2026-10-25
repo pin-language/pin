@@ -1,5 +1,28 @@
 # HANDOFF — state as of 2026-10-25 (v0.8.0)
 
+## 0. Next session (owner, 2026-10-25): the framework
+
+Talk about **the framework** (routing, middleware, auth helpers…) as Pin packages in their own repos
+(`pin-language/web`, like `pin-language/mcp`), per §4b. Things to settle first, before writing code:
+- Pin has no function values (no callbacks, no closures): a router cannot take handlers as arguments.
+  Options to weigh: the program's own `if/elseif` with helper functions (what pin-mcp does), a code
+  generator, or adding function references to the language (design change: ask the owner).
+- What a request/response object looks like now that classes exist (headers, query, JSON body).
+- The owner creates every new GitHub repository; Claude pushes to it.
+
+State at the end of 2026-10-25: released **0.8.0** (pin, docs tags). On `next`, not released: `<?pin` / `?>`
+ignored by the lexer, a clearer message for a missing `;` after `try ... catch { }`, the README's github.com
+guide link. pin-mcp **v0.1.0** published (github.com/pin-language/mcp), checked with the official MCP Python
+SDK and by Google Antigravity (`agy`), which wrote a working MCP server from the org URL alone with zero
+compile errors.
+
+Lessons from testing outside agents (keep in mind for docs):
+- Chat models without tools (Gemini in the web chat) cannot open raw.githubusercontent.com and then write
+  plain PHP. Agents with tools (agy, Claude) read the guide and compile on the first try.
+- When agents build JSON by hand in strings they break it (missing `}`, unescaped text): docs push classes +
+  `json_encode`; packages that do the protocol (pin-mcp) avoid it entirely.
+- A "JSON literal inside json_encode([...]) may mix types and null" relaxation was proposed and not decided.
+
 **Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
 `ai-guide.md` (pin-language/docs) complete and correct for every release: it is what agents read. Error messages should
 say what to write instead; `pin check --json` is the agent loop.
