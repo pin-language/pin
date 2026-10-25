@@ -109,6 +109,12 @@ overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
 
 ## 4. Task queue (in order)
 
+**Next set (owner, 2026-10-25), before the web framework Tack** (pin-language/docs design/tack.md, on hold):
+P1 a database connection pool that outlives requests (per worker thread; decide this first, it shapes
+PostgreSQL) → P2 `json_decode` into a class → P3 `null` + parameter defaults → P4 PostgreSQL on the pool with
+a safe way to build filter/sort queries → P5 crypto built-ins. Then Tack M1 only, used for one real app. The
+numbered list below is the older order; items 3, 4 and 7 are folded into P1–P5, strings (3) stays after P3.
+
 1. ~~Shared control-flow analysis~~ — **done** as `class Flow` (per-path assigned/moved/live, merged at
    joins; loops require the back-edge state to be no worse than the loop head, which avoids a fixpoint).
    Still to add on top of it when the features arrive: null-narrowed vars (null.md N2), live borrows
