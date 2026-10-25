@@ -15,7 +15,7 @@ for arch in $arches; do
     fi
     echo "== linux/$arch"
     docker run --rm --platform "linux/$arch" -v "$PWD":/src:ro "$image" sh -c '
-        cp -r /src/pinac.py /src/runtime.c /src/pin /src/tools /src/tests /src/examples /src/spec /src/editors . &&
+        cp -r /src/pinac.py /src/runtime.c /src/runtime /src/pin /src/tools /src/tests /src/examples /src/spec /src/editors . &&
         mkdir -p build &&
         sh tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn \
             tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn tests/classes.pn \

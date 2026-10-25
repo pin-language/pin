@@ -142,6 +142,14 @@ overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
 After each: tests for the feature and every new compile error, ASAN/UBSAN on macOS, run the suite in the
 Linux container, update this file.
 
+## 4b. Where things live (owner, 2026-10-25)
+
+- HTTP stays in the language (server, client, Hub, SSE are tied to the scheduler and the per-request
+  allocator). `runtime.c` is split into `runtime/*.c` but still built as one translation unit (object code
+  identical to the single file).
+- Frameworks on top (routing, middleware, auth helpers, apps like the PACT board) go in their own repos as
+  Pin packages (`pin get`), not into the language. Packages are Pin source only: no C in packages.
+
 ## 5. Reproducing
 
 - Linux: `tools/linux_test.sh` — the full suite + sanitizers on arm64 and x86_64 in kept images `pin-test:*`
