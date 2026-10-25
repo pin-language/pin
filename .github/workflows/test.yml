@@ -25,7 +25,7 @@ jobs:
         run: python3 tests/run_tests.py
       - name: Sanitizers (ASAN + UBSAN; leaks too on Linux)
         run: >
-          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn tests/classes.pn tests/nested.pn tests/errors_ok.pn tests/tasks.pn tests/hub.pn tests/json_nested.pn tests/run_client_errors.pn
+          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn tests/db_pool.pn tests/classes.pn tests/nested.pn tests/errors_ok.pn tests/tasks.pn tests/hub.pn tests/json_nested.pn tests/run_client_errors.pn
           examples/wordcount.pn examples/ownership.pn tests/bench/listsum.pn
       - name: HTTP servers under ASAN + UBSAN (sanitize.sh cannot run programs that never exit)
         run: python3 tests/run_tests.py --sanitize

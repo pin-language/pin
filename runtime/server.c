@@ -663,6 +663,8 @@ static void *worker(void *arg) {
         }
         if (now - last_scan >= 1000) {                        // once a second: drop clients that are too slow
             last_scan = now;
+            void (*scan)(int64_t) = __atomic_load_n(&pool_scan_hook, __ATOMIC_ACQUIRE);
+            if (scan) scan(now);                              // and close long-idle database connections
             for (Conn *c = conns.next, *nx; c != &conns; c = nx) {
                 nx = c->next;
                 if (c->busy && !(c->streaming && c->out_start && now - c->out_start > write_timeout_ms)) continue;

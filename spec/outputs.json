@@ -48,6 +48,7 @@
  "form_param": "Somchai K\n",
  "form_has": "yn\n",
  "db_open": "0\n",
+ "db_pool": "pool set\n",
  "db_exec": "1 -1 UNIQUE constraint failed: items.name\n",
  "db_query": "cake x1 at 89.5\ntea x2 at 40\n",
  "db_next": "no rows\n",

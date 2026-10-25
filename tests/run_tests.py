@@ -431,6 +431,9 @@ if "--no-server" not in sys.argv:
                     (("POST", "/items", '{"name":"tea","qty":5}'), (409, '{"error":"UNIQUE constraint failed: items.name"}')),
                     (("GET", "/items", None), (200, '[{"id":1,"name":"tea","qty":2}]')),
                     (("GET", "/boom", None), (500, '{"error":"Internal Server Error"}')),
+                    (("GET", "/tx-left", None), (200, '{"ok":true}')),
+                    (("GET", "/tx-boom", None), (500, '{"error":"Internal Server Error"}')),
+                    (("GET", "/leftovers", None), (200, '{"n":0}')),
                     (("GET", "/total", None), (200, '{"total":2}'))]:
                 got = http(8086, m, path, body)
                 (ok if got == want else lambda n: fail(n, f"want {want}\n        got  {got}"))(f"{m} {path}")
@@ -457,6 +460,14 @@ if "--no-server" not in sys.argv:
                 ok("200 parallel inserts on 4 threads, all stored")
             else:
                 fail("200 parallel inserts", f"statuses {sorted(set(results))}, total {total}")
+            held = []
+            ts = [threading.Thread(target=lambda: held.append(http(8086, "GET", "/hold"))) for _ in range(12)]
+            for th in ts:
+                th.start()
+            for th in ts:
+                th.join()
+            (ok if held.count((200, '{"held":true}')) == 12 else lambda n: fail(n, str(sorted(set(held)))[:300]))(
+                "12 requests holding their connection, 1 per thread (db_pool): the others wait, none fail")
         finally:
             proc.terminate()
             proc.wait(timeout=5)

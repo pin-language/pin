@@ -61,6 +61,7 @@ typedef struct Req {
     void *conn;                         // its connection (Conn *), for sse_*
 } Req;
 
+static void (*pool_scan_hook)(int64_t now);   // set by the database pool (sqlite.c) when it is compiled in
 static __thread Req *cur_req;           // the request of the running task (NULL outside requests)
 static __thread jmp_buf *cur_jmp;       // where a panic in the running task goes (NULL: stop the program)
 

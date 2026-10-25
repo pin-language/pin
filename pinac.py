@@ -989,7 +989,7 @@ BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_po
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
             "url_path", "query_param", "form_param", "query_has", "form_has", "floatval", "json_has",
             "db_open", "db_exec", "db_query", "db_json", "db_next", "db_int", "db_float", "db_string",
-            "db_is_null", "db_last_id", "db_error", "json_string", "json_int", "json_float",
+            "db_is_null", "db_last_id", "db_error", "db_pool", "json_string", "json_int", "json_float",
             "json_bool"}
 
 RUNTIME_DECLS = """
@@ -1009,6 +1009,7 @@ declare ptr @pn_query_param(ptr, ptr)
 declare ptr @pn_form_param(ptr, ptr)
 declare i64 @pn_jget_has(ptr, ptr)
 declare ptr @pn_db_open(ptr)
+declare void @pn_db_pool(ptr, i64, i64)
 declare void @pn_db_close(ptr)
 declare void @pn_rows_free(ptr)
 declare i64 @pn_db_exec(ptr, ptr, ptr, i64)
@@ -2118,6 +2119,10 @@ class FuncGen:
         mark = len(self.temps)
         slots, roots, lent = [], set(), set()
         for i, (a, (pt, pn, ref)) in enumerate(zip(c.args, params)):
+            if pt in ("db", "rows"):
+                raise CompileError(f"go {c.name}(): a task cannot use the caller's {pt} (one connection serves one "
+                                   f"task at a time). Open its own inside the task: $db = db_open(...); it comes "
+                                   f"from the pool, so it is cheap", e.line)
             if ref:
                 if a.kind != "ref":
                     raise CompileError(f"{c.name}() can change its argument {pn}, so write go {c.name}(&...)", e.line)
@@ -2736,6 +2741,13 @@ class FuncGen:
                 f"{e.name}(): write the SQL as a string literal in the code and pass values with ? placeholders, "
                 f'e.g. {e.name}($db, "SELECT * FROM t WHERE id = ?", [strval($id)]). SQL built from variables could '
                 f"let a client inject SQL", e.line)
+        def text(n):
+            return n.val if n.kind == "str" else text(n.l) + text(n.r)
+        why = session_sql(text(e.args[1]))
+        if why:
+            raise CompileError(f"{e.name}(): {why} changes the connection itself, and connections are reused by "
+                               f"later requests (design/pool.md K4). Pin sets every connection up the same way "
+                               f"(WAL, foreign_keys ON, 5 s busy timeout); for data, use a normal table", e.line)
         return self.str_arg(e, 1)
 
     def params_arg(self, e, i):
@@ -2747,6 +2759,14 @@ class FuncGen:
 
     def db_builtin(self, e):
         name = e.name
+        if name == "db_pool":
+            self.argc(e, 3)
+            if not self.is_main:
+                raise CompileError("db_pool() sets up the runtime's connections: call it at the top level of the "
+                                   "program, before serve(), not inside a function", e.line)
+            self.call("void", "@pn_db_pool", f"ptr {self.str_arg(e, 0)}", f"i64 {self.int_arg(e, 1)}",
+                      f"i64 {self.int_arg(e, 2)}")
+            return None, "void", False
         if name == "db_open":
             self.argc(e, 1)
             return self.call("ptr", "@pn_db_open", f"ptr {self.str_arg(e, 0)}"), "db", True
@@ -4589,6 +4609,29 @@ def to_ir(path):
         shown = f if f.startswith("<") else os.path.relpath(f) if os.path.isabs(f) else f
         report(shown, e.line, e.msg)
         sys.exit(1)
+
+
+# PRAGMAs that may take a value without changing the connection: they read (the argument names a table or
+# index) or they change the database file, which every connection sees anyway.
+PRAGMA_OK = {"table_info", "table_xinfo", "table_list", "index_info", "index_xinfo", "index_list",
+             "foreign_key_list", "foreign_key_check", "integrity_check", "quick_check", "user_version",
+             "application_id", "auto_vacuum", "incremental_vacuum", "page_size", "wal_checkpoint",
+             "optimize", "data_version", "schema_version", "freelist_count", "page_count"}
+
+
+def session_sql(sql):
+    """What in this SQL would change the connection for its next user (pool.md K4), or None. SQLite: a PRAGMA
+    that sets a per-connection value, ATTACH / DETACH, TEMP objects."""
+    t = re.sub(r"'[^']*'|--[^\n]*|/\*.*?\*/", " ", sql, flags=re.S).lower()
+    m = re.match(r"\s*pragma\s+(?:\w+\.)?(\w+)\s*(=|\()?", t)
+    if m and m.group(2) and m.group(1) not in PRAGMA_OK:
+        return f"PRAGMA {m.group(1)} with a value"
+    m = re.match(r"\s*(attach|detach)\b", t)
+    if m:
+        return m.group(1).upper()
+    if re.match(r"\s*create\s+(temp|temporary)\b", t):
+        return "CREATE TEMP"
+    return None
 
 
 def needs_sqlite(ir):

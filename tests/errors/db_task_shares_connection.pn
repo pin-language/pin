@@ -1,0 +1,4 @@
+function count_rows(db $d): int { return db_exec($d, "SELECT 1", []); }
+$db = db_open(":memory:");
+$t = go count_rows($db);
+echo await $t, "\n";

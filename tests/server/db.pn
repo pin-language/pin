@@ -1,5 +1,8 @@
-// SQLite in a server: every request opens its own connection (WAL lets them run in parallel).
-// /boom panics while a connection and a statement are open: they must be closed, the client gets a 500.
+// SQLite in a server: every request opens its own connection (WAL lets them run in parallel); the runtime
+// keeps them in a per-thread pool (design/pool.md). /boom panics while a connection and a statement are open:
+// they must be closed, the client gets a 500. /tx-left and /tx-boom leave a transaction open (by returning,
+// by panicking): the next user of the connection must not see it. /hold keeps its connection while it sleeps:
+// with 1 connection per thread other requests on that thread wait for it.
 function db(): db {
     $db = db_open("server_db_test.db");
     db_exec($db, "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, qty INTEGER NOT NULL)", []);
@@ -22,6 +25,26 @@ function handle(string $method, string $path, string $body): string {
         while (db_next($r)) { $t += db_int($r, "qty"); }
         return "{\"total\":" . $t . "}";
     }
+    if ($route == "/tx-left") {
+        db_exec($db, "BEGIN", []);
+        db_exec($db, "INSERT INTO items (name, qty) VALUES ('left', 100)", []);
+        return "{\"ok\":true}";
+    }
+    if ($route == "/tx-boom") {
+        db_exec($db, "BEGIN", []);
+        db_exec($db, "INSERT INTO items (name, qty) VALUES ('boom', 100)", []);
+        map<string,int> $m = [];
+        return "{\"x\":" . $m["missing"] . "}";
+    }
+    if ($route == "/leftovers") {
+        $r = db_query($db, "SELECT count(*) AS n FROM items WHERE name IN ('left', 'boom')", []);
+        db_next($r);
+        return "{\"n\":" . db_int($r, "n") . "}";
+    }
+    if ($route == "/hold") {
+        sleep_ms(200);
+        return "{\"held\":true}";
+    }
     if ($route == "/boom") {
         $r = db_query($db, "SELECT name FROM items", []);
         db_next($r);
@@ -31,4 +54,5 @@ function handle(string $method, string $path, string $body): string {
     http_status(404);
     return "{\"error\":\"not found\"}";
 }
+db_pool("server_db_test.db", 1, 60000);
 serve(8086, "handle");

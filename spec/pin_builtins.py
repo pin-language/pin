@@ -282,13 +282,28 @@ SETUP = ('$db = db_open(":memory:");\n'
 f("db_open", D, "db_open(string $path): db", "Open (or create) an SQLite database file.",
   r'''$db = db_open(":memory:");          // a file name like "shop.db", or ":memory:" for a temporary one
 echo db_exec($db, "CREATE TABLE t (x INTEGER)", []), "\n";''',
-  ["The connection closes by itself when `$db` goes out of scope — at the end of the function, or when a "
-   "handler panics.",
-   "Open one per request in a server: opening SQLite is fast, and WAL mode lets requests read and write in "
-   "parallel. Writers wait up to 5 seconds for each other.",
+  ["When `$db` goes out of scope (end of the function) the connection goes back to a pool the runtime keeps "
+   "per server thread, so the next `db_open()` of the same file is almost free (~3 µs instead of ~80–200 µs). "
+   "A connection comes back only clean: an open transaction is rolled back; after a handler panics it is closed.",
+   "Open one per request in a server — that is the intended use. WAL mode lets requests read and write in "
+   "parallel; writers wait up to 5 seconds for each other.",
+   "`:memory:` and `\"\"` are never pooled: each open is a new, empty database.",
    "A file that cannot be opened panics. Foreign keys are enforced.",
-   "`db` values move like lists; pass `$db` to functions (they borrow it)."],
+   "`db` values move like lists; pass `$db` to functions (they borrow it). A task (`go`) cannot use the "
+   "caller's `$db`: open one inside the task.",
+   "SQL that would change the connection for its next user (`PRAGMA foreign_keys = ...`, `ATTACH`, "
+   "`CREATE TEMP ...`) does not compile."],
   php="Pin's version of `new PDO('sqlite:shop.db')`. PostgreSQL is planned with the same functions.")
+f("db_pool", D, "db_pool(string $path, int $per_thread, int $idle_ms): void",
+  "Set the connection pool for one database file (optional).",
+  r'''db_pool("shop.db", 8, 30000);    // up to 8 connections per server thread; close after 30 s unused
+echo "pool set\n";''',
+  ["Without it each file gets 4 connections per thread, closed after 60 s unused.",
+   "Only at the top level of the program, before `serve()` (compile error inside a function).",
+   "When a thread's connections are all in use, `db_open()` waits (other requests keep running) for up to "
+   "5 seconds, then panics — a 500 inside a handler. A handler holds a connection while it waits "
+   "(`sleep_ms`, `await`, `http_get`), so raise the limit for handlers like that."],
+  php="Like `PDO::ATTR_PERSISTENT` / `pg_pconnect`, but the connection is always returned clean.")
 f("db_exec", D, "db_exec(db $db, string $sql, list $params): int",
   "Run INSERT, UPDATE, DELETE or CREATE; returns the rows changed.",
   SETUP + r'''echo db_exec($db, "INSERT INTO items (name, qty) VALUES (?, ?)", ["tea", "2"]), " ";

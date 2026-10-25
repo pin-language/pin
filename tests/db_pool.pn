@@ -1,0 +1,23 @@
+// The connection pool (design/pool.md): ":memory:" is never pooled, so each open is a fresh database.
+db_pool("pool_config_only.db", 2, 1000);   // configuring opens nothing
+
+function fresh(): int {
+    $db = db_open(":memory:");
+    db_exec($db, "CREATE TABLE t (a INTEGER)", []);    // "already exists" if a connection were reused
+    db_exec($db, "INSERT INTO t VALUES (1)", []);
+    $r = db_query($db, "SELECT count(*) AS n FROM t", []);
+    db_next($r);
+    return db_int($r, "n");
+}
+
+$s = 0;
+for ($i = 0; $i < 50; $i++) { $s += fresh(); }
+echo "50 fresh databases: ", $s, "\n";
+
+$db = db_open(":memory:");
+db_exec($db, "CREATE TABLE u (a INTEGER, b TEXT)", []);
+db_exec($db, "PRAGMA user_version = 3", []);            // stored in the file, allowed
+$r = db_query($db, "PRAGMA table_info(u)", []);         // reads, allowed
+$n = 0;
+while (db_next($r)) { $n++; }
+echo "columns: ", $n, "\n";

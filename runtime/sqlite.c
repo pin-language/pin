@@ -9,10 +9,84 @@
 #ifdef PIN_SQLITE
 #include <sqlite3.h>
 
-typedef struct { sqlite3 *h; void *res; char err[256]; } Db;
+typedef struct { sqlite3 *h; void *res; int slot; char err[256]; } Db;  // slot: its pool slot, -1 = not pooled
 typedef struct { sqlite3_stmt *st; void *res; int state; } Rows;      // state: 0 before first row, 1 row, 2 done
 
-static void db_res_close(void *o) { Db *d = o; if (d->h) sqlite3_close_v2(d->h); d->h = NULL; }
+// ---------------------------------------------------------------- the pool (pin-language/docs design/pool.md)
+// Opening a connection costs ~80-200 µs (file, WAL, pragmas); a query by key ~3 µs. Pin has no globals, so
+// every request opens its own `db`: the runtime keeps the connections instead, per thread and per path. Tasks
+// never leave their thread, so the pool needs no locks. A connection comes back only clean (no transaction,
+// no statement half-way); after a panic or a cancelled request it is closed. ":memory:" and temporary
+// databases ("") are never pooled: each open must be a fresh, empty database.
+#define POOL_KEYS 16
+#define POOL_WAIT_MS 5000
+typedef struct PoolConn { sqlite3 *h; int64_t since; struct PoolConn *next; } PoolConn;
+typedef struct { char path[256]; int max, idle_ms; } PoolCfg;
+typedef struct { char path[256]; PoolConn *idle; int open; } PoolSlot;
+static PoolCfg pool_cfg[POOL_KEYS];                   // db_pool(): written by the top level before serve() starts threads
+static int pool_ncfg;
+static __thread PoolSlot pool_slots[POOL_KEYS];
+static __thread int pool_nslots;
+
+static int pool_poolable(const char *path) {
+    return path[0] && !strstr(path, ":memory:") && !strstr(path, "mode=memory") && strlen(path) < 256;
+}
+static PoolCfg pool_config(const char *path) {
+    for (int i = 0; i < pool_ncfg; i++) if (strcmp(pool_cfg[i].path, path) == 0) return pool_cfg[i];
+    PoolCfg c = {"", 4, 60000};
+    return c;
+}
+static void pool_scan(int64_t now) {                  // the server's once-a-second scan: close long-idle connections
+    for (int i = 0; i < pool_nslots; i++) {
+        PoolSlot *sl = &pool_slots[i];
+        int idle_ms = pool_config(sl->path).idle_ms;
+        for (PoolConn **pp = &sl->idle; *pp;) {
+            PoolConn *c = *pp;
+            if (now - c->since < idle_ms) { pp = &c->next; continue; }
+            *pp = c->next;
+            sqlite3_close_v2(c->h);
+            free(c);
+            sl->open--;
+        }
+    }
+}
+static void pool_close_all(void) {                    // at exit: this thread's idle connections (LeakSanitizer)
+    for (int i = 0; i < pool_nslots; i++)
+        for (PoolConn *c = pool_slots[i].idle, *n; c; c = n) { n = c->next; sqlite3_close_v2(c->h); free(c); }
+    pool_nslots = 0;
+}
+static pthread_once_t pool_once = PTHREAD_ONCE_INIT;
+static void pool_init(void) { atexit(pool_close_all); __atomic_store_n(&pool_scan_hook, pool_scan, __ATOMIC_RELEASE); }
+static int pool_slot(const char *path) {
+    for (int i = 0; i < pool_nslots; i++) if (strcmp(pool_slots[i].path, path) == 0) return i;
+    if (pool_nslots == POOL_KEYS) return -1;          // more databases than slots: open and close as before
+    PoolSlot *sl = &pool_slots[pool_nslots];
+    snprintf(sl->path, sizeof sl->path, "%s", path);
+    sl->idle = NULL; sl->open = 0;
+    return pool_nslots++;
+}
+// Give a connection back, or close it when it may not be clean.
+static void pool_release(int slot, sqlite3 *h) {
+    PoolSlot *sl = &pool_slots[slot];
+    int keep = !(cur_req && (cur_req->cancelled || cur_req->panicked));
+    if (keep && !sqlite3_get_autocommit(h)) {         // a transaction left open: never let it reach the next user
+        sqlite3_exec(h, "ROLLBACK", NULL, NULL, NULL);
+        keep = sqlite3_get_autocommit(h);
+    }
+    for (sqlite3_stmt *st = keep ? sqlite3_next_stmt(h, NULL) : NULL; st; st = sqlite3_next_stmt(h, st))
+        if (sqlite3_stmt_busy(st)) { keep = 0; break; }   // a result set still being read belongs to its owner
+    if (!keep) { sqlite3_close_v2(h); sl->open--; return; }
+    PoolConn *c = malloc(sizeof *c);
+    if (!c) { sqlite3_close_v2(h); sl->open--; return; }
+    c->h = h; c->since = now_ms(); c->next = sl->idle;
+    sl->idle = c;
+}
+
+static void db_res_close(void *o) {                   // a panic: close, never return to the pool
+    Db *d = o;
+    if (d->h) { sqlite3_close_v2(d->h); if (d->slot >= 0) pool_slots[d->slot].open--; }
+    d->h = NULL;
+}
 static void rows_res_close(void *o) { Rows *r = o; if (r->st) sqlite3_finalize(r->st); r->st = NULL; }
 
 __attribute__((noreturn)) static void db_panic(const char *what, const char *detail) {
@@ -21,7 +95,7 @@ __attribute__((noreturn)) static void db_panic(const char *what, const char *det
     die();
 }
 
-Db *pn_db_open(Str *path) {
+static sqlite3 *db_connect(Str *path) {
     sqlite3 *h = NULL;
     int rc = sqlite3_open_v2(path->data, &h, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, NULL);
     if (rc != SQLITE_OK) {
@@ -32,16 +106,67 @@ Db *pn_db_open(Str *path) {
     }
     sqlite3_busy_timeout(h, 5000);                       // wait for other writers instead of failing at once
     sqlite3_exec(h, "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
+    return h;
+}
+
+Db *pn_db_open(Str *path) {
+    sqlite3 *h = NULL;
+    int slot = -1;
+    if (pool_poolable(path->data)) {
+        pthread_once(&pool_once, pool_init);
+        slot = pool_slot(path->data);
+    }
+    if (slot >= 0) {
+        int max = pool_config(path->data).max;
+        int64_t give_up = now_ms() + POOL_WAIT_MS;
+        for (;;) {
+            PoolSlot *sl = &pool_slots[slot];
+            if (sl->idle) {
+                PoolConn *c = sl->idle;
+                sl->idle = c->next;
+                h = c->h;
+                free(c);
+                break;
+            }
+            if (sl->open < max) { h = db_connect(path); sl->open++; break; }
+            if (cur_req && cur_req->cancelled) db_panic("db_open()", "the request ended while waiting for a connection");
+            if (now_ms() >= give_up) {
+                char msg[200];
+                snprintf(msg, sizeof msg, "all %d connections of this thread to %s stayed in use for %d s "
+                         "(raise the limit with db_pool(), or close a $db before waiting)", max, path->data, POOL_WAIT_MS / 1000);
+                db_panic("db_open()", msg);
+            }
+            pn_sleep(2);                                  // other tasks on this thread run meanwhile
+        }
+    } else {
+        h = db_connect(path);
+    }
     Db *d = xmalloc(sizeof(Db));
-    d->h = h; d->err[0] = 0;
+    d->h = h; d->slot = slot; d->err[0] = 0;
     d->res = pn_res_add(db_res_close, d);
     return d;
+}
+
+// db_pool($path, $per_thread, $idle_ms): only at the top level (the compiler checks), before serve().
+void pn_db_pool(Str *path, int64_t per_thread, int64_t idle_ms) {
+    if (per_thread < 1 || per_thread > 1000) db_panic("db_pool()", "connections per thread must be 1 to 1000");
+    if (idle_ms < 0 || idle_ms > 86400000) db_panic("db_pool()", "the idle time must be 0 to 86400000 ms (one day)");
+    if (!pool_poolable(path->data)) db_panic("db_pool()", "\":memory:\" and temporary databases are never pooled");
+    int i = 0;
+    while (i < pool_ncfg && strcmp(pool_cfg[i].path, path->data) != 0) i++;
+    if (i == POOL_KEYS) db_panic("db_pool()", "at most 16 databases can be configured");
+    snprintf(pool_cfg[i].path, sizeof pool_cfg[i].path, "%s", path->data);
+    pool_cfg[i].max = (int)per_thread; pool_cfg[i].idle_ms = (int)idle_ms;
+    if (i == pool_ncfg) pool_ncfg++;
 }
 
 void pn_db_close(Db *d) {
     if (!d) return;
     pn_res_remove(d->res);
-    if (d->h) sqlite3_close_v2(d->h);
+    if (d->h) {
+        if (d->slot >= 0) pool_release(d->slot, d->h);
+        else sqlite3_close_v2(d->h);
+    }
     xfree(d);
 }
 

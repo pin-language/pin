@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Connection pool** (pin-language/docs design/pool.md, P1): `db_open()` takes a connection from a pool the
+  runtime keeps per server thread, and the end of `$db`'s scope gives it back — clean only (an open transaction
+  is rolled back; after a panic or a cancelled request it is closed). Same programs, ~7× more requests per
+  second for a one-query SQLite handler (181k–189k vs 24.6k–26.0k req/s, M2, load generator on the same
+  machine). `db_pool($path, $per_thread, $idle_ms)` at the top level sets the limits (default 4, 60 s); a full
+  pool makes `db_open()` wait up to 5 s, then panic. `:memory:` is never pooled.
+- New compile errors: a `db` / `rows` passed to `go` (open one inside the task); SQL that changes the
+  connection for its next user (`PRAGMA foreign_keys = ...`, `ATTACH`, `CREATE TEMP`); `db_pool()` inside a
+  function.
 - **Fix (memory safety):** every HTTP request wrote into freed memory after its answer (`request_done` left
   `cur_req` pointing at the freed request; the task switch copied it back and `task_release` wrote through it).
   Under load with database handlers the server crashed (SIGSEGV). Most likely there since 0.7.0 (tasks); not bisected.
