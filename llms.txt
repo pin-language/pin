@@ -12,6 +12,19 @@ modules (import/export, module::fn()); Git packages (pin get, pin.lock with sha2
 Not yet: inheritance/interfaces, null, finally, closures, default parameter values, PostgreSQL.
 By design: no TLS — a proxy does https in both directions (design/tls.md).
 
+Read the AI guide before writing Pin (raw URL below): it is the complete language on one page. The PHP habits
+that do not compile, most common first:
+- no null / ?T: use -1, "", an empty list or a bool
+- a map holds ONE value type: for JSON objects with mixed values declare a class and json_encode(new Obj(...))
+- empty containers need a type: list<int> $xs = []; map<string,int> $m = [];
+- functions that can fail are declared `: T throws`; every call needs `try f()` or `try f() catch ($e) { ...; value; }`
+- lists, maps and objects MOVE on `=` (copy() for two); parameters are read-only (`T &$x` and `f(&$x)` to change)
+- request input: query_param($path, "k"), form_param($body, "k"), json_string/json_int($body, "k"); nested JSON:
+  json_raw($json, "k"), json_len($arr), json_at($arr, $i)
+- no closures, array_map, sprintf, switch: write the loop, join strings with . or "$var", use if/elseif
+- sleep_ms(1000), not sleep(1); parallel work: $t = go f(); ... try await $t;
+- loop: pin check --json file.pn -> fix the reported line -> repeat
+
 - [AI guide](https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md): the complete language on one page — rules, idioms, PHP → Pin table, error → fix table
 - [Built-in reference](https://github.com/pin-language/docs/blob/HEAD/reference/README.md): every function with a tested example
 - [Learn Pin](https://github.com/pin-language/docs/blob/HEAD/learn/README.md): 14 short chapters for people
