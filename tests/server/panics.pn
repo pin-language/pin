@@ -6,6 +6,20 @@ function boom(): string {
     return "{\"n\":" . $m["missing"] . "}";
 }
 
+class Basket {
+    public list<list<int>> $rows = [];
+    public map<string, string> $notes = [];
+    function fill(): void {
+        for ($i = 0; $i < 1000; $i++) { $this->rows[] = fill(100, $i); $this->notes["n$i"] = str_repeat("y", 100); }
+    }
+}
+
+function objects(): string {
+    $b = new Basket();                  // ~1 MB of objects and nested lists, freed only by the panic cleanup
+    $b->fill();
+    return "{\"n\":" . $b->rows[5000][0] . "}";
+}
+
 function oob(): string {
     $xs = [1, 2, 3];
     return "{\"n\":" . $xs[10] . "}";
@@ -14,6 +28,7 @@ function oob(): string {
 function handle(string $method, string $path, string $body): string {
     if ($path == "/boom") { return boom(); }
     if ($path == "/oob") { return oob(); }
+    if ($path == "/objects") { return objects(); }
     if ($path == "/overflow") { return "{\"n\":" . intdiv(intval("-9223372036854775808"), intval("-1")) . "}"; }
     return "{\"ok\":true}";
 }

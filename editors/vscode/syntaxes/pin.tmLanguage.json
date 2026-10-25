@@ -22,6 +22,9 @@
       "include": "#generic-type"
     },
     {
+      "include": "#classes"
+    },
+    {
       "include": "#keywords"
     },
     {
@@ -414,6 +417,69 @@
           "name": "entity.name.function.call.pin"
         }
       }
+    },
+    "classes": {
+      "patterns": [
+        {
+          "match": "\\b(?:(export)\\s+)?(class)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.export.pin"
+            },
+            "2": {
+              "name": "storage.type.class.pin"
+            },
+            "3": {
+              "name": "entity.name.type.class.pin"
+            }
+          }
+        },
+        {
+          "match": "\\b(new)\\s+([A-Za-z_]\\w*(?:::[A-Za-z_]\\w*)?)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.new.pin"
+            },
+            "2": {
+              "name": "entity.name.type.class.pin"
+            }
+          }
+        },
+        {
+          "match": "\\b(public|private)\\b",
+          "name": "storage.modifier.pin"
+        },
+        {
+          "match": "\\$this\\b",
+          "name": "variable.language.this.pin"
+        },
+        {
+          "match": "(->)\\s*([A-Za-z_]\\w*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.pin"
+            },
+            "2": {
+              "name": "entity.name.function.member.pin"
+            }
+          }
+        },
+        {
+          "match": "(->)\\s*([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.pin"
+            },
+            "2": {
+              "name": "variable.other.property.pin"
+            }
+          }
+        },
+        {
+          "match": "&(?=\\s*\\$)",
+          "name": "storage.modifier.reference.pin"
+        }
+      ]
     }
   }
 }

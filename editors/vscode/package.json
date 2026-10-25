@@ -2,7 +2,7 @@
   "name": "pin",
   "displayName": "Pin language",
   "description": "Syntax highlighting for Pin (.pn) \u2014 a PHP-like language for AI coding agents, compiled to native code",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "pin-language",
   "license": "MIT",
   "repository": {

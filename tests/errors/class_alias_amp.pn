@@ -1,0 +1,2 @@
+function f(list<int> &$a, list<int> $b): void { $a[] = count($b); }
+$a = [1]; f(&$a, $a);

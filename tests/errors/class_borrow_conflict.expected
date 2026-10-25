@@ -1,0 +1,1 @@
+cannot change $users here: $u borrows from it and is used again on line 5. Use $u for the last time before this line, or keep your own value with $u = copy(...)

@@ -1,0 +1,1 @@
+$c is a foreach variable lent read-only, so it cannot be changed by inc(). Use foreach (... as &$c) to change the items, or work on $copy = copy($c);

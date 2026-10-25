@@ -1,0 +1,1 @@
+$keep exists outside the foreach that owns $u, so it cannot borrow from $u (that borrow would outlive the loop). Use a variable first assigned inside the loop, or $keep = copy($u->xs)

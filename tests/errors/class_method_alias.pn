@@ -1,0 +1,2 @@
+class O { public list<int> $xs = []; function addAll(list<int> $ys): void { foreach ($ys as $y) { $this->xs[] = $y; } } }
+$o = new O(); $o->addAll($o->xs);

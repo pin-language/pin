@@ -1,0 +1,4 @@
+class U { public int $id = 1; }
+function all(): list<U> { return [new U()]; }
+$u = all()[0];
+echo $u->id;

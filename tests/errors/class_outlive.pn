@@ -1,0 +1,5 @@
+class U { public list<int> $xs = []; }
+$us = [new U()];
+$keep = $us[0]->xs;
+foreach ($us as $u) { $keep = $u->xs; }
+echo count($keep);

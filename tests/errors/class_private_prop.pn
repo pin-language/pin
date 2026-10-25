@@ -1,0 +1,2 @@
+class U { private int $secret = 1; }
+$u = new U(); echo $u->secret;

@@ -1,0 +1,2 @@
+class N { public list<N> $kids = []; }
+$n = new N(); $n->kids[] = $n;

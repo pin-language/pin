@@ -1,0 +1,2 @@
+class U { public int $id; public int $b; function __construct(int $id) { $this->b = $this->id + 1; $this->id = $id; } }
+$u = new U(1);

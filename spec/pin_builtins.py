@@ -66,13 +66,17 @@ f("fill", L, "fill(int $n, int|float|bool|string $value): list", "A new list wit
 $flags[1] = true;
 echo json_encode($flags), " ", json_encode(fill(2, "x")), "\n";''',
   ["A negative or impossibly large `$n` panics."], php="Pin's version of `array_fill(0, $n, $value)`.")
-f("copy", L, "copy(list|map|string $x): same type", "An independent copy you own.",
+f("copy", L, "copy(list|map|object|string $x): same type", "An independent copy you own, with everything inside it.",
   r'''$a = [1, 2];
 $b = copy($a);
 $b[] = 3;
-echo count($a), " ", count($b), "\n";''',
-  ["Lists and maps move on `$b = $a`; use `copy()` when you need two of them.",
-   "A function parameter is read-only; `copy()` it before changing it."])
+$grid = [[1], [2]];
+$g2 = copy($grid);
+$g2[0][] = 9;
+echo count($a), " ", count($b), " ", json_encode($grid), " ", json_encode($g2), "\n";''',
+  ["Lists, maps and objects move on `$b = $a`; use `copy()` when you need two of them.",
+   "A function parameter is read-only; `copy()` it before changing it (or declare it `&`).",
+   "Copies deeply: nested lists, maps and objects are copied too. A value holding a `db` or `rows` cannot be copied."])
 f("sort", L, "sort(list $xs): void", "Sort a list variable in place, smallest first.",
   r'''$xs = [3, 1, 2];
 sort($xs);
@@ -149,10 +153,15 @@ f("(string)", V, "(string) $x", "Cast to string: the same as `strval()`.",
   notes=["There is no `(bool)` cast: compare instead, e.g. `$n != 0`."])
 
 # ----------------------------------------------------------------------------------------- json
-f("json_encode", J, "json_encode(int|float|bool|string|list|map $x): string", "JSON text for a value.",
-  r'''echo json_encode(["name" => "ไทย", "note" => "a\"b"]), " ", json_encode([1.5, 2.0]), " ", json_encode("x"), "\n";''',
+f("json_encode", J, "json_encode(int|float|bool|string|list|map|object $x): string", "JSON text for a value.",
+  r'''class Line {
+    public function __construct(public string $item, public int $qty, private int $cost) {}
+}
+echo json_encode(["name" => "ไทย", "note" => "a\"b"]), " ", json_encode([1.5, 2.0]), " ", json_encode("x"), "\n";
+echo json_encode([new Line("tea", 2, 80)]), " ", json_encode([[1, 2], [3]]), "\n";''',
   ["UTF-8 text is kept as is (like `JSON_UNESCAPED_UNICODE`); whole floats keep `.0`.",
-   r'A map has one value type; build mixed objects as strings: `"{\"id\":" . $id . ",\"name\":" . json_encode($name) . "}"`.'],
+   "Objects become JSON objects of their public properties, in declaration order; private properties are left out.",
+   "A map has one value type; for a JSON object with mixed values, use a class."],
   php=r"PHP escapes non-ASCII as `\uXXXX` and drops `.0` unless `JSON_PRESERVE_ZERO_FRACTION` is set.")
 f("json_has", J, "json_has(string $json, string $key): bool", "Whether a JSON object has a top-level key.",
   r'''$b = "{\"title\": \"tea\", \"qty\": null}";

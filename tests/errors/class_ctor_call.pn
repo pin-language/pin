@@ -1,0 +1,2 @@
+class U { public int $id; function __construct(int $id) { echo $this->show(); $this->id = $id; } function show(): string { return "x"; } }
+$u = new U(1);

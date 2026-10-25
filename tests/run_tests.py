@@ -21,6 +21,12 @@ UPDATE = "--update" in sys.argv
 BUILD = os.path.join(ROOT, "build")
 os.makedirs(BUILD, exist_ok=True)
 
+def server_log(binary):
+    """A server's stderr goes to a file: a pipe nobody reads fills up after ~64 KB of panic messages and then
+    blocks the server's writes, which looks like a hang."""
+    return open(binary + ".log", "w")
+
+
 BENCH_ANSWERS = {
     "fib": "9227465", "sieve": "1270607", "collatz": "837799 524",
     "pi": "3.1415926435893", "listsum": "24975000000",
@@ -250,7 +256,7 @@ if "--no-server" not in sys.argv:
         fail("tests/server/api.pn", "build failed: " + b.stderr[-400:])
     else:
         env = dict(os.environ, PN_THREADS="2")
-        proc = subprocess.Popen([out], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        proc = subprocess.Popen([out], env=env, stdout=subprocess.DEVNULL, stderr=server_log(out))
         try:
             for _ in range(50):
                 try:
@@ -312,7 +318,7 @@ if "--no-server" not in sys.argv:
         fail("tests/server/panics.pn", "build failed: " + b.stderr[-400:])
     else:
         proc = subprocess.Popen([out], env=dict(os.environ, PN_THREADS="2"),
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                                stdout=subprocess.DEVNULL, stderr=server_log(out))
         err500 = '{"error":"Internal Server Error"}'
         try:
             for _ in range(50):
@@ -321,7 +327,7 @@ if "--no-server" not in sys.argv:
                     break
                 except OSError:
                     time.sleep(0.1)
-            for path, want in [("/boom", (500, err500)), ("/ok", (200, '{"ok":true}')), ("/oob", (500, err500)),
+            for path, want in [("/boom", (500, err500)), ("/ok", (200, '{"ok":true}')), ("/oob", (500, err500)), ("/objects", (500, err500)),
                                ("/overflow", (500, err500)), ("/ok", (200, '{"ok":true}'))]:
                 got = http_get(8085, path)
                 if got == want:
@@ -338,6 +344,14 @@ if "--no-server" not in sys.argv:
                 fail("500 panicking requests", f"bad answers {bad[:2]}, RSS grew {grew:.0f} MB")
             else:
                 ok(f"500 panicking requests (RSS grew {grew:.0f} MB, server still answers)")
+            # each /objects builds an object holding 1000 lists and 1000 strings before it panics
+            before = rss_mb(proc.pid)
+            bad = [r for r in (http_get(8085, "/objects") for _ in range(300)) if r != (500, err500)]
+            grew = rss_mb(proc.pid) - before
+            if bad or grew > 100:
+                fail("300 panics holding objects", f"bad answers {bad[:2]}, RSS grew {grew:.0f} MB")
+            else:
+                ok(f"300 panics holding objects and nested lists (RSS grew {grew:.0f} MB)")
         finally:
             proc.terminate()
             proc.wait(timeout=5)
@@ -372,7 +386,7 @@ if "--no-server" not in sys.argv:
         for f in glob.glob(os.path.join(BUILD, "server_db_test.db*")):
             os.remove(f)
         proc = subprocess.Popen([out], cwd=BUILD, env=dict(os.environ, PN_THREADS="4"),
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                                stdout=subprocess.DEVNULL, stderr=server_log(out))
         try:
             for _ in range(50):
                 try:

@@ -25,7 +25,7 @@ jobs:
         run: python3 tests/run_tests.py
       - name: Sanitizers (ASAN + UBSAN; leaks too on Linux)
         run: >
-          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn
+          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn tests/classes.pn tests/nested.pn
           examples/wordcount.pn examples/ownership.pn tests/bench/listsum.pn
       - name: Installer (install.sh from this checkout into a temp folder)
         run: |

@@ -431,7 +431,7 @@ Str *pn_str_trim(Str *s) {
 
 // ============================================================================ maps
 
-// kinds: 0 int, 1 float, 2 bool, 3 string
+// kinds: 0 int, 1 float, 2 bool, 3 string, 4 owned pointer (list, map or object; freed by compiled code)
 typedef struct { uint64_t hash, key, val; int64_t alive; } Entry;
 typedef struct {
     int64_t count;          // first field so count() is one load, same as lists
@@ -557,6 +557,7 @@ void pn_map_free(Map *m) {
 }
 
 Map *pn_map_copy(Map *src) {
+    if (src->vk == 4) panic_msg("internal: map of objects copied without its item copier");
     Map *m = pn_map_new(src->kk, src->vk);
     for (int64_t i = 0; i < src->used; i++) {
         Entry *e = &src->e[i];
@@ -614,8 +615,7 @@ static Str *json_value(Str *d, uint64_t bits, int kind) {
     }
 }
 
-Str *pn_json_list(List *l, int64_t kind) {
-    Str *d = str_alloc(16 + l->len * 4);
+Str *pn_json_add_list(Str *d, List *l, int64_t kind) {
     d = str_add_bytes(d, "[", 1);
     for (int64_t i = 0; i < l->len; i++) {
         if (i) d = str_add_bytes(d, ",", 1);
@@ -626,8 +626,15 @@ Str *pn_json_list(List *l, int64_t kind) {
     return str_add_bytes(d, "]", 1);
 }
 
-Str *pn_json_map(Map *m) {
-    Str *d = str_alloc(16 + m->count * 16);
+Str *pn_json_list(List *l, int64_t kind) { return pn_json_add_list(str_alloc(16 + l->len * 4), l, kind); }
+
+static Str *json_key(Str *d, Map *m, Entry *e) {
+    if (m->kk == 3) { Str *k = (Str *)e->key; d = json_string(d, k->data, k->len); }
+    else { char buf[24]; int n = snprintf(buf, sizeof buf, "\"%lld\"", (long long)e->key); d = str_add_bytes(d, buf, n); }
+    return str_add_bytes(d, ":", 1);
+}
+
+Str *pn_json_add_map(Str *d, Map *m) {
     d = str_add_bytes(d, "{", 1);
     int first = 1;
     for (int64_t i = 0; i < m->used; i++) {
@@ -635,16 +642,96 @@ Str *pn_json_map(Map *m) {
         if (!e->alive) continue;
         if (!first) d = str_add_bytes(d, ",", 1);
         first = 0;
-        if (m->kk == 3) { Str *k = (Str *)e->key; d = json_string(d, k->data, k->len); }
-        else { char buf[24]; int n = snprintf(buf, sizeof buf, "\"%lld\"", (long long)e->key); d = str_add_bytes(d, buf, n); }
-        d = str_add_bytes(d, ":", 1);
-        d = json_value(d, e->val, m->vk);
+        d = json_value(json_key(d, m, e), e->val, m->vk);
     }
     return str_add_bytes(d, "}", 1);
 }
 
+Str *pn_json_map(Map *m) { return pn_json_add_map(str_alloc(16 + m->count * 16), m); }
+
 Str *pn_json_str(Str *s) { return json_string(NULL, s->data, s->len); }
 Str *pn_json_float(double v) { return json_float(NULL, v); }
+Str *pn_json_add_str(Str *d, Str *s) { return json_string(d, s->data, s->len); }
+Str *pn_json_add_float(Str *d, double v) { return json_float(d, v); }
+
+// ============================================================================ objects and nested containers
+// An object is a block of 8-byte fields. Lists whose items are lists, maps or objects, and maps whose values
+// are (value kind 4), hold owned pointers; the compiler passes the function that frees, copies or writes the
+// JSON of one item (generated for each type), so the runtime needs no type information.
+
+typedef void (*FreeFn)(void *);
+typedef void *(*CopyFn)(void *);
+typedef Str *(*JsonFn)(Str *, void *);
+
+void *pn_obj_new(int64_t size) { return xcalloc((size_t)size); }
+void pn_obj_free(void *o) { xfree(o); }
+
+void pn_list_free_with(List *l, FreeFn f) {
+    if (!l) return;
+    void **d = l->data;
+    for (int64_t i = 0; i < l->len; i++) f(d[i]);
+    pn_list_free(l);
+}
+
+List *pn_list_copy_with(List *src, CopyFn f) {
+    List *l = pn_list_copy(src, 8);
+    void **d = l->data;
+    for (int64_t i = 0; i < l->len; i++) d[i] = f(d[i]);
+    return l;
+}
+
+Str *pn_json_add_list_with(Str *d, List *l, JsonFn f) {
+    d = str_add_bytes(d, "[", 1);
+    void **items = l->data;
+    for (int64_t i = 0; i < l->len; i++) {
+        if (i) d = str_add_bytes(d, ",", 1);
+        d = f(d, items[i]);
+    }
+    return str_add_bytes(d, "]", 1);
+}
+
+void pn_map_free_with(Map *m, FreeFn f) {
+    if (!m) return;
+    for (int64_t i = 0; i < m->used; i++) {
+        if (!m->e[i].alive) continue;
+        if (m->kk == 3) pn_str_free((Str *)m->e[i].key);
+        f((void *)m->e[i].val);
+    }
+    xfree(m->e); xfree(m->idx); xfree(m);
+}
+
+Map *pn_map_copy_with(Map *src, CopyFn f) {
+    Map *m = pn_map_new(src->kk, src->vk);
+    for (int64_t i = 0; i < src->used; i++) {
+        Entry *e = &src->e[i];
+        if (!e->alive) continue;
+        *pn_map_slot(m, e->key, 1) = (uint64_t)f((void *)e->val);
+    }
+    return m;
+}
+
+void pn_map_del_with(Map *m, uint64_t key, FreeFn f) {
+    uint64_t *slot = pn_map_slot(m, key, 0);
+    if (!slot) return;
+    Entry *e = (Entry *)((char *)slot - offsetof(Entry, val));
+    if (m->kk == 3) pn_str_free((Str *)e->key);
+    f((void *)e->val);
+    e->alive = 0;
+    m->count--;
+}
+
+Str *pn_json_add_map_with(Str *d, Map *m, JsonFn f) {
+    d = str_add_bytes(d, "{", 1);
+    int first = 1;
+    for (int64_t i = 0; i < m->used; i++) {
+        Entry *e = &m->e[i];
+        if (!e->alive) continue;
+        if (!first) d = str_add_bytes(d, ",", 1);
+        first = 0;
+        d = f(json_key(d, m, e), (void *)e->val);
+    }
+    return str_add_bytes(d, "}", 1);
+}
 
 // ============================================================================ list<string>, explode, implode, sort
 

@@ -1,0 +1,1 @@
+all(...)[0] is part of a temporary value that is gone after this line; store the function result in a variable first, or use copy(all(...)[0])

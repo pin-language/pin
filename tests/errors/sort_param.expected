@@ -1,1 +1,1 @@
-$xs is a parameter lent to this code, so it cannot be sorted. Work on a copy instead: $copy = copy($xs);
+$xs is a parameter lent to this function read-only, so it cannot be sorted. To change the caller's value declare it as list<string> &$xs (and call with &$value); or work on $copy = copy($xs);

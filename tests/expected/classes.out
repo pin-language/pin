@@ -1,0 +1,10 @@
+yes yes
+200
+180
+{"id":1,"items":[{"name":"tea","price":36},{"name":"cake","price":108}],"qty":{"tea":2,"cake":1},"paid":true}
+tea / green tea
+green tea costs 36
+[[1,2],[3,4],[5]] 2
+{"a":["x","y"]}
+tea!
+[{"id":0,"items":[{"name":"cake","price":120}],"qty":{"cake":1},"paid":false},{"id":1,"items":[{"name":"cake","price":120}],"qty":{"cake":2},"paid":true},{"id":2,"items":[{"name":"cake","price":120}],"qty":{"cake":3},"paid":true}]

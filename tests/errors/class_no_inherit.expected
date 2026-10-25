@@ -1,0 +1,1 @@
+Pin classes have no inheritance (extends). Put the shared part in its own class and hold it as a property, e.g. public Address $address;

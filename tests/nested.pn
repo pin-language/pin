@@ -1,0 +1,46 @@
+// nested containers and maps of objects: everything owned is freed once (run under ASAN / leaks)
+class Point {
+    public function __construct(public int $x, public int $y) {}
+    function moved(int $dx): Point { return new Point($this->x + $dx, $this->y); }
+}
+
+map<string, map<string, int>> $counts = [];
+$counts["a"] = ["x" => 1];
+$counts["a"]["x"] += 2;
+$counts["a"]["y"] = 5;
+$counts["b"] = [];
+echo json_encode($counts), "\n";
+unset($counts["b"]);
+foreach ($counts as $k => $inner) {
+    foreach ($inner as $ik => $v) { echo "$k.$ik=$v "; }
+}
+echo "\n";
+
+map<int, Point> $pts = [];
+$pts[1] = new Point(1, 2);
+$pts[2] = $pts[1]->moved(10);
+$pts[1] = new Point(0, 0);              // the old Point is freed
+unset($pts[2]);
+echo json_encode($pts), " ", count($pts), "\n";
+
+list<list<string>> $rows = [["a", "b"], []];
+$rows[1][] = "c";
+$rows[0][1] = "B";
+$rows[0][0] .= "!";
+$copy = copy($rows);
+$copy[0][0] = "changed";
+echo json_encode($rows), " ", json_encode($copy), "\n";
+echo implode(",", $rows[0]), "\n";
+
+foreach ($rows as &$row) { $row[] = "end"; }
+echo json_encode($rows), "\n";
+
+list<Point> $line = [];
+for ($i = 0; $i < 4; $i++) { $line[] = new Point($i, $i * $i); }
+$p = $line[3];
+echo "last: $p->x,{$p->y}\n";
+$sum = 0;
+foreach ($line as $q) { $sum += $q->y; }
+echo $sum, "\n";
+$line = [];                              // all four Points are freed
+echo count($line), "\n";

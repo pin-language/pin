@@ -1,0 +1,3 @@
+class C { public int $n = 0; function inc(): void { $this->n += 1; } }
+function f(C $c): void { $c->inc(); }
+$c = new C(); f($c);

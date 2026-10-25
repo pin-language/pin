@@ -1,0 +1,1 @@
+class N { public N $next; function __construct(N $n) { $this->next = copy($n); } }

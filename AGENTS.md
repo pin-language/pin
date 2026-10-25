@@ -10,10 +10,10 @@ Then loop: write → `pin check --json file.pn` (one JSON error per line, `{"fil
 fix the reported line → repeat → `pin file.pn` to run. Every built-in with examples:
 https://github.com/pin-language/docs/blob/HEAD/reference/README.md
 
-Current version: see `VERSION` in `pinac.py` and `CHANGELOG.md`. Pin has modules (`import`/`export`),
+Current version: see `VERSION` in `pinac.py` and `CHANGELOG.md`. Pin has classes (no inheritance), nested containers, `&` parameters, modules (`import`/`export`),
 Git packages (`pin get`, `pin.lock`), `list<string>`, request helpers (`query_param`, `json_string`, …) and
-SQLite (`db_*`). It does not yet have classes, `null`, `try`/`catch`, closures, nested containers, request
-headers or PostgreSQL.
+SQLite (`db_*`). It does not yet have inheritance, `null`, `try`/`catch`, closures, default parameter values,
+request headers or PostgreSQL.
 
 **Changing the compiler?** Read `CLAUDE.md` (conventions, invariants, how to test) and `HANDOFF.md` (state and
 task queue). `python3 tests/run_tests.py` must stay green.

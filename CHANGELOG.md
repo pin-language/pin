@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.0 — 2026-10-25
+
+Classes, nested containers and `&`: data with mixed types and structure, without a garbage collector.
+
+- `class` with typed `public` / `private` properties, literal defaults, `__construct` (with PHP 8 promoted
+  parameters), methods and `$this`; `new Name(...)`; `$o->prop`, `$o->method()`. No inheritance,
+  interfaces, `static` or `null` (each says so when used).
+- The constructor must give every property a value on every path, and cannot read a property or use `$this`
+  before that (checked when compiling).
+- Objects are values with one owner, like lists: they move on `=`, `copy()` copies deeply, parameters are
+  read-only loans. A method that assigns `$this->...` (or calls one that does) is inferred to be a changing
+  method, and can only be called on something the caller may change.
+- Any type nests: `list<Order>`, `list<list<int>>`, `map<string,list<string>>`, `map<int,User>`, objects
+  holding lists and objects. Change values through paths: `$users[0]->name = "x"`, `$m["a"]["b"] += 1`,
+  `$o->items[] = $x`; `sort()` and `unset()` work on paths too.
+- `&` parameters change the caller's value, written at the call as well: `discount(&$order)`, also for paths
+  (`&$orders[0]`). The call's other arguments may not use the same value. `foreach ($xs as &$x)` changes
+  items in place.
+- `$u = $users[0];` borrows read-only instead of copying; changing `$users` while `$u` is used again later
+  is a compile error that names the line.
+- `json_encode` writes objects (public properties, in order), lists and maps of them, and nested lists:
+  mixed-type JSON objects no longer have to be built as strings.
+- `"{$o->items[0]->name}"` and `"$o->name"` in strings; `export class` in modules, used as `mod::Name`.
+- Error messages for read-only parameters now suggest `&`. Parameter default values get a clear error.
+- Every heap object still belongs to its request: a panicking handler frees objects and nested lists too
+  (tested with 300 panics holding 1,000 lists each). ASAN, UBSAN and LeakSanitizer clean.
+- Docs: Learn chapter 13 (classes), the AI guide's Classes section, language guide, reference for `copy` and
+  `json_encode`. VS Code highlights `class`, `new`, `public`/`private`, `$this`, `->` and `&`.
+
 ## 0.4.1 — 2026-10-25
 
 - Fix: on Linux without SQLite's development files, every program failed to build — even hello world — so

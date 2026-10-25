@@ -1,0 +1,1 @@
+$c is a parameter lent to this function read-only, so it cannot be changed by inc(). To change the caller's value declare it as C &$c (and call with &$value); or work on $copy = copy($c);

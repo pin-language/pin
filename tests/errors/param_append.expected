@@ -1,1 +1,1 @@
-$xs is a parameter lent to this code, so it cannot be changed. Work on a copy instead: $copy = copy($xs);
+$xs is a parameter lent to this function read-only, so it cannot be appended to. To change the caller's value declare it as list<int> &$xs (and call with &$value); or work on $copy = copy($xs);

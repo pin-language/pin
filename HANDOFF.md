@@ -1,4 +1,4 @@
-# HANDOFF — state as of 2026-10-25 (v0.4.1)
+# HANDOFF — state as of 2026-10-25 (v0.5.0)
 
 **Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
 `ai-guide.md` (pin-language/docs) complete and correct for every release: it is what agents read. Error messages should
@@ -24,7 +24,7 @@ int-overflow, null, strings, concurrency.
 
 ## 1. What works (verified)
 
-`python3 tests/run_tests.py` → **88 passed, 0 failed** on macOS arm64 (owner's MacBook) **and** on
+`python3 tests/run_tests.py` → **114 passed, 0 failed** (0.5.0) on macOS arm64 (owner's MacBook) **and** on
 Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang python3`).
 
 - Everything from the first prototype (functions, int/float/bool/string, `list<T>`, ordered `map<K,V>`,
@@ -49,6 +49,26 @@ Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang
   `loop_zero_times.pn`, `move_then_continue.pn`.
 - ASAN+UBSAN clean on macOS and Linux (LeakSanitizer on Linux too): hello, strmap, arith, listsum, all panic tests, and both servers
   under load (pipelining, half-close, garbage, chunked bodies, ~1,450 panicking requests).
+
+### Classes (0.5.0)
+
+- `class`, properties, `__construct` (promoted params for scalars/strings only), methods, `$this`, `new`,
+  `export class` / `mod::Name`. Objects are 8-byte-slot blocks (`pn_obj_new`); per-type `free:` / `copy:` /
+  `json:` functions are generated on demand (`NEEDED`, `gen_helper`) and handed to the runtime's `*_with`
+  functions — always generated wrappers, never C functions directly (UBSan `-fsanitize=function`).
+- Any type nests (`list<T>` / `map<K,V>` of anything but db/rows/void). Paths: `place()` / `base_value()` /
+  `assign_path()`; var-rooted list/map writes keep their old fast code (benchmark IR unchanged).
+- Ownership: `mutating(root, props, ...)` is the one gate for every change (writable? foreach walking that
+  path? live borrow?). `&` params pass the address of the caller's slot (`slot_over`); `foreach &` uses the
+  item's address as the variable's slot. `$u = $xs[0]` (list/map/object) is a borrow var
+  (`borrow_vars`); liveness is approximated with postorder node numbers from `prepare()` plus loop ranges
+  and loop-top kills — conservative (may reject code that is safe, never the reverse). Changing methods
+  (R6) are inferred by compiling all methods repeatedly until no new one is marked (`mod.inferring`).
+  Constructor rule N5 uses pseudo-variables `$this->f` in `Flow`.
+- Not built: R2's string borrow (strings still copy), null, inheritance, parameter defaults, `&` on bool
+  items, `??` on container-valued entries.
+- Fresh-agent test (Sonnet, ai-guide only): library system, grades with `foreach &` and `&$xs[1]`, matrix
+  transpose — all correct, one compile error in total (its message gave the fix).
 
 ### AI-agent usability tests (2026-10-24)
 
@@ -97,9 +117,9 @@ overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
 2. **Error handling** (error-handling.md): `throws`, `try`, `catch`, `error(code, msg)`, handler `throws`.
 3. **Strings** (strings.md): UTF-8 validation at the edges (invalid request → 400), `substr` boundary
    panic, `mb_*`, `grapheme_*`.
-4. **Null** (null.md) together with **class** (ownership-v2 R1–R7).
+4. **Null** (null.md). Classes (ownership-v2 R1–R7) done in 0.5.0 — null needs `?T` properties now.
 5. ~~`list<string>`~~ done in 0.2.0 (plus explode/implode/sort, query/form/JSON request helpers).
-   Nested containers (list of lists, map of lists) still to do.
+   Nested containers done in 0.5.0.
 6. **Request headers + query string + timeouts** (B5) — needed before any real deployment.
 7. ~~SQLite~~ done in 0.3.0 (`db_*`, literal-SQL rule, resources closed on panic). **PostgreSQL next**
    (owner, 2026-10-24: "SQLite first, then PostgreSQL") with the same `db_*` functions; then a full
@@ -114,7 +134,8 @@ Linux container, update this file.
 
 ## 5. Reproducing
 
-- Tests: `python3 tests/run_tests.py` (≈1 min). Linux: run the same inside Docker (see §1).
+- Tests: `python3 tests/run_tests.py` (≈2 min). Server stderr goes to `build/server_*.log` (a pipe
+  nobody read filled after ~64 KB of panic lines and blocked the server: looked like a hang). Linux: run the same inside Docker (see §1).
 - Sanitizers: see CLAUDE.md. On macOS use clang for the link step; LeakSanitizer only works on Linux.
 - Server memory on macOS: use `footprint -p <pid>` (phys_footprint). RSS hides leaks because macOS
   compresses idle pages.

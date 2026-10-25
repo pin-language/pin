@@ -1,0 +1,2 @@
+class O { public list<int> $xs = []; function get(): list<int> { return $this->xs; } }
+$o = new O(); echo count($o->get());

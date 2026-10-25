@@ -1,0 +1,1 @@
+class N contains itself through its properties, so no N could ever be built. Hold it in a list (list<N>) or store an id instead

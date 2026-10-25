@@ -1,0 +1,4 @@
+class O { public list<int> $xs = []; }
+$o = new O();
+list<list<int>> $all = [];
+$all[] = $o->xs;

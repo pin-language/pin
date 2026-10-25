@@ -1,0 +1,4 @@
+class U { public int $n = 0; }
+$us = [new U(), new U()];
+$u = $us[0];
+for ($i = 0; $i < 2; $i++) { echo $u->n; $us[] = new U(); }

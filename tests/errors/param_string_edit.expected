@@ -1,1 +1,1 @@
-$s is a parameter lent to this code, so it cannot be changed. Work on a copy instead: $copy = $s;
+$s is a parameter lent to this function read-only, so it cannot be changed. To change the caller's value declare it as string &$s (and call with &$value); or work on $copy = $s;

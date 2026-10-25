@@ -1,0 +1,1 @@
+f() changes $a, so the other arguments cannot use $a at the same time. Pass copy(...) of what they need, or read it into a variable first

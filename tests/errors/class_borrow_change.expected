@@ -1,0 +1,1 @@
+$u is borrowed (read-only) from another value, so it cannot be changed. Change the original directly (e.g. $list[$i]->name = ...), or work on $copy = copy($u);

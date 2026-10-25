@@ -10,8 +10,8 @@ From a clone of the Pin repository:
 
 ```bash
 cd editors/vscode
-npx @vscode/vsce package          # makes pin-0.4.0.vsix
-code --install-extension pin-0.4.0.vsix
+npx @vscode/vsce package          # makes pin-0.5.0.vsix
+code --install-extension pin-0.5.0.vsix
 ```
 
 Then reload VS Code and open any `.pn` file.

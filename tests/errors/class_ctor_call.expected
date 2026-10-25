@@ -1,0 +1,1 @@
+__construct() uses $this before every property is set (still missing: $this->id). Set them first

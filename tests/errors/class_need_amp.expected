@@ -1,0 +1,1 @@
+f() can change its argument $c, so write f(&$c)

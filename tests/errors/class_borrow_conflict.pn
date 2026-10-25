@@ -1,0 +1,5 @@
+class U { public function __construct(public string $name) {} }
+$users = [new U("a")];
+$u = $users[0];
+$users[] = new U("b");
+echo $u->name;

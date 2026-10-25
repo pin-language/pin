@@ -1,0 +1,1 @@
+$o->xs belongs to the value it is part of and cannot be moved out of it. Store copy($o->xs) to have your own

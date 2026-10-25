@@ -1,0 +1,1 @@
+U::__construct() does not set $this->name on every path. Set it in every branch, or give the property a default: public string $name = ...;

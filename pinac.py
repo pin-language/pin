@@ -47,7 +47,7 @@ TOKEN_RE = re.compile(r"""
  |(?P<STRING>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')
  |(?P<VAR>\$[A-Za-z_]\w*)
  |(?P<IDENT>[A-Za-z_]\w*)
- |(?P<OP>::|\+\+|--|\+=|-=|\*=|/=|%=|\.=|===|!==|==|!=|<=|>=|=>|&&|\|\||\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?])
+ |(?P<OP>::|\+\+|--|->|\+=|-=|\*=|/=|%=|\.=|===|!==|==|!=|<=|>=|=>|&&|\|\||\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?&])
 """, re.VERBOSE)
 
 
@@ -89,7 +89,17 @@ class Node:
 
 TYPE_NAMES = {"int", "float", "bool", "string", "list", "map", "void", "db", "rows"}
 ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'", "$": "$", "0": "\0"}
-INTERP_RE = re.compile(r"(?<!\\)(\{\$[A-Za-z_]\w*\}|\$[A-Za-z_]\w*)")
+INTERP_RE = re.compile(r"(?<!\\)(\{\$[^{}\"]*\}|\$[A-Za-z_]\w*(?:->[A-Za-z_]\w*)?)")
+
+
+def set_line(node, line):
+    if isinstance(node, Node):
+        node.line = line
+        for v in node.__dict__.values():
+            set_line(v, line)
+    elif isinstance(node, (list, tuple)):
+        for v in node:
+            set_line(v, line)
 
 
 def unescape(body, double):
@@ -141,22 +151,88 @@ class Parser:
         return False
 
     def program(self):
-        funcs, main, imports = [], [], []
+        funcs, main, imports, classes = [], [], [], []
         while self.cur.kind != "EOF":
             if self.at("function", "IDENT"):
                 funcs.append(self.function())
+            elif self.at("class", "IDENT"):
+                classes.append(self.class_())
             elif self.at("export", "IDENT"):
                 line = self.eat().line
+                if self.at("class", "IDENT"):
+                    c = self.class_()
+                    c.exported = True
+                    classes.append(c)
+                    continue
                 if not self.at("function", "IDENT"):
-                    raise CompileError("export goes before a function: export function name(...): type { ... }", line)
+                    raise CompileError("export goes before a function or a class: export function name(...): type "
+                                       "{ ... }  or  export class Name { ... }", line)
                 f = self.function()
                 f.exported = True
                 funcs.append(f)
             elif self.at("import", "IDENT"):
                 imports.append(self.import_())
+            elif self.cur.val in ("abstract", "final", "readonly") and self.peek().val == "class":
+                raise CompileError(f"{self.cur.val} classes are not in Pin: classes have no inheritance, write "
+                                   f"class Name {{ ... }}", self.cur.line)
             else:
                 main.append(self.statement())
-        return funcs, main, imports
+        return funcs, main, imports, classes
+
+    CLASS_WORDS = ("public", "private", "protected", "static", "readonly", "abstract", "final", "var")
+
+    def class_(self):
+        """class Name { public int $x = 0; private string $s; function __construct(...) { } function m(): T { } }"""
+        line = self.eat("class").line
+        name = self.eat(kind="IDENT").val
+        if name in TYPE_NAMES or name in NOT_IN_PIN or name in ("true", "false", "null"):
+            raise CompileError(f"'{name}' cannot be a class name", line)
+        if self.at("extends", "IDENT"):
+            raise CompileError("Pin classes have no inheritance (extends). Put the shared part in its own class "
+                               "and hold it as a property, e.g. public Address $address;", self.cur.line)
+        if self.at("implements", "IDENT"):
+            raise CompileError("interfaces are not in Pin yet; remove implements ...", self.cur.line)
+        self.eat("{")
+        fields, methods = [], []
+        while not self.at("}"):
+            t = self.cur
+            if t.kind == "EOF":
+                raise CompileError(f"missing '}}' at the end of class {name}", line)
+            vis = None
+            while self.cur.kind == "IDENT" and self.cur.val in self.CLASS_WORDS:
+                w = self.eat()
+                if w.val == "protected":
+                    raise CompileError("protected is for inheritance, which Pin does not have: use private", w.line)
+                if w.val == "static":
+                    raise CompileError("static properties and methods are not in Pin (there is no shared state): "
+                                       "use a top-level function, or a property set in __construct()", w.line)
+                if w.val in ("readonly", "abstract", "final"):
+                    raise CompileError(f"{w.val} is not in Pin yet", w.line)
+                vis = "public" if w.val == "var" else w.val
+            if self.at("function", "IDENT"):
+                f = self.function(in_class=name)
+                f.vis = vis or "public"
+                if f.name == "__construct":
+                    if any(m.name == "__construct" for m in methods):
+                        raise CompileError(f"class {name} has two constructors", f.line)
+                    for i, (pvis, ptype, pname) in enumerate(f.promoted):
+                        fields.append(Node("prop", f.line, vis=pvis, vtype=ptype, name=pname[1:], default=None))
+                methods.append(f)
+                continue
+            if self.at("const", "IDENT"):
+                raise CompileError("class constants are not in Pin yet; use a method that returns the value", t.line)
+            if vis is None:
+                raise CompileError("a property needs public or private in front, e.g.  public int $id;  "
+                                   "(methods start with function)", t.line)
+            if self.cur.kind == "VAR":
+                raise CompileError(f"property {self.cur.val} needs a type, e.g.  {vis} int {self.cur.val};", t.line)
+            ptype = self.type_()
+            pname = self.eat(kind="VAR").val
+            default = self.expr() if self.accept("=") else None
+            self.eat(";")
+            fields.append(Node("prop", t.line, vis=vis, vtype=ptype, name=pname[1:], default=default))
+        self.eat("}")
+        return Node("class", line, name=name, props=fields, methods=methods, exported=False)
 
     def import_(self):
         """import prices;   import http/router;   import github.com/owner/repo/path as name;"""
@@ -178,28 +254,60 @@ class Parser:
         self.eat(";")
         return Node("import", line, path=path, alias=alias or path.split("/")[-1].replace("-", "_").replace(".", "_"))
 
-    def function(self):
+    def function(self, in_class=None):
         line = self.eat("function").line
         exported = False
         name = self.eat(kind="IDENT").val
+        ctor = in_class is not None and name == "__construct"
         self.eat("(")
-        params = []
+        params, promoted = [], []
         while not self.at(")"):
+            pvis = None
+            if self.cur.kind == "IDENT" and self.cur.val in ("public", "private", "protected", "readonly"):
+                w = self.eat()
+                if not ctor:
+                    raise CompileError(f"'{w.val}' on a parameter only works in __construct() (it declares a "
+                                       f"property)", w.line)
+                if w.val in ("protected", "readonly"):
+                    raise CompileError(f"{w.val} is not in Pin: use public or private", w.line)
+                pvis = w.val
             if self.cur.kind == "VAR":
                 raise CompileError(f"parameter {self.cur.val} needs a type, e.g. int {self.cur.val}, string "
                                    f"{self.cur.val} or list<int> {self.cur.val}", self.cur.line)
             ptype = self.type_()
+            ref = self.accept("&")
             pname = self.eat(kind="VAR").val
-            params.append((ptype, pname))
+            if self.at("="):
+                raise CompileError(f"parameters cannot have default values in Pin yet ({pname} = ...); pass the "
+                                   f"value at every call" + (", or set the property in the constructor body"
+                                                             if pvis else ""), self.cur.line)
+            if pname == "$this":
+                raise CompileError("$this cannot be a parameter name", line)
+            if pvis:
+                if ref:
+                    raise CompileError("a promoted constructor parameter cannot use &", line)
+                promoted.append((pvis, ptype, pname))
+            params.append((ptype, pname, ref))
             if not self.accept(","):
                 break
         self.eat(")")
-        if not self.at(":"):
-            raise CompileError(f"function {name}() needs a return type, e.g. ': int' or ': void'", self.cur.line)
-        self.eat(":")
-        ret = self.type_()
+        if ctor:
+            if self.accept(":"):
+                if self.type_() != "void":
+                    raise CompileError("__construct() returns nothing; leave out the return type", line)
+            ret = "void"
+        else:
+            if not self.at(":"):
+                raise CompileError(f"function {name}() needs a return type, e.g. ': int' or ': void'", self.cur.line)
+            self.eat(":")
+            ret = self.type_()
         body = self.block()
-        return Node("func", line, name=name, params=params, ret=ret, body=body, exported=exported)
+        for pvis, ptype, pname in reversed(promoted):     # public int $id  ->  $this->id = $id; first
+            this = Node("var", line, name="$this")
+            body.body.insert(0, Node("assign", line, target=Node("field", line, obj=this, name=pname[1:]), op="=",
+                                     val=Node("var", line, name=pname), promoted=True))
+        return Node("func", line, name=name, params=params, ret=ret, body=body, exported=exported,
+                    promoted=promoted, vis="public")
 
     def type_(self):
         t = self.cur
@@ -207,28 +315,46 @@ class Parser:
             raise CompileError("nullable types (?T) are not in Pin yet (designed: pin-language/docs design/null.md)", t.line)
         name = self.eat(kind="IDENT").val
         if name not in TYPE_NAMES:
-            raise CompileError(f"unknown type '{name}'", t.line)
+            if name in NOT_IN_PIN or name in ("array", "mixed", "object", "integer", "boolean", "double", "str"):
+                hint = {"array": " (use list<int> or map<string,int>)", "integer": " (use int)",
+                        "boolean": " (use bool)", "double": " (use float)", "str": " (use string)",
+                        "mixed": " (every value has one type in Pin)", "object": " (name the class)"}.get(name, "")
+                raise CompileError(f"unknown type '{name}'{hint}", t.line)
+            if self.at("::"):                       # a class from an imported module: shop::Order
+                self.eat()
+                name = f"{name}::{self.eat(kind='IDENT').val}"
+            return name                             # a class name; checked once every class is known
         if name == "list":
             self.eat("<")
             inner = self.type_()
-            self.eat(">")
-            if inner not in ("int", "float", "bool", "string"):
-                raise CompileError(f"list<{inner}> is not supported yet (int, float, bool, string only)", t.line)
+            self.close_angle()
+            if inner == "void":
+                raise CompileError("list<void> is not a type", t.line)
             return f"list<{inner}>"
         if name == "map":
             self.eat("<")
             k = self.type_()
             self.eat(",")
             v = self.type_()
-            self.eat(">")
+            self.close_angle()
             if k not in ("int", "string"):
                 raise CompileError(f"map keys must be int or string, not {k}", t.line)
-            if v not in KIND:
-                raise CompileError(f"map values must be int, float, bool or string, not {v}", t.line)
+            if v == "void":
+                raise CompileError("map values cannot be void", t.line)
             return f"map<{k},{v}>"
         if self.at("<"):
             raise CompileError(f"type '{name}' takes no parameters", t.line)
         return name
+
+    def close_angle(self):
+        """The '>' that ends list<...> / map<...>; '>>' and '>=' come from the lexer as one token at times."""
+        t = self.cur
+        if t.val == ">":
+            self.eat()
+        elif t.val in (">=", ">>"):
+            self.toks[self.i] = Tok("OP", t.val[1:], t.line)
+        else:
+            self.eat(">")
 
     def block(self):
         line = self.eat("{").line
@@ -268,11 +394,15 @@ class Parser:
                 self.eat("(")
                 seq = self.expr()
                 self.eat("as")
+                ref = self.accept("&")
                 key, var = None, self.eat(kind="VAR").val
                 if self.accept("=>"):
+                    if ref:
+                        raise CompileError("& goes on the value: foreach ($m as $k => &$v)", t.line)
+                    ref = self.accept("&")
                     key, var = var, self.eat(kind="VAR").val
                 self.eat(")")
-                return Node("foreach", t.line, seq=seq, key=key, var=var, body=self.statement())
+                return Node("foreach", t.line, seq=seq, key=key, var=var, ref=ref, body=self.statement())
             if t.val == "return":
                 self.eat()
                 val = None if self.at(";") else self.expr()
@@ -289,7 +419,9 @@ class Parser:
                 self.eat()
                 self.eat(";")
                 return Node(t.val, t.line)
-            if (t.val in TYPE_NAMES and self.peek().kind == "VAR") or (t.val in ("list", "map") and self.peek().val == "<"):
+            if ((t.val in TYPE_NAMES and self.peek().kind == "VAR") or (t.val in ("list", "map") and self.peek().val == "<")
+                    or (t.val not in NOT_IN_PIN and t.val not in ("new", "print") and self.peek().kind == "VAR")
+                    or (self.peek().val == "::" and self.peek(2).kind == "IDENT" and self.peek(3).kind == "VAR")):
                 vtype = self.type_()
                 name = self.eat(kind="VAR").val
                 self.eat("=")
@@ -321,22 +453,23 @@ class Parser:
         e = self.expr()
         op = self.cur.val
         if self.cur.kind == "OP" and op in ("=", "+=", "-=", "*=", "/=", "%=", ".="):
-            if e.kind not in ("var", "index", "append"):
-                raise CompileError("left side of an assignment must be a variable, a list item or a map entry", t.line)
+            if e.kind not in ("var", "index", "append", "field"):
+                raise CompileError("left side of an assignment must be a variable, a list item, a map entry or a "
+                                   "property", t.line)
             if e.kind == "append" and op != "=":
                 raise CompileError("use $a[] = value to append", t.line)
             self.eat()
             val = self.expr()
             return Node("assign", t.line, target=e, op=op, val=val)
         if self.cur.kind == "OP" and op in ("++", "--"):
-            if e.kind not in ("var", "index"):
-                raise CompileError(f"'{op}' needs a variable or a list/map item", t.line)
+            if e.kind not in ("var", "index", "field"):
+                raise CompileError(f"'{op}' needs a variable, a list/map item or a property", t.line)
             self.eat()
             one = Node("int", t.line, val=1)
             return Node("assign", t.line, target=e, op="+=" if op == "++" else "-=", val=one)
         if e.kind == "append":
             raise CompileError("$a[] can only be assigned to", t.line)
-        if e.kind != "call":
+        if e.kind not in ("call", "mcall"):
             raise CompileError("this expression does nothing on its own", t.line)
         return Node("exprstmt", t.line, expr=e)
 
@@ -393,13 +526,39 @@ class Parser:
                 e = Node("index", t.line, seq=e, idx=idx)
             elif t.kind == "OP" and t.val == "[]":
                 self.eat()
-                if e.kind != "var":
-                    raise CompileError("append needs a variable: $a[] = value", t.line)
+                if e.kind not in ("var", "field", "index"):
+                    raise CompileError("append needs a variable or a property: $a[] = value", t.line)
                 e = Node("append", t.line, seq=e)
-            elif t.kind == "OP" and t.val == "-" and self.peek().val == ">":
-                raise CompileError("objects (->) are not in Pin yet; use a map, e.g. $user[\"name\"]", t.line)
+            elif t.kind == "OP" and t.val == "->":
+                self.eat()
+                if self.cur.kind == "VAR":
+                    raise CompileError(f"write $obj->{self.cur.val[1:]} without the second $", t.line)
+                name = self.eat(kind="IDENT").val
+                if self.at("("):
+                    e = Node("mcall", t.line, obj=e, name=name, args=self.args())
+                else:
+                    e = Node("field", t.line, obj=e, name=name)
+            elif t.kind == "OP" and t.val == "?" and self.peek().val == "->":
+                raise CompileError("?-> is not in Pin yet: values are never null", t.line)
+            elif t.kind == "OP" and t.val == "::" and e.kind == "var":
+                raise CompileError("static members are not in Pin; use $obj->name", t.line)
             else:
                 return e
+
+    def args(self):
+        """( a, b, &$c )"""
+        self.eat("(")
+        args = []
+        while not self.at(")"):
+            if self.at("&"):
+                t = self.eat()
+                args.append(Node("ref", t.line, e=self.postfix()))
+            else:
+                args.append(self.expr())
+            if not self.accept(","):
+                break
+        self.eat(")")
+        return args
 
     def primary(self):
         t = self.cur
@@ -419,10 +578,23 @@ class Parser:
             if double and INTERP_RE.search(body):
                 parts = []
                 for piece in INTERP_RE.split(body):
-                    if piece.startswith("{$"):
-                        parts.append(Node("var", t.line, name=piece[1:-1]))
+                    if piece.startswith("{$"):          # "{$order->items[0]}": any path
+                        try:
+                            sub = Parser(lex(piece[1:-1]))
+                            part = sub.expr()
+                            if sub.cur.kind != "EOF":
+                                raise CompileError("", t.line)
+                        except CompileError:
+                            raise CompileError(f"cannot read {piece} inside the string: write a variable, a "
+                                               f"property or an item, e.g. {{$o->name}} or {{$xs[0]}}", t.line)
+                        set_line(part, t.line)
+                        parts.append(part)
                     elif piece.startswith("$"):
-                        parts.append(Node("var", t.line, name=piece))
+                        names = piece.split("->")
+                        part = Node("var", t.line, name=names[0])
+                        for f in names[1:]:
+                            part = Node("field", t.line, obj=part, name=f)
+                        parts.append(part)
                     elif piece:
                         parts.append(Node("str", t.line, val=unescape(piece, True)))
                 return Node("interp", t.line, parts=parts)
@@ -441,6 +613,15 @@ class Parser:
                 self.eat()
                 kind, val = CONSTANTS[t.val]
                 return Node(kind, t.line, val=val)
+            if t.val == "new":
+                self.eat()
+                if self.cur.kind != "IDENT":
+                    raise CompileError("new needs a class name: new Order(...)", t.line)
+                cname = self.eat().val
+                if self.at("::"):
+                    self.eat()
+                    cname = f"{cname}::{self.eat(kind='IDENT').val}"
+                return Node("new", t.line, cls=cname, args=self.args() if self.at("(") else [])
             if t.val in NOT_IN_PIN and not (t.val == "list" and self.peek().val == "<"):
                 raise CompileError(NOT_IN_PIN[t.val], t.line)
             self.eat()
@@ -450,14 +631,7 @@ class Parser:
                 module, t = t.val, self.eat(kind="IDENT")
             if not self.at("("):
                 raise CompileError(f"unknown name '{t.val}' (variables start with $)", t.line)
-            self.eat("(")
-            args = []
-            while not self.at(")"):
-                args.append(self.expr())
-                if not self.accept(","):
-                    break
-            self.eat(")")
-            return Node("call", t.line, name=t.val, args=args, module=module)
+            return Node("call", t.line, name=t.val, args=self.args(), module=module)
         if t.kind == "OP" and t.val == "(":
             self.eat()
             e = self.expr()
@@ -496,8 +670,34 @@ ELEM_SIZE = {"int": 8, "float": 8, "bool": 1, "string": 8}   # list<string> hold
 ELEM_TBAA = {"int": "!3", "float": "!4", "bool": "!5"}
 
 
+CLASSES = {}    # class key ("Order", or "shop::Order" in a module) -> ClassInfo; filled by compile_file
+NEEDED = {}     # helper functions the generated code calls: '@"free:list<Order>"' -> (kind, type)
+
+
 def llty(t):
     return {"int": "i64", "float": "double", "bool": "i1", "void": "void"}.get(t, "ptr")
+
+
+def is_class(t):
+    return t in CLASSES
+
+
+def owns_ptr(t):
+    """Lists, maps and objects: stored as an owned pointer whose freeing / copying / JSON needs per-type code."""
+    return is_list(t) or is_map(t) or is_class(t)
+
+
+def ell(t):
+    """How a value is stored inside a list, an object field: bools take one byte, the rest 8."""
+    return {"int": "i64", "float": "double", "bool": "i8"}.get(t, "ptr")
+
+
+def esize(t):
+    return 1 if t == "bool" else 8
+
+
+def kind_of(t):
+    return KIND.get(t, 4)
 
 
 def is_list(t):
@@ -509,7 +709,7 @@ def is_map(t):
 
 
 def is_heap(t):
-    return t in ("string", "db", "rows") or is_list(t) or is_map(t)
+    return t in ("string", "db", "rows") or is_list(t) or is_map(t) or is_class(t)
 
 
 def elem_of(t):
@@ -517,8 +717,14 @@ def elem_of(t):
 
 
 def map_kv(t):
-    k, v = t[4:-1].split(",")
+    k, v = t[4:-1].split(",", 1)
     return k, v
+
+
+def need(kind, t):
+    name = f'@"{kind}:{t}"'
+    NEEDED.setdefault(name, (kind, t))
+    return name
 
 
 def free_fn(t):
@@ -529,8 +735,48 @@ def free_fn(t):
     if t == "rows":
         return "@pn_rows_free"
     if is_list(t):
-        return "@pn_list_free_str" if elem_of(t) == "string" else "@pn_list_free"
-    return "@pn_map_free"
+        e = elem_of(t)
+        return "@pn_list_free_str" if e == "string" else need("free", t) if owns_ptr(e) else "@pn_list_free"
+    if is_map(t):
+        return need("free", t) if owns_ptr(map_kv(t)[1]) else "@pn_map_free"
+    return need("free", t)
+
+
+def uncopyable(t, seen=()):
+    """The part of type t that cannot be copied (a db connection or a result set), or None."""
+    if t in ("db", "rows"):
+        return t
+    if is_list(t):
+        return uncopyable(elem_of(t), seen)
+    if is_map(t):
+        return uncopyable(map_kv(t)[1], seen)
+    if is_class(t) and t not in seen:
+        for f in CLASSES[t].fields.values():
+            if uncopyable(f.type, seen + (t,)):
+                return f"{t}->{f.name} ({f.type})"
+    return None
+
+
+def copy_fn(t):
+    if t == "string":
+        return "@pn_str_dup"
+    if is_list(t) and elem_of(t) == "string":
+        return "@pn_list_copy_str"
+    if is_map(t) and not owns_ptr(map_kv(t)[1]):
+        return "@pn_map_copy"
+    return need("copy", t)
+
+
+def item_fn(kind, t):
+    """A free / copy function to hand to the runtime as a callback. Always a generated function with a (ptr)
+    signature: calling a C function such as pn_map_free(Map *) through void (*)(void *) is undefined
+    behaviour in C (UBSan's -fsanitize=function reports it)."""
+    return need(kind, t)
+
+
+def json_fn(t):
+    """A function (ptr out, ptr value) -> ptr out that appends the JSON of a list, map or object."""
+    return need("json", t)
 
 
 def mentions(node, name):
@@ -589,8 +835,6 @@ PHP_FUNCTION_HINTS = {
 
 # PHP words a newcomer (or an AI trained on PHP) will reach for, and what to do instead in Pin
 NOT_IN_PIN = {
-    "class": "classes are not in Pin yet (designed: pin-language/docs design/ownership-v2.md); use functions and maps",
-    "new": "objects are not in Pin yet; use functions and maps",
     "interface": "interfaces are not in Pin yet", "trait": "traits are not in Pin yet",
     "enum": "enums are not in Pin yet; use int or string constants", "abstract": "classes are not in Pin yet",
     "try": "try/catch is not in Pin yet (designed: pin-language/docs design/error-handling.md); check values before "
@@ -704,6 +948,19 @@ declare ptr @pn_json_float(double)
 declare void @pn_http_status(i64)
 declare void @pn_serve(i64, ptr)
 declare double @llvm.sqrt.f64(double)
+declare ptr @pn_obj_new(i64)
+declare void @pn_obj_free(ptr)
+declare void @pn_list_free_with(ptr, ptr)
+declare ptr @pn_list_copy_with(ptr, ptr)
+declare ptr @pn_json_add_list(ptr, ptr, i64)
+declare ptr @pn_json_add_list_with(ptr, ptr, ptr)
+declare ptr @pn_json_add_map(ptr, ptr)
+declare ptr @pn_json_add_map_with(ptr, ptr, ptr)
+declare ptr @pn_json_add_str(ptr, ptr)
+declare ptr @pn_json_add_float(ptr, double)
+declare void @pn_map_free_with(ptr, ptr)
+declare ptr @pn_map_copy_with(ptr, ptr)
+declare void @pn_map_del_with(ptr, i64, ptr)
 """
 
 
@@ -714,7 +971,10 @@ class Module:
         self.lits = {}
         self.funcs = {}         # key ("name" in the main file, "module::name" elsewhere) -> (param types, ret)
         self.exported = {}      # key -> bool
+        self.params = {}        # key -> [(type, name, ref)]
         self.handler = None
+        self.inferring = False  # compiling methods only to find out which ones change $this (R6)
+        self.changed = False
 
     def lit(self, s):
         """A string literal: a constant {len, -1, bytes} the runtime never frees or writes."""
@@ -723,6 +983,12 @@ class Module:
         return self.lits[s]
 
     def header(self):
+        helpers, done = [], set()
+        while len(done) < len(NEEDED):          # helpers may need more helpers (and string literals)
+            for name, (kind, t) in list(NEEDED.items()):
+                if name not in done:
+                    done.add(name)
+                    helpers += gen_helper(self, name, kind, t)
         h = ["; generated by pinac (prototype)", "%List = type { i64, i64, ptr }"]
         for s, name in self.lits.items():
             data = s.encode("utf-8") + b"\0"
@@ -731,10 +997,224 @@ class Module:
             h.append(f'{name} = private unnamed_addr constant {{ i64, i64, [{n} x i8] }} '
                      f'{{ i64 {n - 1}, i64 -1, [{n} x i8] c"{enc}" }}, align 8')
         h.append(RUNTIME_DECLS)
+        h += helpers
         if self.handler:
             h.append('define ptr @pn_user_handler(ptr %m, ptr %p, ptr %b) {\n'
                      f'  %r = call ptr @"f.{self.handler}"(ptr %m, ptr %p, ptr %b)\n  ret ptr %r\n}}')
         return h
+
+
+class Field:
+    def __init__(self, name, type_, vis, default, index, line):
+        self.name, self.type, self.vis, self.default, self.index, self.line = name, type_, vis, default, index, line
+
+
+class Method:
+    def __init__(self, cls, node, params, ret):
+        self.cls, self.node, self.params, self.ret = cls, node, params, ret     # params: (type, name, ref)
+        self.name, self.vis = node.name, node.vis
+        self.changing = node.name == "__construct"     # inferred for the others (ownership-v2.md R6)
+        self.llname = f'@"m.{cls.key}.{node.name}"'
+
+
+class ClassInfo:
+    def __init__(self, node, key, mid, file, imports):
+        self.node, self.name, self.key, self.mid, self.file, self.imports = node, node.name, key, mid, file, imports
+        self.exported = node.exported or not mid
+        self.fields = {}        # name (without $) -> Field, in declaration order (the JSON order)
+        self.methods = {}       # name -> Method
+
+    @property
+    def size(self):
+        return 8 * max(1, len(self.fields))
+
+
+def gen_helper(mod, name, kind, t):
+    """IR for one of the per-type functions lists, maps and objects of lists, maps and objects need."""
+    n = [0]
+    out = []
+
+    def tmp():
+        n[0] += 1
+        return f"%h{n[0]}"
+
+    def emit(x):
+        out.append("  " + x)
+
+    def field_ptr(o, f):
+        p = tmp()
+        emit(f"{p} = getelementptr inbounds i8, ptr {o}, i64 {8 * f.index}")
+        return p
+
+    def load_field(o, f):
+        v = tmp()
+        emit(f"{v} = load {ell(f.type)}, ptr {field_ptr(o, f)}")
+        return v
+
+    def json_value(d, v, ft):
+        r = tmp()
+        if ft == "int":
+            emit(f"{r} = call ptr @pn_str_add_int(ptr {d}, i64 {v})")
+        elif ft == "float":
+            emit(f"{r} = call ptr @pn_json_add_float(ptr {d}, double {v})")
+        elif ft == "bool":
+            b, sel = tmp(), tmp()
+            emit(f"{b} = icmp ne i8 {v}, 0")
+            emit(f"{sel} = select i1 {b}, ptr {mod.lit('true')}, ptr {mod.lit('false')}")
+            emit(f"{r} = call ptr @pn_str_add_str(ptr {d}, ptr {sel})")
+        elif ft == "string":
+            emit(f"{r} = call ptr @pn_json_add_str(ptr {d}, ptr {v})")
+        else:
+            emit(f"{r} = call ptr {json_fn(ft)}(ptr {d}, ptr {v})")
+        return r
+
+    if kind == "free":
+        out.append(f"define internal void {name}(ptr %p) {{")
+        out.append("entry:")
+        if t == "string" or (is_list(t) and not owns_ptr(elem_of(t))) or (is_map(t) and not owns_ptr(map_kv(t)[1])):
+            emit(f"call void {free_fn(t)}(ptr %p)")        # a wrapper with a (ptr) signature, see item_fn
+        elif is_list(t):
+            emit(f"call void @pn_list_free_with(ptr %p, ptr {item_fn('free', elem_of(t))})")
+        elif is_map(t):
+            emit(f"call void @pn_map_free_with(ptr %p, ptr {item_fn('free', map_kv(t)[1])})")
+        else:
+            emit("%z = icmp eq ptr %p, null")
+            emit("br i1 %z, label %done, label %go")
+            out.append("go:")
+            for f in CLASSES[t].fields.values():
+                if is_heap(f.type):
+                    emit(f"call void {free_fn(f.type)}(ptr {load_field('%p', f)})")
+            emit("call void @pn_obj_free(ptr %p)")
+            emit("br label %done")
+            out.append("done:")
+        emit("ret void")
+    elif kind == "copy":
+        out.append(f"define internal ptr {name}(ptr %p) {{")
+        out.append("entry:")
+        if t == "string" or (is_list(t) and elem_of(t) == "string") or (is_map(t) and not owns_ptr(map_kv(t)[1])):
+            emit(f"%r = call ptr {copy_fn(t)}(ptr %p)")
+        elif is_list(t):
+            e = elem_of(t)
+            if owns_ptr(e):
+                emit(f"%r = call ptr @pn_list_copy_with(ptr %p, ptr {item_fn('copy', e)})")
+            else:
+                emit(f"%r = call ptr @pn_list_copy(ptr %p, i64 {esize(e)})")
+        elif is_map(t):
+            emit(f"%r = call ptr @pn_map_copy_with(ptr %p, ptr {item_fn('copy', map_kv(t)[1])})")
+        else:
+            ci = CLASSES[t]
+            emit(f"%r = call ptr @pn_obj_new(i64 {ci.size})")
+            for f in ci.fields.values():
+                v = load_field("%p", f)
+                if is_heap(f.type):
+                    c = tmp()
+                    emit(f"{c} = call ptr {copy_fn(f.type)}(ptr {v})")
+                    v = c
+                emit(f"store {ell(f.type)} {v}, ptr {field_ptr('%r', f)}")
+        emit("ret ptr %r")
+    else:
+        out.append(f"define internal ptr {name}(ptr %d, ptr %p) {{")
+        out.append("entry:")
+        d = "%d"
+        if is_list(t):
+            e = elem_of(t)
+            r = tmp()
+            if owns_ptr(e):
+                emit(f"{r} = call ptr @pn_json_add_list_with(ptr %d, ptr %p, ptr {json_fn(e)})")
+            else:
+                emit(f"{r} = call ptr @pn_json_add_list(ptr %d, ptr %p, i64 {KIND[e]})")
+            d = r
+        elif is_map(t):
+            v = map_kv(t)[1]
+            r = tmp()
+            if owns_ptr(v):
+                emit(f"{r} = call ptr @pn_json_add_map_with(ptr %d, ptr %p, ptr {json_fn(v)})")
+            else:
+                emit(f"{r} = call ptr @pn_json_add_map(ptr %d, ptr %p)")
+            d = r
+        else:
+            public = [f for f in CLASSES[t].fields.values() if f.vis == "public"]
+            if not public:
+                r = tmp()
+                emit(f"{r} = call ptr @pn_str_add_str(ptr %d, ptr {mod.lit('{}')})")
+                d = r
+            for i, f in enumerate(public):
+                key = ("{" if i == 0 else ",") + json_string_literal(f.name) + ":"
+                r = tmp()
+                emit(f"{r} = call ptr @pn_str_add_str(ptr {d}, ptr {mod.lit(key)})")
+                d = json_value(r, load_field("%p", f), f.type)
+            if public:
+                r = tmp()
+                emit(f"{r} = call ptr @pn_str_add_str(ptr {d}, ptr {mod.lit('}')})")
+                d = r
+        emit(f"ret ptr {d}")
+    out.append("}")
+    return out
+
+
+def json_string_literal(s):
+    return '"' + s + '"'          # property names are plain identifiers: nothing to escape
+
+
+def unjsonable(t, seen=()):
+    """The part of type t that json_encode() cannot write, or None. Private properties are left out."""
+    if t in ("db", "rows"):
+        return t
+    if is_list(t):
+        return unjsonable(elem_of(t), seen)
+    if is_map(t):
+        return unjsonable(map_kv(t)[1], seen)
+    if is_class(t) and t not in seen:
+        for f in CLASSES[t].fields.values():
+            if f.vis == "public" and unjsonable(f.type, seen + (t,)):
+                return f"{t}->{f.name} ({f.type})"
+    return None
+
+
+def path_root(e):
+    """The variable a path starts from, and the properties it goes through before its first index:
+    $o->a->b[1]->c  ->  ("$o", ("a", "b")). Paths that start at a function result have no root."""
+    fields = []
+    while True:
+        if e.kind == "var":
+            return e.name, tuple(reversed(fields))
+        if e.kind == "field":
+            fields.append(e.name)
+            e = e.obj
+        elif e.kind in ("index", "append"):
+            fields = []                 # past an index, conflicts are judged on the whole container
+            e = e.seq
+        else:
+            return None, ()
+
+
+def overlaps(a, b):
+    """Two property paths touch the same data when one is a prefix of the other."""
+    k = min(len(a), len(b))
+    return a[:k] == b[:k]
+
+
+def show(e):
+    """Source-like text for a path, for error messages."""
+    k = e.kind
+    if k == "var":
+        return e.name
+    if k == "field":
+        return f"{show(e.obj)}->{e.name}"
+    if k == "index":
+        i = e.idx
+        inner = (i.name if i.kind == "var" else str(i.val) if i.kind == "int" else f'"{i.val}"' if i.kind == "str"
+                 else "...")
+        return f"{show(e.seq)}[{inner}]"
+    if k == "append":
+        return f"{show(e.seq)}[]"
+    if k == "call":
+        return f"{e.name}(...)"
+    if k == "mcall":
+        return f"{show(e.obj)}->{e.name}(...)"
+    if k == "new":
+        return f"new {e.cls}(...)"
+    return "the value"
 
 
 class Loop:
@@ -774,10 +1254,16 @@ class Flow:
 
 
 class FuncGen:
-    def __init__(self, mod, name, params, ret, line, is_main=False, modid="", imports=None):
+    def __init__(self, mod, name, params, ret, line, is_main=False, modid="", imports=None, method=None):
         self.mod, self.name, self.ret, self.line, self.is_main = mod, name, ret, line, is_main
         self.modid, self.imports = modid, imports or {}     # imports: alias -> (module id, file)
         self.key = name if not modid else f"{modid}::{name}"
+        self.method = method
+        self.cls = method.cls if method else None
+        self.is_ctor = bool(method and method.name == "__construct")
+        self.llname = method.llname if method else f'@"f.{self.key}"'
+        if method:
+            self.name = f"{self.cls.name}::{name}"
         self.params = params
         self.allocas, self.inits, self.body = [], [], []
         self.n = 0
@@ -789,10 +1275,29 @@ class FuncGen:
         self.loops = []         # Loop: labels + the flows that leave by break / continue
         self.temps = []         # owned temporaries (value, type) freed at the end of the statement
         self.pending = []       # temporaries that must live until a foreach ends
-        for ptype, pname in params:
-            self.declare(pname, ptype, borrowed=is_heap(ptype))
+        self.slot_over = {}     # variables whose memory is somewhere else: & parameters, foreach & variables
+        self.refs = set()       # those variables: they change the caller's value and own nothing
+        self.borrow_vars = {}   # $u = $users[0]: name -> {(root variable, properties)} it borrows from (R2)
+        self.loop_scope = {}    # foreach variable -> the variables that existed before its loop
+        self.uses = {}          # variable -> [(order, line)] of its reads, from prepare()
+        self.open_loops = []    # loops being generated: (first order, last order, kills)
+        self.at = 0             # order of the statement being generated
+        self.ctor_need = set()  # in __construct: properties without a default, which it must set
+        if method:
+            self.declare("$this", self.cls.key, borrowed=not method.changing)
+            self.flow.assigned.add("$this")
+            self.inits.append(f"  store ptr %arg.this, ptr {self.slot('$this')}")
+            if self.is_ctor:
+                self.ctor_need = {f.name for f in self.cls.fields.values() if f.default is None}
+        for ptype, pname, ref in params:
+            if ref:
+                self.vars[pname] = ptype
+                self.slot_over[pname] = f"%arg.{pname[1:]}"
+                self.refs.add(pname)
+            else:
+                self.declare(pname, ptype, borrowed=is_heap(ptype))
+                self.inits.append(f"  store {llty(ptype)} %arg.{pname[1:]}, ptr {self.slot(pname)}")
             self.flow.assigned.add(pname)
-            self.inits.append(f"  store {llty(ptype)} %arg.{pname[1:]}, ptr {self.slot(pname)}")
 
     @property
     def moved(self):
@@ -829,9 +1334,92 @@ class FuncGen:
         self.emit(f"{r} = call {ret} {fn}({a})" if r else f"call void {fn}({a})")
         return r
 
-    @staticmethod
-    def slot(name):
-        return f"%v.{name[1:]}"
+    def slot(self, name):
+        return self.slot_over.get(name) or f"%v.{name[1:]}"
+
+    # --- the order things happen in, for the borrow checks
+    def prepare(self, nodes):
+        """Number every node in evaluation order (children before their parent) and note where each variable
+        is read. A borrowed variable ($u = $users[0]) blocks changes to what it borrows from only while it is
+        used again later (ownership-v2.md R2); these numbers say what "later" is."""
+        count = [0]
+        self.uses = {}
+
+        def walk(x, target=False):
+            if isinstance(x, (list, tuple)):
+                for y in x:
+                    walk(y)
+                return
+            if not isinstance(x, Node):
+                return
+            first = count[0] + 1
+            if x.kind == "assign":
+                walk(x.val)
+                walk(x.target, target=x.target.kind == "var" and x.op == "=")
+            else:
+                for k, v in list(x.__dict__.items()):
+                    if k not in ("kind", "line", "order", "first", "kills"):
+                        walk(v)
+            count[0] += 1
+            x.order = count[0]
+            if x.kind == "var" and not target:
+                self.uses.setdefault(x.name, []).append((x.order, x.line))
+            if x.kind in ("while", "for", "foreach"):
+                x.first = first
+                body = x.body.body if x.body.kind == "block" else [x.body]
+                x.kills = {}
+                for st in body:     # statements every round runs before anything later in the body
+                    if st.kind == "assign" and st.target.kind == "var" and st.op == "=":
+                        x.kills.setdefault(st.target.name, []).append(st.order)
+                    elif st.kind == "decl":
+                        x.kills.setdefault(st.name, []).append(st.order)
+        walk(nodes)
+
+    def live_use(self, name, at):
+        """Line of a read of `name` that can happen after point `at`, or None."""
+        uses = self.uses.get(name, ())
+        for o, ln in uses:
+            if o > at:
+                return ln
+        for lo, hi, kills in self.open_loops:       # earlier in a loop body: reached again by the next round
+            for o, ln in uses:
+                if lo <= o <= at and not any(lo <= k < o for k in kills.get(name, ())):
+                    return ln
+        return None
+
+    def walked(self, name):
+        return any(r == name for r, _, _ in self.iterating)
+
+    def mutating(self, root, props, line, at=None, what="changed"):
+        """Every change goes through here: `root` is the variable the changed data hangs from, `props` the
+        properties on the way ($o->items[] = ...: "$o", ("items",))."""
+        at = self.at if at is None else at
+        if root == "$this" and self.method:
+            if not self.method.changing:
+                if not self.mod.inferring:
+                    raise CompileError("internal: changing method not inferred", line)
+                self.method.changing = True         # R6: a method that changes $this is a changing method
+                self.mod.changed = True
+        else:
+            self.check_writable(root, line, what)
+        for r, p, ln in self.iterating:
+            if r == root and overlaps(p, props):
+                walked = r + "".join(f"->{x}" for x in p)
+                path = root + "".join(f"->{x}" for x in props)
+                verb = {"appended to": "append to", "sorted": "sort", "moved": "move", "replaced": "replace",
+                        "moved or returned": "move"}.get(what, "call " + what[11:] + " on" if what.startswith(
+                            "changed by ") else "change")
+                raise CompileError(f"cannot {verb} {path} while a foreach is looping over "
+                                   f"{'it' if walked == path else walked + f' (line {ln})'}", line)
+        for b, roots in self.borrow_vars.items():
+            for r, p in roots:
+                if r == root and overlaps(p, props) and b != root:
+                    ln = self.live_use(b, at)
+                    if ln:
+                        raise CompileError(
+                            f"cannot change {root} here: {b} borrows from it and is used again on line {ln}. "
+                            f"Use {b} for the last time before this line, or keep your own value with "
+                            f"{b} = copy(...)", line)
 
     def declare(self, name, t, borrowed=False):
         if name in self.vars:
@@ -846,7 +1434,8 @@ class FuncGen:
             self.inits.append(f"  store ptr null, ptr {self.slot(name)}")
 
     def owned_vars(self):
-        return [(n, t) for n, t in self.vars.items() if is_heap(t) and n not in self.borrowed]
+        return [(n, t) for n, t in self.vars.items()
+                if is_heap(t) and n not in self.borrowed and n not in self.refs and n != "$this"]
 
     def free_owned(self, skip=()):
         for n, t in self.owned_vars():
@@ -866,14 +1455,27 @@ class FuncGen:
 
     def check_writable(self, name, line, what="changed"):
         if name in self.borrowed:
-            kind = "a parameter" if any(p == name for _, p in self.params) else "a foreach variable"
-            fix = f"$copy = {name};" if self.vars[name] == "string" else f"$copy = copy({name});"
-            raise CompileError(f"{name} is {kind} lent to this code, so it cannot be {what}. "
-                               f"Work on a copy instead: {fix}", line)
+            t = self.vars[name]
+            fix = f"$copy = {name};" if t == "string" else f"$copy = copy({name});"
+            if name == "$this":
+                raise CompileError(f"$this cannot be {what} here", line)
+            if name in self.borrow_vars:
+                raise CompileError(f"{name} is borrowed (read-only) from another value, so it cannot be {what}. "
+                                   f"Change the original directly (e.g. $list[$i]->name = ...), or work on "
+                                   f"{fix}", line)
+            if any(p == name for _, p, _ in self.params):
+                amp = ("" if what == "moved or returned" else
+                       f"To change the caller's value declare it as {t} &{name} (and call with &$value); or ")
+                raise CompileError(f"{name} is a parameter lent to this function read-only, so it cannot be {what}. "
+                                   f"{amp or ''}{'work' if amp else 'Work'} on {fix}", line)
+            raise CompileError(f"{name} is a foreach variable lent read-only, so it cannot be {what}. Use "
+                               f"foreach (... as &{name}) to change the items, or work on {fix}", line)
 
     # --- expressions: return (llvm value, type, owned)
     def require_assigned(self, name, line):
         if name not in self.vars:
+            if name == "$this":
+                raise CompileError("$this only exists inside the methods of a class", line)
             raise CompileError(f"variable {name} is used before it is assigned", line)
         if name not in self.flow.assigned and name not in self.moved:
             raise CompileError(
@@ -881,8 +1483,13 @@ class FuncGen:
                 f"value (an if without else, or a loop that can run zero times). Give {name} a value "
                 f"before the if/loop", line)
 
-    def use_var(self, name, line):
+    def use_var(self, name, line, raw=False):
         self.require_assigned(name, line)
+        if name == "$this" and self.ctor_need and not raw:
+            missing = sorted(f for f in self.ctor_need if f"$this->{f}" not in self.flow.assigned)
+            if missing:
+                raise CompileError(f"__construct() uses $this before every property is set (still missing: "
+                                   f"{', '.join('$this->' + m for m in missing)}). Set them first", line)
         if name in self.moved:
             how = "may have been moved" if name in self.flow.maybe else "was moved"
             where = " (on one path of an if or loop)" if name in self.flow.maybe else ""
@@ -916,9 +1523,12 @@ class FuncGen:
             return v
         return self.call("ptr", "@pn_str_dup", f"ptr {v}")
 
-    def owned_value(self, e, hint, line, may_move_string=False):
-        """Evaluate an expression whose result will be stored somewhere: the result must be owned."""
+    def owned_value(self, e, hint, line, may_move_string=False, into=None):
+        """Evaluate an expression whose result will be stored somewhere: the result must be owned.
+        `into`: the variable the result is stored under (it cannot be stored inside itself)."""
         if e.kind == "var" and e.name in self.vars and is_heap(self.vars[e.name]):
+            if into == e.name and self.vars[e.name] != "string":
+                raise CompileError(f"cannot store {e.name} inside itself; store copy({e.name})", line)
             v, t = self.use_var(e.name, line)
             if t == "string":
                 if may_move_string and e.name not in self.borrowed:
@@ -930,15 +1540,22 @@ class FuncGen:
         v, t, owned = self.expr(e, hint)
         if is_heap(t) and not owned:
             if t != "string":
-                raise CompileError("internal: borrowed list/map cannot be stored", line)
+                raise CompileError(f"{show(e)} belongs to the value it is part of and cannot be moved out of it. "
+                                   f"Store copy({show(e)}) to have your own", line)
             v = self.dup_str(v)
         return v, t
 
     def move_out(self, src, line):
+        if src == "$this":
+            raise CompileError("$this cannot be moved or returned; return copy($this) for a separate value", line)
+        if src in self.refs:
+            raise CompileError(f"{src} is lent with & and cannot be moved or returned (the caller keeps it). "
+                               f"Use copy({src})", line)
         if src in self.borrowed:
             self.check_writable(src, line, "moved or returned")
-        if src in self.iterating:
+        if self.walked(src):
             raise CompileError(f"cannot move {src} while a foreach is looping over it", line)
+        self.mutating(src, (), line, what="moved")
         self.moved[src] = line
         self.emit(f"store ptr null, ptr {self.slot(src)}")
 
@@ -991,7 +1608,259 @@ class FuncGen:
             return self.maplit(e, hint)
         if k == "call":
             return self.call_expr(e, hint)
+        if k == "field":
+            return self.field_read(e)
+        if k == "mcall":
+            return self.method_call(e)
+        if k == "new":
+            return self.new_object(e)
+        if k == "ref":
+            raise CompileError("& goes only in front of an argument of a function or method that changes it, "
+                               "e.g. discount(&$order)", e.line)
         raise CompileError(f"cannot use {k} here", e.line)
+
+    # --- classes and paths
+    def rt(self, t, line):
+        """Resolve a type written in this file (class names as written) to its canonical form."""
+        return resolve_type(t, self.modid, self.imports, line)
+
+    def class_of(self, t, line, what):
+        if not is_class(t):
+            raise CompileError(f"{what} needs an object, but this is {t}", line)
+        return CLASSES[t]
+
+    def visible(self, ci, member, vis, line, kind):
+        if vis == "private" and (self.cls is None or self.cls.key != ci.key):
+            raise CompileError(f"{ci.name}::{member} is private: only the methods of {ci.name} can use "
+                               f"{'it' if kind == 'property' else 'this method'}", line)
+
+    def field_info(self, t, name, line):
+        ci = self.class_of(t, line, f"->{name}")
+        f = ci.fields.get(name)
+        if f is None:
+            m = " (it is a method: add parentheses)" if name in ci.methods else ""
+            raise CompileError(f"class {ci.name} has no property ${name}{m}", line)
+        self.visible(ci, "$" + name, f.vis, line, "property")
+        return f
+
+    def field_ptr(self, o, f):
+        p = self.tmp()
+        self.emit(f"{p} = getelementptr inbounds i8, ptr {o}, i64 {8 * f.index}")
+        return p
+
+    def ctor_check_read(self, e):
+        """Inside __construct, a property without a default cannot be read before it is set."""
+        if self.ctor_need and e.obj.kind == "var" and e.obj.name == "$this" and e.name in self.ctor_need \
+                and f"$this->{e.name}" not in self.flow.assigned:
+            raise CompileError(f"__construct() reads $this->{e.name} before setting it on every path", e.line)
+
+    def obj_value(self, e):
+        """The object pointer of a path's base, for reading (borrowed)."""
+        if e.kind == "var":
+            return self.use_var(e.name, e.line, raw=True)
+        return self.borrow(e)
+
+    def field_read(self, e):
+        self.ctor_check_read(e)
+        o, ot = self.obj_value(e.obj)
+        f = self.field_info(ot, e.name, e.line)
+        return self.load_at(self.field_ptr(o, f), f.type, "elem"), f.type, False
+
+    def static_type(self, e):
+        """The type of a path or call without generating code, or None when it cannot be told this way."""
+        k = e.kind
+        if k == "var":
+            return self.vars.get(e.name)
+        if k == "field":
+            ot = self.static_type(e.obj)
+            if ot and is_class(ot):
+                f = CLASSES[ot].fields.get(e.name)
+                return f.type if f else None
+            return None
+        if k in ("index", "append"):
+            st = self.static_type(e.seq)
+            if st and is_list(st):
+                return elem_of(st)
+            if st and is_map(st) and k == "index":
+                return map_kv(st)[1]
+            return None
+        if k == "new":
+            try:
+                return self.rt(e.cls, e.line)
+            except CompileError:
+                return None
+        if k == "mcall":
+            ot = self.static_type(e.obj)
+            if ot and is_class(ot) and e.name in CLASSES[ot].methods:
+                return CLASSES[ot].methods[e.name].ret
+            return None
+        if k == "call" and self.fkey(e, quiet=True):
+            return self.mod.funcs[self.fkey(e, quiet=True)][1]
+        return None
+
+    def load_at(self, p, t, storage):
+        """storage: 'var' (a variable: bool as i1), 'elem' (list item or property: bool as i8), 'slot' (map
+        value: 8 bytes)."""
+        if storage == "slot":
+            return self.load_slot(p, t)
+        if storage == "elem":
+            return self.load_elem(p, t)
+        r = self.tmp()
+        self.emit(f"{r} = load {llty(t)}, ptr {p}")
+        return r
+
+    def store_at(self, p, v, t, storage):
+        if storage == "slot":
+            self.store_slot(p, v, t)
+        elif storage == "elem":
+            self.store_elem(p, v, t)
+        else:
+            self.emit(f"store {llty(t)} {v}, ptr {p}")
+
+    def place(self, e, line, create=False):
+        """The memory a path names, for changing it: (pointer, type, storage). Map entries are created only
+        when `create` (the final step of an assignment); a missing key on the way panics."""
+        k = e.kind
+        if k == "var":
+            self.require_assigned(e.name, line)
+            if e.name in self.moved:
+                self.use_var(e.name, line)              # reports the move
+            return self.slot(e.name), self.vars[e.name], "var"
+        if k == "field":
+            o, ot = self.base_value(e.obj, line)
+            f = self.field_info(ot, e.name, line)
+            return self.field_ptr(o, f), f.type, "elem"
+        if k == "index":
+            b, bt = self.base_value(e.seq, line)
+            if is_list(bt):
+                iv, it = self.borrow(e.idx)
+                if it != "int":
+                    raise CompileError(f"list index must be int but got {it}", line)
+                self.list_bounds(b, iv, line)
+                et = elem_of(bt)
+                return self.list_elem_ptr(b, et, iv), et, "elem"
+            if is_map(bt):
+                _, vt = map_kv(bt)
+                key = self.map_key(bt, e.idx, line)
+                p = self.call("ptr", "@pn_map_slot", f"ptr {b}", f"i64 {key}", f"i64 {int(create)}")
+                if not create:
+                    self.missing_check(p, line)
+                return p, vt, "slot"
+            raise CompileError(f"cannot index a value of type {bt}", line)
+        raise CompileError("can only change a value stored in a variable, a list item, a map entry or a property",
+                           line)
+
+    def base_value(self, e, line):
+        """The container a path step goes into, for changing it."""
+        if e.kind == "var":
+            return self.use_var(e.name, line, raw=True)
+        if e.kind in ("field", "index"):
+            if e.kind == "field":
+                self.ctor_check_read(e)
+            p, t, st = self.place(e, line)
+            return self.load_at(p, t, st), t
+        raise CompileError("can only change a value stored in a variable (this path starts at a function result)",
+                           line)
+
+    def missing_check(self, p, line):
+        c, ok, bad = self.tmp(), self.newlabel("found"), self.newlabel("missing")
+        self.emit(f"{c} = icmp ne ptr {p}, null")
+        self.emit(f"br i1 {c}, label %{ok}, label %{bad}, !prof !10")
+        self.place_label(bad)
+        self.call("void", "@pn_map_missing", f"i32 {line}")
+        self.emit("unreachable")
+        self.place_label(ok)
+
+    def exclusive(self, root, others, line, what):
+        """While `root` is being changed by a call, the call's other arguments may not read it (directly or
+        through a variable that borrows from it): the callee could free what they point at."""
+        borrowers = [b for b, roots in self.borrow_vars.items() if any(r == root for r, _ in roots)]
+        for o in others:
+            for n in [root] + borrowers:
+                if mentions(o, n):
+                    raise CompileError(f"{what}, so the other arguments cannot use {n} at the same time. "
+                                       f"Pass copy(...) of what they need, or read it into a variable first", line)
+
+    def args_for(self, e, params, who):
+        """Evaluate call arguments: read-only borrows, and &-arguments as the address of the caller's value."""
+        if len(e.args) != len(params):
+            raise CompileError(f"{who}() takes {len(params)} argument(s) but got {len(e.args)}", e.line)
+        vals = []
+        for i, (a, (pt, pn, ref)) in enumerate(zip(e.args, params)):
+            if ref:
+                if a.kind != "ref":
+                    raise CompileError(f"{who}() can change its argument {pn}, so write {who}(&{show(a)})" if a.kind
+                                       in ("var", "field", "index") else
+                                       f"{who}() changes its argument {pn}: pass a variable with &, e.g. &$x", e.line)
+                vals.append(f"ptr {self.ref_arg(a.e, pt, e, [x for j, x in enumerate(e.args) if j != i], who)}")
+            else:
+                if a.kind == "ref":
+                    raise CompileError(f"{who}() does not change {pn} (it is not declared {pt} &{pn}); remove the &",
+                                       e.line)
+                v, t = self.borrow(a, pt)
+                vals.append(f"{llty(pt)} {self.coerce(v, t, pt, e.line, f'argument {pn} of {who}()')}")
+        return vals
+
+    def ref_arg(self, a, want, call, others, who):
+        root, props = path_root(a)
+        if root is None or a.kind not in ("var", "field", "index"):
+            raise CompileError("& needs a variable or a path into one, e.g. &$order or &$orders[0]", call.line)
+        if a.kind == "var" and root == "$this":
+            raise CompileError("$this cannot be lent with &; lend the property that changes, e.g. &$this->items",
+                               call.line)
+        t = self.static_type(a)
+        if t is None:
+            self.require_assigned(root, call.line)
+        if t != want:
+            raise CompileError(f"{who}() needs {want} for &{show(a)}, but it is {t}", call.line)
+        if t == "bool" and a.kind != "var":
+            raise CompileError("a bool inside a list, map or object cannot be lent with &; use a variable", call.line)
+        self.mutating(root, props, call.line, at=call.order)
+        self.exclusive(root, others, call.line, f"{who}() changes {show(a)}")
+        p, _, _ = self.place(a, call.line)
+        return p
+
+    def method_call(self, e):
+        ot = self.static_type(e.obj)
+        root, props = path_root(e.obj)
+        if ot is None or root is None:
+            o, ot = self.borrow(e.obj)              # a function result: a temporary that may be changed
+            root = None
+        ci = self.class_of(ot, e.line, f"->{e.name}()")
+        m = ci.methods.get(e.name)
+        if m is None:
+            hint = " (it is a property: drop the parentheses)" if e.name in ci.fields else ""
+            raise CompileError(f"class {ci.name} has no method {e.name}(){hint}", e.line)
+        if m.name == "__construct":
+            raise CompileError("__construct() runs only through new", e.line)
+        self.visible(ci, e.name + "()", m.vis, e.line, "method")
+        if root is not None:
+            if m.changing:
+                self.mutating(root, props, e.line, at=e.order, what=f"changed by {e.name}()")
+                self.exclusive(root, e.args, e.line, f"{e.name}() changes {show(e.obj)}")
+            o, _ = self.obj_value(e.obj) if e.obj.kind != "var" or e.obj.name != "$this" else \
+                self.use_var("$this", e.line)
+        vals = self.args_for(e, m.params, f"{ci.name}::{e.name}")
+        r = self.call(llty(m.ret), m.llname, f"ptr {o}", *vals)
+        return r, m.ret, is_heap(m.ret)
+
+    def new_object(self, e):
+        key = self.rt(e.cls, e.line)
+        if not is_class(key):
+            raise CompileError(f"new needs a class, and {e.cls} is {key}", e.line)
+        ci = CLASSES[key]
+        ctor = ci.methods.get("__construct")
+        if ctor is None and e.args:
+            raise CompileError(f"class {ci.name} has no __construct(), so new {ci.name}() takes no arguments", e.line)
+        if ctor:
+            self.visible(ci, "__construct()", ctor.vis, e.line, "method")
+            vals = self.args_for(e, ctor.params, f"new {ci.name}")
+        o = self.call("ptr", "@pn_obj_new", f"i64 {ci.size}")
+        if any(f.default is not None for f in ci.fields.values()):
+            self.call("void", f'@"init.{key}"', f"ptr {o}")
+        if ctor:
+            self.call("void", ctor.llname, f"ptr {o}", *vals)
+        return o, key, True
 
     # --- strings
     def concat(self, parts, line):
@@ -1074,22 +1943,30 @@ class FuncGen:
         et = None
         vals = []
         if e.items:
-            vals = [self.borrow(i) for i in e.items]
-            types = {t for _, t in vals}
+            ih = elem_of(hint) if hint and is_list(hint) else None
+            for i in e.items:
+                probe = self.static_type(i) if i.kind in ("var", "field", "index") else None
+                if (probe and is_heap(probe)) or i.kind in ("listlit", "maplit", "new", "call", "mcall"):
+                    vals.append(self.owned_value(i, ih, e.line) + (True,))     # the list owns what it holds
+                else:
+                    vals.append(self.borrow(i, ih) + (False,))
+            types = {t for _, t, _ in vals}
             et = "float" if types == {"int", "float"} else (types.pop() if len(types) == 1 else None)
-            if et not in ELEM_SIZE:
-                raise CompileError("list items must all be int, float or bool "
-                                   f"(got {', '.join(sorted({t for _, t in vals}))})", e.line)
+            if et is None:
+                raise CompileError("list items must all have the same type "
+                                   f"(got {', '.join(sorted({t for _, t, _ in vals}))})", e.line)
+            if et in ("void", "db", "rows"):
+                raise CompileError(f"a list cannot hold {et} values", e.line)
         elif hint and is_list(hint):
             et = elem_of(hint)
         else:
             raise CompileError("an empty [] needs a type, e.g.  list<int> $a = [];  or  map<string,int> $m = [];", e.line)
-        r = self.call("ptr", "@pn_list_new", f"i64 {ELEM_SIZE[et]}")
-        for v, t in vals:
+        r = self.call("ptr", "@pn_list_new", f"i64 {esize(et)}")
+        for v, t, owned in vals:
             v = self.coerce(v, t, et, e.line, "list item")
-            if et == "string":
+            if et == "string" and not owned:
                 v = self.dup_str(v)             # the list owns its strings
-            self.call("void", "@pn_list_push", f"ptr {r}", f"i64 {ELEM_SIZE[et]}", f"i64 {self.to_bits(v, et)}")
+            self.call("void", "@pn_list_push", f"ptr {r}", f"i64 {esize(et)}", f"i64 {self.to_bits(v, et)}")
         return r, f"list<{et}>", True
 
     def to_bits(self, v, et):
@@ -1098,7 +1975,7 @@ class FuncGen:
         r = self.tmp()
         if et == "float":
             self.emit(f"{r} = bitcast double {v} to i64")
-        elif et == "string":
+        elif is_heap(et):
             self.emit(f"{r} = ptrtoint ptr {v} to i64")
         else:
             self.emit(f"{r} = zext i1 {v} to i64")
@@ -1119,13 +1996,13 @@ class FuncGen:
         dp, d, p = self.tmp(), self.tmp(), self.tmp()
         self.emit(f"{dp} = getelementptr inbounds %List, ptr {lst}, i32 0, i32 2")
         self.emit(f"{d} = load ptr, ptr {dp}, !tbaa !2")
-        self.emit(f"{p} = getelementptr inbounds {ELEM_LL[et]}, ptr {d}, i64 {iv}")
+        self.emit(f"{p} = getelementptr inbounds {ell(et)}, ptr {d}, i64 {iv}")
         return p
 
     def load_elem(self, p, et):
         r = self.tmp()
         tb = f", !tbaa {ELEM_TBAA[et]}" if et in ELEM_TBAA else ""
-        self.emit(f"{r} = load {ELEM_LL[et]}, ptr {p}{tb}")
+        self.emit(f"{r} = load {ell(et)}, ptr {p}{tb}")
         if et == "bool":
             b = self.tmp()
             self.emit(f"{b} = icmp ne i8 {r}, 0")
@@ -1138,7 +2015,7 @@ class FuncGen:
             z = self.tmp()
             self.emit(f"{z} = zext i1 {v} to i8")
             v = z
-        self.emit(f"store {ELEM_LL[et]} {v}, ptr {p}{tb}")
+        self.emit(f"store {ell(et)} {v}, ptr {p}{tb}")
 
     # --- maps: values live in 8-byte slots
     def map_key(self, m_t, key_e, line):
@@ -1190,13 +2067,13 @@ class FuncGen:
                 v, t = self.owned_value(ve, vt, e.line)
                 if vt is None:
                     vt = t
-                    if vt not in KIND:
-                        raise CompileError(f"map values must be int, float, bool or string, not {vt}", e.line)
+                    if vt in ("void", "db", "rows"):
+                        raise CompileError(f"a map cannot hold {vt} values", e.line)
                     mt = f"map<{kt},{vt}>"
-                    m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {KIND[vt]}")
+                    m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {kind_of(vt)}")
                 elif m is None:
                     mt = f"map<{kt},{vt}>"
-                    m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {KIND[vt]}")
+                    m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {kind_of(vt)}")
                 if t != vt and not (t == "int" and vt == "float"):
                     raise CompileError(
                         f"a map holds one value type: this literal is {mt} (from its first value), but a value "
@@ -1205,15 +2082,15 @@ class FuncGen:
                 v = self.coerce(v, t, vt, e.line, "map value")
                 key = self.map_key(mt, ke, e.line)
                 p = self.call("ptr", "@pn_map_slot", f"ptr {m}", f"i64 {key}", "i64 1")
-                if vt == "string":
+                if is_heap(vt):
                     old = self.load_slot(p, vt)
-                    self.call("void", "@pn_str_free", f"ptr {old}")
+                    self.call("void", free_fn(vt), f"ptr {old}")
                 self.store_slot(p, v, vt)
             return m, mt, True
         if not (hint and is_map(hint)):
             raise CompileError("an empty [] needs a type, e.g.  map<string,int> $m = [];", e.line)
         kt, vt = map_kv(hint)
-        return self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {KIND[vt]}"), hint, True
+        return self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {kind_of(vt)}"), hint, True
 
     def expr_type_probe(self, e):
         """Type of a simple key expression without generating code twice."""
@@ -1243,8 +2120,8 @@ class FuncGen:
         return "int"
 
     def seq_of(self, e, line):
-        if e.kind not in ("var", "call"):
-            raise CompileError("can only index a variable or a function result", line)
+        if e.kind not in ("var", "call", "field", "index", "mcall"):
+            raise CompileError("can only index a variable, a property or a function result", line)
         return self.borrow(e)
 
     def index_read(self, e):
@@ -1261,13 +2138,7 @@ class FuncGen:
             _, vt = map_kv(st)
             key = self.map_key(st, e.idx, e.line)
             p = self.call("ptr", "@pn_map_slot", f"ptr {seq}", f"i64 {key}", "i64 0")
-            c, ok, bad = self.tmp(), self.newlabel("found"), self.newlabel("missing")
-            self.emit(f"{c} = icmp ne ptr {p}, null")
-            self.emit(f"br i1 {c}, label %{ok}, label %{bad}, !prof !10")
-            self.place_label(bad)
-            self.call("void", "@pn_map_missing", f"i32 {e.line}")
-            self.emit("unreachable")
-            self.place_label(ok)
+            self.missing_check(p, e.line)
             return self.load_slot(p, vt), vt, False
         if st == "string":
             raise CompileError("use substr($s, $i, 1) to read one character", e.line)
@@ -1296,6 +2167,9 @@ class FuncGen:
             self.emit(f"{c} = icmp ult i64 {iv}, {ln}")
         else:
             raise CompileError(f"?? needs a list or map, not {st}", e.line)
+        if owns_ptr(vt):
+            raise CompileError(f"?? works on items that are numbers, bools or strings; these are {vt}. Check with "
+                               f"isset() first", e.line)
         self.emit(f"br i1 {c}, label %{has}, label %{dflt}")
         self.place_label(has)
         v1 = self.load_slot(p, vt) if is_map(st) else self.load_elem(self.list_elem_ptr(seq, vt, iv), vt)
@@ -1410,6 +2284,9 @@ class FuncGen:
                 self.emit(f"{b} = icmp {cc} i64 {r}, 0")
                 return b, "bool", False
             raise CompileError(f"'{op}' does not work on strings" + (" (use . to join strings)" if op == "+" else ""), e.line)
+        if is_class(lt) or is_class(rt):
+            raise CompileError(f"'{op}' does not work on objects; compare their properties, e.g. $a->id == $b->id",
+                               e.line)
         if lt == "bool" and rt == "bool" and op in ("==", "!="):
             r = self.tmp()
             self.emit(f"{r} = icmp {'eq' if op == '==' else 'ne'} i1 {lv}, {rv}")
@@ -1501,7 +2378,7 @@ class FuncGen:
 
     def params_arg(self, e, i):
         v, t = self.borrow(e.args[i], "list<string>")
-        if not is_list(t) or elem_of(t) == "bool":
+        if not is_list(t) or elem_of(t) not in ("int", "float", "string"):
             raise CompileError(f"{e.name}() argument {i + 1} must be a list of values for the ? placeholders "
                                f'(list<string>, list<int> or list<float>), e.g. ["tea", "2"]; got {t}', e.line)
         return v, KIND[elem_of(t)]
@@ -1579,13 +2456,8 @@ class FuncGen:
             hint = PHP_FUNCTION_HINTS.get(name)
             raise CompileError(f"unknown function {name}()" + (f": {hint}" if hint else
                                ". See the built-in list in the AI guide, github.com/pin-language/docs"), e.line)
-        ptypes, ret = self.mod.funcs[key]
-        if len(args) != len(ptypes):
-            raise CompileError(f"{name}() takes {len(ptypes)} argument(s) but got {len(args)}", e.line)
-        vals = []
-        for a, pt in zip(args, ptypes):
-            v, t = self.borrow(a, pt)     # heap values are lent to the callee
-            vals.append(f"{llty(pt)} {self.coerce(v, t, pt, e.line, f'argument of {name}()')}")
+        _, ret = self.mod.funcs[key]
+        vals = self.args_for(e, self.mod.params[key], name)   # heap values are lent to the callee
         r = self.call(llty(ret), f'@"f.{key}"', *vals)
         return r, ret, is_heap(ret)
 
@@ -1634,15 +2506,16 @@ class FuncGen:
         if name == "copy":
             self.argc(e, 1)
             v, t = self.borrow(args[0])
-            if is_list(t):
-                if elem_of(t) == "string":
-                    return self.call("ptr", "@pn_list_copy_str", f"ptr {v}"), t, True
-                return self.call("ptr", "@pn_list_copy", f"ptr {v}", f"i64 {ELEM_SIZE[elem_of(t)]}"), t, True
-            if is_map(t):
-                return self.call("ptr", "@pn_map_copy", f"ptr {v}"), t, True
             if t == "string":
                 return self.dup_str(v), t, not v.startswith("@.L")
-            raise CompileError(f"copy() needs a list, map or string but got {t}", e.line)
+            if is_list(t) and not owns_ptr(elem_of(t)) and elem_of(t) != "string":
+                return self.call("ptr", "@pn_list_copy", f"ptr {v}", f"i64 {esize(elem_of(t))}"), t, True
+            if owns_ptr(t):
+                bad = uncopyable(t)
+                if bad:
+                    raise CompileError(f"copy() cannot copy {t}: it holds {bad}, which cannot be copied", e.line)
+                return self.call("ptr", copy_fn(t), f"ptr {v}"), t, True
+            raise CompileError(f"copy() needs a list, map, object or string but got {t}", e.line)
         if name in ("strval",):
             self.argc(e, 1)
             v, t = self.borrow(args[0])
@@ -1687,20 +2560,22 @@ class FuncGen:
             self.argc(e, 2)
             g = self.str_arg(e, 0)
             v, t = self.borrow(args[1])
-            if not is_list(t) or elem_of(t) == "bool":
+            if not is_list(t) or elem_of(t) not in ("int", "float", "string"):
                 raise CompileError(f"implode() needs a list<string>, list<int> or list<float> but got {t}", e.line)
             return self.call("ptr", "@pn_implode", f"ptr {g}", f"ptr {v}", f"i64 {KIND[elem_of(t)]}"), "string", True
         if name in ("sort", "rsort"):
             self.argc(e, 1)
             a = args[0]
-            if a.kind != "var":
+            root, props = path_root(a)
+            if root is None or a.kind not in ("var", "field", "index"):
                 raise CompileError(f"{name}() sorts a list variable in place, e.g. {name}($xs);", e.line)
-            v, t = self.use_var(a.name, e.line)
+            t = self.static_type(a) or self.use_var(root, e.line)[1]
             if not is_list(t):
-                raise CompileError(f"{name}() needs a list but {a.name} is {t}", e.line)
-            self.check_writable(a.name, e.line, "sorted")
-            if a.name in self.iterating:
-                raise CompileError(f"cannot sort {a.name} while a foreach is looping over it", e.line)
+                raise CompileError(f"{name}() needs a list but {show(a)} is {t}", e.line)
+            if elem_of(t) not in KIND:
+                raise CompileError(f"{name}() sorts lists of int, float, bool or string; {show(a)} is {t}", e.line)
+            self.mutating(root, props, e.line, at=e.order, what="sorted")
+            v, _ = self.base_value(a, e.line)
             self.call("void", "@pn_list_sort", f"ptr {v}", f"i64 {KIND[elem_of(t)]}", f"i64 {int(name == 'rsort')}")
             return None, "void", False
         if name == "url_path":
@@ -1736,6 +2611,13 @@ class FuncGen:
         if name == "json_encode":
             self.argc(e, 1)
             v, t = self.borrow(args[0])
+            if owns_ptr(t) and (is_class(t) or owns_ptr(elem_of(t) if is_list(t) else map_kv(t)[1])):
+                bad = unjsonable(t)
+                if bad:
+                    raise CompileError(f"json_encode() cannot write {bad}; make that property private to leave "
+                                       f"it out", e.line)
+                d = self.call("ptr", "@pn_str_new", "i64 64")
+                return self.call("ptr", json_fn(t), f"ptr {d}", f"ptr {v}"), "string", True
             if is_list(t):
                 return self.call("ptr", "@pn_json_list", f"ptr {v}", f"i64 {KIND[elem_of(t)]}"), "string", True
             if is_map(t):
@@ -1776,18 +2658,21 @@ class FuncGen:
         if name == "unset":
             self.argc(e, 1)
             a = args[0]
-            if a.kind != "index" or a.seq.kind != "var":
+            root, props = path_root(a)
+            if a.kind != "index" or root is None:
                 raise CompileError("unset() needs a map entry, e.g. unset($m[$k])", e.line)
-            mname = a.seq.name
-            m, mt = self.use_var(mname, e.line)
-            if not is_map(mt):
-                raise CompileError(f"unset() works on maps; {mname} is {mt}. To drop items from a list, "
+            mt = self.static_type(a.seq)
+            if mt is None or not is_map(mt):
+                raise CompileError(f"unset() works on maps; {show(a.seq)} is {mt}. To drop items from a list, "
                                    f"build a new list without them in a loop", e.line)
-            self.check_writable(mname, e.line)
-            if mname in self.iterating:
-                raise CompileError(f"cannot change {mname} while a foreach is looping over it", e.line)
+            self.mutating(root, props, e.line, at=e.order)
+            m, _ = self.base_value(a.seq, e.line)
             key = self.map_key(mt, a.idx, e.line)
-            self.call("void", "@pn_map_del", f"ptr {m}", f"i64 {key}")
+            vt = map_kv(mt)[1]
+            if owns_ptr(vt):
+                self.call("void", "@pn_map_del_with", f"ptr {m}", f"i64 {key}", f"ptr {item_fn('free', vt)}")
+            else:
+                self.call("void", "@pn_map_del", f"ptr {m}", f"i64 {key}")
             return None, "void", False
         if name == "http_status":
             self.argc(e, 1)
@@ -1815,11 +2700,14 @@ class FuncGen:
             for x in s.body:
                 self.stmt(x)
             return
+        self.at = getattr(s, "order", self.at)
         if k == "decl":
-            if s.name in self.vars and self.vars[s.name] != s.vtype:
+            vt = self.rt(s.vtype, s.line)
+            if s.name in self.vars and self.vars[s.name] != vt:
                 raise CompileError(f"{s.name} is already {self.vars[s.name]}; a variable keeps one type", s.line)
-            self.declare(s.name, s.vtype)
-            self.assign_var(s.name, s.val, s.line)
+            if not self.is_borrow(s.name, s.val):
+                self.declare(s.name, vt)
+            self.assign_var(s.name, s.val, s.line, want=vt)
         elif k == "assign":
             self.assign(s)
         elif k == "exprstmt":
@@ -1839,15 +2727,16 @@ class FuncGen:
                     elif t == "bool":
                         self.call("void", "@pn_print_str", f"ptr {self.bool_str(v)}")
                     else:
-                        raise CompileError(f"cannot echo a {t} (use json_encode())", s.line)
+                        raise CompileError(f"cannot echo {'an object ' + t if is_class(t) else 'a ' + t} (use json_encode())", s.line)
         elif k == "if":
             self.if_(s)
         elif k == "while":
-            self.loop(s.cond, None, s.body)
+            self.loop(s.cond, None, s.body, s)
         elif k == "for":
             if s.init:
                 self.stmt(s.init)
-            self.loop(s.cond, s.step, s.body)
+                self.at = s.order
+            self.loop(s.cond, s.step, s.body, s)
         elif k == "foreach":
             self.foreach(s)
         elif k in ("break", "continue"):
@@ -1864,12 +2753,52 @@ class FuncGen:
             raise CompileError(f"unknown statement {k}", s.line)
         self.flush_temps()
 
-    def assign_var(self, name, val_e, line):
+    def is_borrow(self, name, val_e):
+        """$u = $users[0] / $items = $o->items: a list, map or object read through a path is borrowed (D2)."""
+        if val_e.kind not in ("field", "index"):
+            return False
+        vt = self.static_type(val_e)
+        return bool(vt and owns_ptr(vt) and (name not in self.vars or name in self.borrow_vars))
+
+    def assign_borrow(self, name, val_e, line, want=None):
+        root, props = path_root(val_e)
+        if root is None:
+            raise CompileError(f"{show(val_e)} is part of a temporary value that is gone after this line; store "
+                               f"the function result in a variable first, or use copy({show(val_e)})", line)
+        vt = self.static_type(val_e)
+        if want and vt != want:
+            raise CompileError(f"{name} is declared {want} but {show(val_e)} is {vt}", line)
+        if name in self.vars and self.vars[name] != vt:
+            raise CompileError(f"{name} is already {self.vars[name]}; a variable keeps one type", line)
+        roots = set(self.borrow_vars[root]) if root in self.borrow_vars else {(root, props)}
+        for r, _ in roots:
+            if r in self.loop_scope and name in self.loop_scope[r]:
+                raise CompileError(f"{name} exists outside the foreach that owns {r}, so it cannot borrow from "
+                                   f"{r} (that borrow would outlive the loop). Use a variable first assigned "
+                                   f"inside the loop, or {name} = copy({show(val_e)})", line)
+        v, _ = self.borrow(val_e)
+        self.declare(name, vt, borrowed=True)
+        self.borrow_vars.setdefault(name, set()).update(roots)
+        self.emit(f"store ptr {v}, ptr {self.slot(name)}")
+        self.moved.pop(name, None)
+        self.flow.maybe.discard(name)
+        self.flow.assigned.add(name)
+
+    def assign_var(self, name, val_e, line, want=None):
+        if name == "$this":
+            raise CompileError("$this cannot be assigned", line)
+        if self.is_borrow(name, val_e):
+            return self.assign_borrow(name, val_e, line, want)
+        if name in self.borrow_vars:
+            raise CompileError(f"{name} borrows from another value, so it cannot hold this new value. Use a new "
+                               f"variable name", line)
         if name in self.borrowed:
             self.check_writable(name, line)
         t = self.vars.get(name)
-        if t and is_heap(t) and name in self.iterating:
+        if t and is_heap(t) and self.walked(name):
             raise CompileError(f"cannot replace {name} while a foreach is looping over it", line)
+        if t and is_heap(t) and name in self.vars:
+            self.mutating(name, (), line, what="replaced")
         if t is None and val_e.kind == "call" and self.fkey(val_e, quiet=True) and is_heap(self.mod.funcs[self.fkey(val_e, quiet=True)][1]):
             # a first assignment inside a loop still runs many times: declare now so the
             # previous round's value can be freed before the new one is built
@@ -1880,7 +2809,7 @@ class FuncGen:
             # ownership tells us the old value is dead right now: free it before building the new one
             self.free_var(name, t)
             early = True
-        v, vt = self.owned_value(val_e, t, line)
+        v, vt = self.owned_value(val_e, t, line, into=name)
         if t is None:
             if vt == "void":
                 raise CompileError("cannot assign the result of a void function", line)
@@ -1934,22 +2863,22 @@ class FuncGen:
             v = self.coerce(v, t, vt, s.line, f"assigning to {name}")
             self.emit(f"store {llty(vt)} {v}, ptr {self.slot(name)}")
             return
-        if tg.seq.kind != "var":
-            raise CompileError("can only assign into a list or map variable", s.line)
+        if tg.kind == "field" or tg.seq.kind != "var" or tg.seq.name == "$this":
+            return self.assign_path(s)
         name = tg.seq.name
         self.require_assigned(name, s.line)
         if name in self.moved:
             self.use_var(name, s.line)          # reports the move
         st = self.vars[name]
-        self.check_writable(name, s.line)
+        self.mutating(name, (), s.line, what="appended to" if tg.kind == "append" else "changed")
         if tg.kind == "append":
-            if name in self.iterating:
+            if self.walked(name):
                 raise CompileError(f"cannot append to {name} while a foreach is looping over it", s.line)
             if not is_list(st):
                 raise CompileError(f"{name} is {st}; $a[] = value appends to lists only", s.line)
             et = elem_of(st)
-            if et == "string":
-                v, t = self.owned_value(s.val, et, s.line)    # the list owns what it holds
+            if is_heap(et):
+                v, t = self.owned_value(s.val, et, s.line, into=name)    # the list owns what it holds
             else:
                 v, t = self.borrow(s.val)
             v = self.coerce(v, t, et, s.line, f"appending to {name}")
@@ -1962,7 +2891,7 @@ class FuncGen:
             self.emit(f"{full} = icmp eq i64 {ln}, {cp}")
             self.emit(f"br i1 {full}, label %{grow}, label %{fast}, !prof !11")
             self.place_label(grow)
-            self.call("void", "@pn_list_grow", f"ptr {lst}", f"i64 {ELEM_SIZE[et]}")
+            self.call("void", "@pn_list_grow", f"ptr {lst}", f"i64 {esize(et)}")
             self.place_label(fast)
             self.store_elem(self.list_elem_ptr(lst, et, ln), v, et)
             n2 = self.tmp()
@@ -1971,24 +2900,25 @@ class FuncGen:
             return
         # $x[$i] op= value — the value is computed first, so no pointer into the container is held
         # while other code runs
-        if is_list(st) and elem_of(st) == "string":
-            if name in self.iterating:
+        if is_list(st) and is_heap(elem_of(st)):
+            et = elem_of(st)
+            if self.walked(name):
                 raise CompileError(f"cannot change {name} while a foreach is looping over it", s.line)
-            if op not in ("=", ".="):
+            if op not in ("=", ".=") or (op == ".=" and et != "string"):
                 raise CompileError(f"'{op}' needs numbers; {name} is {st}", s.line)
-            v, t = self.owned_value(s.val, "string", s.line) if op == "=" else self.borrow(s.val)
-            if t != "string":
-                raise CompileError(f"storing into {name}: expected string but got {t}", s.line)
+            v, t = self.owned_value(s.val, et, s.line, into=name) if op == "=" else self.borrow(s.val)
+            if t != et:
+                raise CompileError(f"storing into {name}: expected {et} but got {t}", s.line)
             lst, _ = self.use_var(name, s.line)
             iv, it = self.borrow(tg.idx)
             if it != "int":
                 raise CompileError(f"list index must be int but got {it}", s.line)
             self.list_bounds(lst, iv, s.line)
-            p = self.list_elem_ptr(lst, "string", iv)
-            cur = self.load_elem(p, "string")
+            p = self.list_elem_ptr(lst, et, iv)
+            cur = self.load_elem(p, et)
             if op == "=":
-                self.call("void", "@pn_str_free", f"ptr {cur}")
-                self.store_elem(p, v, "string")
+                self.call("void", free_fn(et), f"ptr {cur}")
+                self.store_elem(p, v, et)
             else:
                 self.store_elem(p, self.call("ptr", "@pn_str_add_str", f"ptr {cur}", f"ptr {v}"), "string")
             return
@@ -2009,11 +2939,11 @@ class FuncGen:
             self.store_elem(p, self.coerce(v, t, et, s.line, f"storing into {name}"), et)
             return
         if is_map(st):
-            if name in self.iterating:
+            if self.walked(name):
                 raise CompileError(f"cannot change {name} while a foreach is looping over it", s.line)
             _, vt = map_kv(st)
             if op == "=":
-                v, t = self.owned_value(s.val, vt, s.line)
+                v, t = self.owned_value(s.val, vt, s.line, into=name)
             else:
                 v, t = self.borrow(s.val)
             m, _ = self.use_var(name, s.line)
@@ -2021,9 +2951,9 @@ class FuncGen:
             p = self.call("ptr", "@pn_map_slot", f"ptr {m}", f"i64 {key}", "i64 1")
             if op == "=":
                 v = self.coerce(v, t, vt, s.line, f"storing into {name}")
-                if vt == "string":
+                if is_heap(vt):
                     old = self.load_slot(p, vt)
-                    self.call("void", "@pn_str_free", f"ptr {old}")
+                    self.call("void", free_fn(vt), f"ptr {old}")
                 self.store_slot(p, v, vt)
             elif op == ".=":
                 if vt != "string" or t != "string":
@@ -2037,6 +2967,68 @@ class FuncGen:
                 self.store_slot(p, self.coerce(v, t, vt, s.line, f"storing into {name}"), vt)
             return
         raise CompileError(f"cannot assign into a {st}", s.line)
+
+    def assign_path(self, s):
+        """$o->total += 5;  $users[0]->name = "x";  $o->items[] = "tea";  $m["a"]["b"] = 1;"""
+        tg, op, line = s.target, s.op, s.line
+        root, props = path_root(tg)
+        if root is None:
+            raise CompileError("can only change a value stored in a variable (this path starts at a function result)",
+                               line)
+        self.require_assigned(root, line)
+        if tg.kind == "append":
+            st = self.static_type(tg.seq)
+            if st is None:
+                self.place(tg.seq, line)
+            if not is_list(st):
+                raise CompileError(f"{show(tg.seq)} is {st}; $a[] = value appends to lists only", line)
+            tt = elem_of(st)
+        else:
+            tt = self.static_type(tg)
+            if tt is None:
+                self.place(tg, line)            # reports what is wrong with the path
+                raise CompileError(f"cannot assign to {show(tg)}", line)
+        if getattr(s, "promoted", False) and owns_ptr(tt):
+            raise CompileError(f"a promoted constructor parameter cannot be {tt}: Pin would have to copy it. Declare "
+                               f"the property in the class and write $this->{tg.name} = copy(${tg.name}); "
+                               f"in __construct()", line)
+        self.mutating(root, props, line, at=s.order, what="appended to" if tg.kind == "append" else "changed")
+        this_field = tg.kind == "field" and tg.obj.kind == "var" and tg.obj.name == "$this"
+        if op == "=":
+            if is_heap(tt):
+                v, vt = self.owned_value(s.val, tt, line, into=root)
+            else:
+                v, vt = self.borrow(s.val, tt)
+            v = self.coerce(v, vt, tt, line, f"storing into {show(tg)}")
+            if tg.kind == "append":
+                lst, _ = self.base_value(tg.seq, line)
+                self.call("void", "@pn_list_push", f"ptr {lst}", f"i64 {esize(tt)}", f"i64 {self.to_bits(v, tt)}")
+                return
+            p, t, st = self.place(tg, line, create=True)
+            if is_heap(t):
+                self.call("void", free_fn(t), f"ptr {self.load_at(p, t, st)}")
+            self.store_at(p, v, t, st)
+            if this_field:
+                self.flow.assigned.add(f"$this->{tg.name}")
+            return
+        if tg.kind == "append":
+            raise CompileError("use $a[] = value to append", line)
+        if this_field:
+            self.ctor_check_read(tg)
+        if op == ".=":
+            if tt != "string":
+                raise CompileError(f"'.=' needs a string; {show(tg)} is {tt}", line)
+            rv, _ = self.owned_value(s.val, "string", line)
+            self.temps.append((rv, "string"))
+            p, t, st = self.place(tg, line, create=True)
+            self.store_at(p, self.call("ptr", "@pn_str_add_str", f"ptr {self.load_at(p, t, st)}", f"ptr {rv}"), t, st)
+            return
+        if tt not in ("int", "float"):
+            raise CompileError(f"'{op}' needs a number; {show(tg)} is {tt}", line)
+        v, vt = self.borrow(s.val)
+        p, t, st = self.place(tg, line, create=True)
+        r, rt = self.arith(self.load_at(p, t, st), t, v, vt, op, line)
+        self.store_at(p, self.coerce(r, rt, t, line, f"storing into {show(tg)}"), t, st)
 
     def arith(self, a, at, b, bt, op, line):
         if at not in ("int", "float") or bt not in ("int", "float"):
@@ -2076,9 +3068,10 @@ class FuncGen:
         self.place_label(end)
         self.flow = Flow.merge([then_flow, self.flow], start)
 
-    def loop(self, cond, step, body):
+    def loop(self, cond, step, body, node):
         head, bodyl, stepl, end = (self.newlabel(x) for x in ("loop", "body", "step", "endloop"))
         head_flow = self.flow.copy()
+        self.open_loops.append((node.first, node.order, node.kills))
         self.place_label(head)
         if cond is not None:
             v = self.cond(cond)
@@ -2095,6 +3088,7 @@ class FuncGen:
         self.check_back_edge(head_flow)
         self.emit(f"br label %{head}")
         self.place_label(end)
+        self.open_loops.pop()
         forever = cond is None or (cond.kind == "bool" and cond.val)
         self.flow = Flow.merge(lp.breaks + ([] if forever else [head_flow]), head_flow)
 
@@ -2118,6 +3112,17 @@ class FuncGen:
         self.declare(name, t, borrowed=is_heap(t))
 
     def foreach(self, s):
+        ref = getattr(s, "ref", False)
+        root, props = path_root(s.seq) if s.seq.kind in ("var", "field", "index") else (None, ())
+        if ref:
+            if root is None:
+                raise CompileError("foreach with & changes the items in place, so it needs a variable or a "
+                                   "property, e.g. foreach ($users as &$u)", s.line)
+            self.require_assigned(root, s.line)
+            self.mutating(root, props, s.line, at=s.seq.order)
+            if s.var in self.vars:
+                raise CompileError(f"{s.var} is already used in this function; give the & foreach variable a new "
+                                   f"name", s.line)
         mark = len(self.temps)
         seq, st = self.borrow(s.seq)
         mine = self.temps[mark:]           # a temporary being walked over lives until the loop ends
@@ -2129,16 +3134,26 @@ class FuncGen:
             kt, vt = "int", elem_of(st)
         else:
             kt, vt = map_kv(st)
+        before = set(self.vars)
         if s.key:
             self.loop_var(s.key, kt, s.line)
-        self.loop_var(s.var, vt, s.line)
+        if ref:
+            if vt == "bool":
+                raise CompileError("foreach with & does not work on bools yet; assign by index: $xs[$i] = ...",
+                                   s.line)
+            self.vars[s.var] = vt
+            self.refs.add(s.var)
+        else:
+            self.loop_var(s.var, vt, s.line)
+        if is_heap(vt):
+            self.loop_scope[s.var] = before
         pos = f"%v.__pos{self.n}"
         self.n += 1
         self.allocas.append(f"  {pos} = alloca i64")
         self.emit(f"store i64 0, ptr {pos}")
-        walked = s.seq.name if s.seq.kind == "var" else None
+        walked = root is not None
         if walked:
-            self.iterating.append(walked)
+            self.iterating.append((root, props, s.line))
         head_flow = self.flow.copy()
         head, bodyl, stepl, end = (self.newlabel(x) for x in ("fe", "febody", "festep", "feend"))
         self.place_label(head)
@@ -2150,8 +3165,11 @@ class FuncGen:
             self.emit(f"{c} = icmp slt i64 {i}, {n}")
             self.emit(f"br i1 {c}, label %{bodyl}, label %{end}")
             self.place_label(bodyl)
-            v = self.load_elem(self.list_elem_ptr(seq, vt, i), vt)
-            self.emit(f"store {llty(vt)} {v}, ptr {self.slot(s.var)}")
+            ep = self.list_elem_ptr(seq, vt, i)
+            if ref:
+                self.slot_over[s.var] = ep          # the variable is the item itself
+            else:
+                self.emit(f"store {llty(vt)} {self.load_elem(ep, vt)}, ptr {self.slot(s.var)}")
             if s.key:
                 self.emit(f"store i64 {i}, ptr {self.slot(s.key)}")
             nxt = self.tmp()
@@ -2167,7 +3185,10 @@ class FuncGen:
             self.emit(f"{vp} = getelementptr inbounds i8, ptr {ent}, i64 16")
             if s.key:
                 self.emit(f"store {llty(kt)} {self.load_slot(kp, kt)}, ptr {self.slot(s.key)}")
-            self.emit(f"store {llty(vt)} {self.load_slot(vp, vt)}, ptr {self.slot(s.var)}")
+            if ref:
+                self.slot_over[s.var] = vp
+            else:
+                self.emit(f"store {llty(vt)} {self.load_slot(vp, vt)}, ptr {self.slot(s.var)}")
             nxt = self.tmp()
             self.emit(f"{nxt} = add i64 {idx}, 1")
         self.emit(f"store i64 {nxt}, ptr {pos}")
@@ -2176,7 +3197,9 @@ class FuncGen:
         self.pending.append(mine)
         self.flow = head_flow.copy()
         self.flow.assigned.update(n for n in (s.key, s.var) if n)
+        self.open_loops.append((s.first, s.order, s.kills))
         self.stmt(s.body)
+        self.open_loops.pop()
         self.pending.pop()
         self.loops.pop()
         self.flow = Flow.merge([self.flow] + lp.conts, head_flow)
@@ -2186,6 +3209,10 @@ class FuncGen:
         self.place_label(end)
         if walked:
             self.iterating.pop()
+        self.loop_scope.pop(s.var, None)
+        if ref:                                 # the & variable is gone with its loop
+            del self.vars[s.var], self.slot_over[s.var]
+            self.refs.discard(s.var)
         self.free_temps(mine)
         self.flow = Flow.merge(lp.breaks + [head_flow], head_flow)
 
@@ -2202,6 +3229,7 @@ class FuncGen:
         if s.val is None:
             if self.ret != "void":
                 raise CompileError(f"{self.name}() must return {self.ret}", s.line)
+            self.ctor_done(s.line)
             self.flush_temps()
             self.free_pending()
             self.free_owned()
@@ -2221,6 +3249,17 @@ class FuncGen:
         self.emit(f"ret {llty(self.ret)} {v}")
         self.flow.live = False
 
+    def ctor_done(self, line):
+        """N5: when __construct() ends, on every path, every property has a value."""
+        if not self.is_ctor:
+            return
+        missing = sorted(f for f in self.ctor_need if f"$this->{f}" not in self.flow.assigned)
+        if missing and self.flow.live:
+            raise CompileError(f"{self.cls.name}::__construct() does not set "
+                               f"{', '.join('$this->' + m for m in missing)} on every path. Set it in every branch, "
+                               f"or give the property a default: public {self.cls.fields[missing[0]].type} "
+                               f"${missing[0]} = ...;", line)
+
     def free_pending(self):
         for group in self.pending:
             self.free_temps(group)
@@ -2232,6 +3271,7 @@ class FuncGen:
                 self.free_owned()
                 self.emit("ret i32 0")
             elif self.ret == "void":
+                self.ctor_done(self.line)
                 self.free_owned()
                 self.emit("ret void")
             else:
@@ -2243,8 +3283,10 @@ class FuncGen:
         if self.is_main:
             sig = "define i32 @main()"
         else:
-            ps = ", ".join(f"{llty(t)} %arg.{n[1:]}" for t, n in self.params)
-            sig = f"define internal {llty(self.ret)} @\"f.{self.key}\"({ps})"
+            ps = [f"{'ptr' if ref else llty(t)} %arg.{n[1:]}" for t, n, ref in self.params]
+            if self.method:
+                ps.insert(0, "ptr %arg.this")
+            sig = f"define internal {llty(self.ret)} {self.llname}({', '.join(ps)})"
         return [sig + " {", "entry:"] + self.allocas + self.inits + ["  br label %body", "body:"] + self.body + ["}"]
 
 
@@ -2276,19 +3318,80 @@ def parse_file(path, src=None):
         raise
 
 
+def split_type_args(inner):
+    depth = 0
+    for i, c in enumerate(inner):
+        depth += c == "<"
+        depth -= c == ">"
+        if c == "," and depth == 0:
+            return inner[:i], inner[i + 1:]
+    return inner, None
+
+
+def resolve_type(t, mid, imports, line, file=None):
+    """Turn a type as written in a file into its canonical form: class names become class keys
+    ("Order" in the main file, "shop::Order" for class Order of module shop)."""
+    if t in ("int", "float", "bool", "string", "void", "db", "rows"):
+        return t
+    if t.startswith("list<"):
+        e = resolve_type(t[5:-1], mid, imports, line, file)
+        if e in ("db", "rows"):
+            raise CompileError(f"a list cannot hold {e} values", line, file)
+        return f"list<{e}>"
+    if t.startswith("map<"):
+        k, v = split_type_args(t[4:-1])
+        v = resolve_type(v, mid, imports, line, file)
+        if v in ("db", "rows"):
+            raise CompileError(f"a map cannot hold {v} values", line, file)
+        return f"map<{k},{v}>"
+    if "::" in t:
+        alias, name = t.split("::", 1)
+        if alias not in imports:
+            raise CompileError(f"{t}: there is no `import {alias};` in this file", line, file)
+        target, tfile = imports[alias]
+        key = f"{target}::{name}" if target else name
+        if key not in CLASSES:
+            raise CompileError(f"{t}: {os.path.basename(tfile)} has no class {name}", line, file)
+        if not CLASSES[key].exported:
+            raise CompileError(f"class {name} is not exported. Write `export class {name}` in "
+                               f"{os.path.basename(tfile)} to use it in other files", line, file)
+        return key
+    key = f"{mid}::{t}" if mid else t
+    if key in CLASSES:
+        return key
+    near = {"integer": "int", "boolean": "bool", "double": "float", "str": "string", "array": "list<int>"}
+    raise CompileError(f"unknown type '{t}'" + (f" (did you mean {near[t]}?)" if t in near else
+                       " (types: int, float, bool, string, list<T>, map<K,V>, db, rows, or a class name)"), line, file)
+
+
+def check_default(e, line):
+    """Property defaults are literals, like PHP's constant expressions."""
+    ok = e.kind in ("int", "float", "bool", "str") or (e.kind == "unary" and e.op == "-" and e.e.kind in ("int", "float"))
+    if e.kind == "listlit":
+        ok = all(check_default(i, line) for i in e.items)
+    if e.kind == "maplit":
+        ok = all(check_default(k, line) and check_default(v, line) for k, v in e.pairs)
+    if not ok:
+        raise CompileError("a property default must be a literal such as 0, 1.5, \"text\", true, [] or [1, 2]; set "
+                           "other values in __construct()", line)
+    return True
+
+
 def compile_file(path, src=None):
     """Compile the program whose main file is `path`, with every module it imports, into one LLVM module."""
     main_path = os.path.abspath(path)
-    mods = {}               # absolute file -> (module id, funcs, imports {alias: (id, file)})
+    mods = {}               # absolute file -> (module id, funcs, main, imports {alias: (id, file)}, classes)
     order = []
+    CLASSES.clear()
+    NEEDED.clear()
 
     def load(file, mid, stack, src=None):
         if file in mods:
             return
-        funcs, main, imports = parse_file(file, src)
+        funcs, main, imports, classes = parse_file(file, src)
         if mid and main:
-            raise CompileError("a module (a file other files import) may only contain functions and imports; "
-                               "move this code into a function, or into the main file", main[0].line, file)
+            raise CompileError("a module (a file other files import) may only contain functions, classes and "
+                               "imports; move this code into a function, or into the main file", main[0].line, file)
         table = {}
         for imp in imports:
             target = resolve_import(imp, file, main_path)
@@ -2301,32 +3404,124 @@ def compile_file(path, src=None):
             tid = module_id(target, main_path, imp.path)
             table[imp.alias] = (tid, target)
             load(target, tid, stack + [target])
-        mods[file] = (mid, funcs, main, table)
+        mods[file] = (mid, funcs, main, table, classes)
         order.append(file)
 
     load(main_path, "", [main_path], src)
     mod = Module()
+    # classes first: function signatures and other classes may name them
     for file in order:
-        mid, funcs, _, _ = mods[file]
+        mid, _, _, table, classes = mods[file]
+        for c in classes:
+            key = c.name if not mid else f"{mid}::{c.name}"
+            if key in CLASSES:
+                raise CompileError(f"class {c.name} is already defined", c.line, file)
+            CLASSES[key] = ClassInfo(c, key, mid, file, table)
+    for ci in list(CLASSES.values()):
+        for pr in ci.node.props:
+            if pr.name in ci.fields:
+                raise CompileError(f"class {ci.name} declares ${pr.name} twice", pr.line, ci.file)
+            ft = resolve_type(pr.vtype, ci.mid, ci.imports, pr.line, ci.file)
+            if ft == "void":
+                raise CompileError("a property cannot be void", pr.line, ci.file)
+            if pr.default is not None:
+                try:
+                    check_default(pr.default, pr.line)
+                except CompileError as err:
+                    err.file = ci.file
+                    raise
+            ci.fields[pr.name] = Field(pr.name, ft, pr.vis, pr.default, len(ci.fields), pr.line)
+        for m in ci.node.methods:
+            if m.name in ci.methods:
+                raise CompileError(f"class {ci.name} has two methods called {m.name}()", m.line, ci.file)
+            ps = [(resolve_type(t, ci.mid, ci.imports, m.line, ci.file), n, r) for t, n, r in m.params]
+            if len({n for _, n, _ in ps}) != len(ps):
+                raise CompileError(f"{m.name}() has two parameters with the same name", m.line, ci.file)
+            ci.methods[m.name] = Method(ci, m, ps, resolve_type(m.ret, ci.mid, ci.imports, m.line, ci.file))
+        if "__construct" not in ci.methods:
+            bare = [f.name for f in ci.fields.values() if f.default is None]
+            if bare:
+                f = ci.fields[bare[0]]
+                raise CompileError(f"class {ci.name} has no __construct(), so every property needs a default "
+                                   f"(public {f.type} ${f.name} = ...;), or add a __construct() that sets "
+                                   f"${f.name}", ci.node.line, ci.file)
+
+    def holds(t, target, seen):          # does a value of type t contain a `target` object directly?
+        if not is_class(t) or t in seen:
+            return False
+        return any(f.type == target or holds(f.type, target, seen | {t}) for f in CLASSES[t].fields.values())
+    for ci in CLASSES.values():
+        if holds(ci.key, ci.key, set()):
+            raise CompileError(f"class {ci.name} contains itself through its properties, so no {ci.name} could ever "
+                               f"be built. Hold it in a list (list<{ci.name}>) or store an id instead",
+                               ci.node.line, ci.file)
+    for file in order:
+        mid, funcs, _, table, _ = mods[file]
         for f in funcs:
             key = f.name if not mid else f"{mid}::{f.name}"
             if key in mod.funcs or (not mid and f.name in BUILTINS) or (mid and f.name in BUILTINS):
                 raise CompileError(f"function {f.name}() is already defined", f.line, file)
-            names = [p for _, p in f.params]
+            names = [p for _, p, _ in f.params]
             if len(set(names)) != len(names):
                 raise CompileError(f"{f.name}() has two parameters with the same name", f.line, file)
-            mod.funcs[key] = ([t for t, _ in f.params], f.ret)
+            ps = [(resolve_type(t, mid, table, f.line, file), n, r) for t, n, r in f.params]
+            mod.params[key] = ps
+            mod.funcs[key] = ([t for t, _, _ in ps], resolve_type(f.ret, mid, table, f.line, file))
             mod.exported[key] = getattr(f, "exported", False) or not mid
+
+    def gen_method(m):
+        ci = m.cls
+        try:
+            g = FuncGen(mod, m.name, m.params, m.ret, m.node.line, modid=ci.mid, imports=ci.imports, method=m)
+            g.prepare(m.node.body)
+            g.stmt(m.node.body)
+            return g.finish()
+        except CompileError as err:
+            err.file = err.file or ci.file
+            raise
+
+    def gen_init(ci):                       # init.Class: stores the property defaults into a new object
+        try:
+            g = FuncGen(mod, f"init.{ci.key}", [], "void", ci.node.line, modid=ci.mid, imports=ci.imports)
+            for f in ci.fields.values():
+                if f.default is not None:
+                    v, t = g.owned_value(f.default, f.type, f.line)
+                    v = g.coerce(v, t, f.type, f.line, f"default of ${f.name}")
+                    g.store_elem(g.field_ptr("%arg.o", f), v, f.type)
+            lines = g.finish()
+        except CompileError as err:
+            err.file = err.file or ci.file
+            raise
+        lines[0] = f'define internal void @"init.{ci.key}"(ptr %arg.o) {{'
+        return lines
+
+    methods = [m for ci in CLASSES.values() for m in ci.methods.values()]
     out = []
+    mod.inferring = True                    # R6: which methods change $this; repeat until nothing new is found
+    while True:
+        mod.changed = False
+        for m in methods:
+            gen_method(m)
+        if not mod.changed:
+            break
+    mod.inferring = False
+    for m in methods:
+        out += gen_method(m)
+    for ci in CLASSES.values():
+        if any(f.default is not None for f in ci.fields.values()):
+            out += gen_init(ci)
     for file in order:
-        mid, funcs, main, table = mods[file]
+        mid, funcs, main, table, _ = mods[file]
         try:
             for f in funcs:
-                g = FuncGen(mod, f.name, f.params, f.ret, f.line, modid=mid, imports=table)
+                g = FuncGen(mod, f.name, mod.params[f.name if not mid else f"{mid}::{f.name}"],
+                            mod.funcs[f.name if not mid else f"{mid}::{f.name}"][1], f.line, modid=mid, imports=table)
+                g.prepare(f.body)
                 g.stmt(f.body)
                 out += g.finish()
             if not mid:
                 g = FuncGen(mod, "main", [], "void", 1, is_main=True, imports=table)
+                g.prepare(main)
                 for s in main:
                     g.stmt(s)
                 out += g.finish()
@@ -2501,7 +3696,7 @@ def pin_get(spec):
     return 0
 
 
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 

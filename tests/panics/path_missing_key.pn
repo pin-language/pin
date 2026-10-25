@@ -1,0 +1,3 @@
+class Box { public map<string, list<int>> $groups = []; }
+$b = new Box();
+$b->groups["a"][] = 1;

@@ -1,0 +1,90 @@
+// classes: values with one owner, methods, & parameters, borrowing (ownership-v2.md)
+class Item {
+    private int $stock = 0;
+    public function __construct(public string $name, public int $price) {}
+
+    function inStock(): bool { return $this->stock > 0; }
+    function restock(int $n): void { $this->stock += $n; }
+}
+
+class Order {
+    public int $id;
+    public list<Item> $items = [];
+    public map<string,int> $qty = [];
+    public bool $paid = false;
+
+    function __construct(int $id) { $this->id = $id; }
+
+    function add(Item $item, int $n): void {
+        $this->items[] = copy($item);
+        $this->qty[$item->name] = ($this->qty[$item->name] ?? 0) + $n;
+    }
+
+    function total(): int {
+        $t = 0;
+        foreach ($this->items as $it) {
+            $t += $it->price * $this->qty[$it->name];
+        }
+        return $t;
+    }
+
+    function markPaid(): void { $this->setPaid(true); }     // changing because setPaid() is
+    private function setPaid(bool $p): void { $this->paid = $p; }
+}
+
+function discount(Order &$o, int $pct): void {
+    foreach ($o->items as &$it) {
+        $it->price = intdiv($it->price * (100 - $pct), 100);
+    }
+}
+
+function rename(string &$s): void { $s .= "!"; }
+
+$tea = new Item("tea", 40);
+$cake = new Item("cake", 120);
+
+$tea->restock(5);
+$cake->restock(3);
+echo $tea->inStock() ? "yes" : "no", " ", $cake->inStock() ? "yes" : "no", "\n";
+
+$o = new Order(1);
+$o->add($tea, 2);
+$o->add($cake, 1);
+echo $o->total(), "\n";
+discount(&$o, 10);
+echo $o->total(), "\n";
+$o->markPaid();
+echo json_encode($o), "\n";
+
+// move, copy
+$p = $o;
+$q = copy($p);
+$q->items[0]->name = "green tea";
+echo $p->items[0]->name, " / ", $q->items[0]->name, "\n";
+
+// borrowing through an index (R2)
+$first = $q->items[0];
+echo "{$first->name} costs {$first->price}\n";
+$q->items[1]->price = 1;                   // fine: $first is not used again
+
+// nested containers
+list<list<int>> $grid = [[1, 2], [3]];
+$grid[1][] = 4;
+$grid[] = [5];
+echo json_encode($grid), " ", count($grid[1]), "\n";
+map<string,list<string>> $tags = [];
+$tags["a"] = ["x"];
+$tags["a"][] = "y";
+echo json_encode($tags), "\n";
+
+$name = "tea";
+rename(&$name);
+echo $name, "\n";
+
+list<Order> $orders = [];
+for ($i = 0; $i < 3; $i++) {
+    $orders[] = new Order($i);
+    $orders[$i]->add($cake, $i + 1);
+}
+foreach ($orders as &$ord) { $ord->paid = $ord->total() > 200; }
+echo json_encode($orders), "\n";

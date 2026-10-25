@@ -1,0 +1,1 @@
+addAll() changes $o, so the other arguments cannot use $o at the same time. Pass copy(...) of what they need, or read it into a variable first
