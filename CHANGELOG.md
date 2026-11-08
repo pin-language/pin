@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **PostgreSQL** with the same `db_*` functions: `db_open(env("DATABASE_URL"))` with a `postgres://` URL
+  (design/postgres.md). libpq does the protocol, SCRAM and TLS; it is loaded at run time only by programs that
+  open PostgreSQL, so SQLite programs need nothing new. Queries never block the thread (4 × `pg_sleep(0.4)` on one
+  thread: 0.42 s), `request_deadline()` cuts them with 504, connections are pooled per thread and returned with no
+  transaction open. `?` placeholders stay; `INSERT ... RETURNING id` replaces `db_last_id`. New compile errors: a
+  `postgres://` literal in `db_open`/`db_pool`, and SQL that would change a pooled connection (`SET` without
+  `LOCAL`, `RESET`, `LISTEN`, `PREPARE`, `DISCARD`, `LOAD`, `set_config(..., false)`, session advisory locks).
+  Tested in CI against PostgreSQL 16 on Linux and macOS, also under ASAN + UBSAN.
 - `password_hash` / `password_verify` use the CPU's SHA-256 instructions on arm64 (Apple, and Linux when the CPU
   has them): ~0.04 s instead of ~0.5 s on an M2, same results (checked against the portable code on 100,000
   random blocks and the published vectors). x86 still uses the portable code.

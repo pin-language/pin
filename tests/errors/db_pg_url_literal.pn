@@ -1,0 +1,2 @@
+<?php
+$db = db_open("postgres://app:secret@db.example.com/shop");

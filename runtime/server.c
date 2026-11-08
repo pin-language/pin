@@ -731,6 +731,24 @@ static void *worker(void *arg) {
     return NULL;
 }
 
+// The number of worker threads serve() starts: PN_THREADS, else one per CPU (also used by the PostgreSQL pool's
+// connection count check).
+static int serve_threads(void) {
+    int threads = 0;
+    const char *env = getenv("PN_THREADS");
+    if (env) threads = atoi(env);
+    if (threads <= 0) {
+#ifdef __APPLE__
+        threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
+#else
+        cpu_set_t set;
+        threads = sched_getaffinity(0, sizeof set, &set) == 0 ? CPU_COUNT(&set) : 1;
+#endif
+        if (threads <= 0) threads = 1;
+    }
+    return threads;
+}
+
 void pn_serve(int64_t port, Handler handler) {
     if (!handler) panic_msg("serve(): no handler compiled in");
     if (cur_task) {               // called from main's task: from here on this stack runs the scheduler
@@ -745,18 +763,7 @@ void pn_serve(int64_t port, Handler handler) {
     idle_timeout_ms = env_ms("PN_IDLE_TIMEOUT_MS", idle_timeout_ms);
     write_timeout_ms = env_ms("PN_WRITE_TIMEOUT_MS", write_timeout_ms);
     max_conns = env_ms("PN_MAX_CONNS", max_conns);
-    int threads = 0;
-    const char *env = getenv("PN_THREADS");
-    if (env) threads = atoi(env);
-    if (threads <= 0) {
-#ifdef __APPLE__
-        threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
-#else
-        cpu_set_t set;
-        threads = sched_getaffinity(0, sizeof set, &set) == 0 ? CPU_COUNT(&set) : 1;
-#endif
-        if (threads <= 0) threads = 1;
-    }
+    int threads = serve_threads();
 #ifdef __APPLE__
     shared_listener = open_listener(listen_port);
 #endif

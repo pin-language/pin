@@ -1,0 +1,1 @@
+db_exec(): SET without LOCAL changes the connection itself, and connections are reused by later requests (design/pool.md K4). For a setting one transaction needs, use SET LOCAL between BEGIN and COMMIT

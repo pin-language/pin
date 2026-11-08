@@ -314,7 +314,7 @@ f("form_has", H, "form_has(string $body, string $key): bool", "Whether a form bo
 D = "database"
 SETUP = ('$db = db_open(":memory:");\n'
          'db_exec($db, "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT UNIQUE, qty INTEGER, price REAL)", []);\n')
-f("db_open", D, "db_open(string $path): db", "Open (or create) an SQLite database file.",
+f("db_open", D, "db_open(string $path): db", "Open (or create) an SQLite database file, or a PostgreSQL database by URL.",
   r'''$db = db_open(":memory:");          // a file name like "shop.db", or ":memory:" for a temporary one
 echo db_exec($db, "CREATE TABLE t (x INTEGER)", []), "\n";''',
   ["When `$db` goes out of scope (end of the function) the connection goes back to a pool the runtime keeps "
@@ -327,17 +327,26 @@ echo db_exec($db, "CREATE TABLE t (x INTEGER)", []), "\n";''',
    "`db` values move like lists; pass `$db` to functions (they borrow it). A task (`go`) cannot use the "
    "caller's `$db`: open one inside the task.",
    "SQL that would change the connection for its next user (`PRAGMA foreign_keys = ...`, `ATTACH`, "
-   "`CREATE TEMP ...`) does not compile."],
-  php="Pin's version of `new PDO('sqlite:shop.db')`. PostgreSQL is planned with the same functions.")
+   "`CREATE TEMP ...`; for PostgreSQL `SET` without `LOCAL`, `RESET`, `LISTEN`, `PREPARE`, `DISCARD`, "
+   "`set_config(..., false)`, `pg_advisory_lock()`) does not compile.",
+   "PostgreSQL: `db_open(env(\"DATABASE_URL\"))` with `postgres://user:password@host:5432/name` (or "
+   "`postgresql://`). The same `db_*` functions and `?` placeholders work; the URL as a literal in the code "
+   "does not compile, so the password stays out of git. It needs PostgreSQL's client library at run time "
+   "(Ubuntu/Debian `libpq5`, macOS `brew install libpq`); TLS options go in the URL (`?sslmode=require`).",
+   "PostgreSQL waits never block the thread: while one request waits for the database, the others run. A "
+   "server that is down panics (500) after up to 10 s."],
+  php="Pin's version of `new PDO('sqlite:shop.db')` / `new PDO('pgsql:...')`.")
 f("db_pool", D, "db_pool(string $path, int $per_thread, int $idle_ms): void",
-  "Set the connection pool for one database file (optional).",
+  "Set the connection pool for one database file or PostgreSQL URL (optional).",
   r'''db_pool("shop.db", 8, 30000);    // up to 8 connections per server thread; close after 30 s unused
 echo "pool set\n";''',
   ["Without it each file gets 4 connections per thread, closed after 60 s unused.",
    "Only at the top level of the program, before `serve()` (compile error inside a function).",
    "When a thread's connections are all in use, `db_open()` waits (other requests keep running) for up to "
    "5 seconds, then panics — a 500 inside a handler. A handler holds a connection while it waits "
-   "(`sleep_ms`, `await`, `http_get`), so raise the limit for handlers like that."],
+   "(`sleep_ms`, `await`, `http_get`), so raise the limit for handlers like that.",
+   "PostgreSQL: threads × `$per_thread` must stay under the server's `max_connections` (100 by default); "
+   "the program prints a warning at the first connection when it does not."],
   php="Like `PDO::ATTR_PERSISTENT` / `pg_pconnect`, but the connection is always returned clean.")
 f("db_exec", D, "db_exec(db $db, string $sql, list $params): int",
   "Run INSERT, UPDATE, DELETE or CREATE; returns the rows changed.",
@@ -348,7 +357,8 @@ echo db_exec($db, "INSERT INTO items (name, qty) VALUES (?, ?)", ["tea", "5"]), 
    "cannot inject SQL.",
    "Returns -1 when a constraint (UNIQUE, NOT NULL, CHECK, FOREIGN KEY) refuses the change — `db_error($db)` "
    "says which. Any other error (bad SQL, wrong number of values) is a bug and panics.",
-   'One statement per call. Numbers can be passed as strings: SQLite stores `"2"` in an INTEGER column as 2.'])
+   'One statement per call. Numbers can be passed as strings: SQLite stores `"2"` in an INTEGER column as 2, '
+   "and PostgreSQL reads each value as the type its column or `?::type` asks for."])
 f("db_query", D, "db_query(db $db, string $sql, list $params): rows", "Run a SELECT and get the rows one at a time.",
   SETUP + r'''db_exec($db, "INSERT INTO items (name, qty, price) VALUES (?, ?, ?)", ["tea", "2", "40"]);
 db_exec($db, "INSERT INTO items (name, qty, price) VALUES (?, ?, ?)", ["cake", "1", "89.5"]);
@@ -368,7 +378,8 @@ f("db_int", D, "db_int(rows $rows, string $column): int", "An integer column of 
 $rows = db_query($db, "SELECT qty, qty * 10 AS big FROM items", []);
 while (db_next($rows)) { echo db_int($rows, "qty"), " ", db_int($rows, "big"), "\n"; }''',
   ["A column name the query does not have, or reading before `db_next`, panics. Use `AS name` for computed "
-   "columns."])
+   "columns.",
+   "PostgreSQL: strict — a value that is not a whole integer (`\"12abc\"`, `1.5`) panics; a `bool` column gives 1 or 0."])
 f("db_float", D, "db_float(rows $rows, string $column): float", "A numeric column of the current row (NULL gives 0.0).",
   SETUP + r'''db_exec($db, "INSERT INTO items (name, price) VALUES (?, ?)", ["cake", "89.5"]);
 $rows = db_query($db, "SELECT price FROM items", []);
@@ -377,7 +388,9 @@ f("db_string", D, "db_string(rows $rows, string $column): string",
   'A column of the current row as text (NULL gives `""`).',
   SETUP + r'''db_exec($db, "INSERT INTO items (name, qty) VALUES (?, ?)", ["ชาเย็น", "1"]);
 $rows = db_query($db, "SELECT name, qty FROM items", []);
-while (db_next($rows)) { echo db_string($rows, "name"), " ", db_string($rows, "qty"), "\n"; }''')
+while (db_next($rows)) { echo db_string($rows, "name"), " ", db_string($rows, "qty"), "\n"; }''',
+  ["PostgreSQL gives its own text for each type: a `bool` is `\"t\"` or `\"f\"`, a `numeric(10,2)` keeps its zeros "
+   "(`\"1.50\"`)."])
 f("db_is_null", D, "db_is_null(rows $rows, string $column): bool", "Whether a column of the current row is NULL.",
   SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
 $rows = db_query($db, "SELECT name, qty FROM items", []);
@@ -389,11 +402,17 @@ f("db_json", D, "db_json(db $db, string $sql, list $params): string",
 db_exec($db, "INSERT INTO items (name) VALUES (?)", ["cake \"special\""]);
 echo db_json($db, "SELECT id, name, qty, price FROM items ORDER BY id", []), "\n";''',
   ["Column names become keys; INTEGER, REAL, TEXT and NULL become JSON numbers, strings and `null`.",
+   "PostgreSQL: integer, float and numeric columns become numbers (`NaN` and `Infinity` strings), `bool` "
+   "`true`/`false`, `json`/`jsonb` are included as they are, everything else (dates, uuid, text) a string.",
    "The easiest way to answer an API request with query results — no loop, no string building."])
 f("db_last_id", D, "db_last_id(db $db): int", "The id of the last row inserted on this connection.",
   SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
 db_exec($db, "INSERT INTO items (name) VALUES (?)", ["cake"]);
-echo db_last_id($db), "\n";''')
+echo db_last_id($db), "\n";''',
+  ["PostgreSQL has no last insert id: write `INSERT ... RETURNING id` and read it with `db_query` (it panics "
+   "on a PostgreSQL connection, saying so). `RETURNING` works in SQLite too.",
+   "To insert unless it exists: `INSERT ... ON CONFLICT (name) DO NOTHING RETURNING id` — no row back means it "
+   "was there already."])
 f("db_error", D, "db_error(db $db): string", 'Why the last `db_exec` returned -1, or `""`.',
   SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
 if (db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]) < 0) { echo "refused: ", db_error($db), "\n"; }''')

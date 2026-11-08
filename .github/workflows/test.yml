@@ -11,6 +11,20 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    services:
+      # PostgreSQL for tests/pg and tests/server/pg.pn (service containers run on Linux runners only; macOS
+      # gets it from Homebrew below). An empty image on macOS skips the container.
+      postgres:
+        image: ${{ matrix.os == 'ubuntu-latest' && 'postgres:16' || '' }}
+        env:
+          POSTGRES_USER: pin
+          POSTGRES_PASSWORD: pin-test-only
+          POSTGRES_DB: pin_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pin" --health-interval 2s --health-timeout 5s --health-retries 20
+    env:
+      PIN_TEST_POSTGRES: postgres://pin:pin-test-only@127.0.0.1:5432/pin_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,7 +32,15 @@ jobs:
           python-version: "3.12"
       - name: Install clang (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y clang libsqlite3-dev
+        run: sudo apt-get update && sudo apt-get install -y clang libsqlite3-dev libpq5
+      - name: PostgreSQL (macOS, Homebrew)
+        if: runner.os == 'macOS'
+        run: |
+          brew install postgresql@16
+          brew services start postgresql@16
+          for i in $(seq 1 30); do /opt/homebrew/opt/postgresql@16/bin/pg_isready -h 127.0.0.1 && break; sleep 1; done
+          /opt/homebrew/opt/postgresql@16/bin/psql -h 127.0.0.1 -d postgres -c "CREATE ROLE pin LOGIN PASSWORD 'pin-test-only'"
+          /opt/homebrew/opt/postgresql@16/bin/createdb -h 127.0.0.1 -O pin pin_test
       - name: clang version
         run: clang --version
       - name: Test suite

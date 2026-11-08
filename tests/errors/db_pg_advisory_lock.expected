@@ -1,0 +1,1 @@
+db_json(): pg_advisory_lock() changes the connection itself, and connections are reused by later requests (design/pool.md K4). A session lock stays with the connection after the request: use pg_advisory_xact_lock() inside BEGIN ... COMMIT

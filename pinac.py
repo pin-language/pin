@@ -2821,9 +2821,8 @@ class FuncGen:
             return var_pieces(n.l) + var_pieces(n.r) if n.kind == "bin" else []
         why = session_sql(text(e.args[1])) or next(filter(None, map(session_sql, var_pieces(e.args[1]))), None)
         if why:
-            raise CompileError(f"{e.name}(): {why} changes the connection itself, and connections are reused by "
-                               f"later requests (design/pool.md K4). Pin sets every connection up the same way "
-                               f"(WAL, foreign_keys ON, 5 s busy timeout); for data, use a normal table", e.line)
+            raise CompileError(f"{e.name}(): {why[0]} changes the connection itself, and connections are reused by "
+                               f"later requests (design/pool.md K4). {why[1]}", e.line)
         return self.str_arg(e, 1)
 
     def params_arg(self, e, i):
@@ -2835,6 +2834,11 @@ class FuncGen:
 
     def db_builtin(self, e):
         name = e.name
+        if name in ("db_open", "db_pool") and e.args and e.args[0].kind == "str" and \
+                re.match(r"postgres(ql)?://", e.args[0].val):
+            raise CompileError(f'{name}(): read a PostgreSQL URL from the environment, e.g. {name}(env("DATABASE_URL")'
+                               f'{", 8, 60000" if name == "db_pool" else ""}), so the password does not end up in the '
+                               f"source and in git (design/postgres.md G7)", e.line)
         if name == "db_pool":
             self.argc(e, 3)
             if not self.is_main:
@@ -5025,18 +5029,41 @@ def trusted_sql_vars(body, params):
     return {n: [t for _, v in writes[n] for t in lits(v)] for n in trusted}
 
 
+SQLITE_SETUP = ("Pin sets every SQLite connection up the same way (WAL, foreign_keys ON, 5 s busy timeout); "
+                "for data, use a normal table")
+PG_LOCAL = "For a setting one transaction needs, use SET LOCAL between BEGIN and COMMIT"
+
+
 def session_sql(sql):
-    """What in this SQL would change the connection for its next user (pool.md K4), or None. SQLite: a PRAGMA
-    that sets a per-connection value, ATTACH / DETACH, TEMP objects."""
-    t = re.sub(r"'[^']*'|--[^\n]*|/\*.*?\*/", " ", sql, flags=re.S).lower()
+    """What in this SQL would change the connection for its next user (pool.md K4, postgres.md G4) and what to do
+    instead, or None. SQLite: a PRAGMA that sets a per-connection value, ATTACH / DETACH, TEMP objects.
+    PostgreSQL: SET without LOCAL, RESET, LISTEN / UNLISTEN, PREPARE / DEALLOCATE, DISCARD, LOAD, set_config(...,
+    false) and session advisory locks. Both rule sets apply to every db_* call: the database is chosen at run time."""
+    t = re.sub(r"'(?:[^']|'')*'|--[^\n]*|/\*.*?\*/", " ", sql, flags=re.S).lower()
     m = re.match(r"\s*pragma\s+(?:\w+\.)?(\w+)\s*(=|\()?", t)
     if m and m.group(2) and m.group(1) not in PRAGMA_OK:
-        return f"PRAGMA {m.group(1)} with a value"
+        return f"PRAGMA {m.group(1)} with a value", SQLITE_SETUP
     m = re.match(r"\s*(attach|detach)\b", t)
     if m:
-        return m.group(1).upper()
+        return m.group(1).upper(), SQLITE_SETUP
     if re.match(r"\s*create\s+(temp|temporary)\b", t):
-        return "CREATE TEMP"
+        return "CREATE TEMP", "Use a normal table (and delete its rows when done)"
+    m = re.match(r"\s*set\s+(\w+)(?:\s+(\w+))?", t)
+    if m and m.group(1) not in ("local", "transaction", "constraints"):
+        what = "SET ROLE" if m.group(1) == "role" else "SET SESSION AUTHORIZATION" if m.group(2) == "authorization" \
+            else "SET without LOCAL"
+        return what, PG_LOCAL
+    m = re.match(r"\s*(reset|listen|unlisten|prepare|deallocate|discard|load)\b", t)
+    if m:
+        return m.group(1).upper(), {"reset": PG_LOCAL, "prepare": "Pass values with ? placeholders: every query is "
+                                    "already sent with its values apart", "deallocate": "Pass values with ? placeholders"}.get(
+            m.group(1), "Pin's connections cannot keep per-connection state")
+    if re.search(r"\bset_config\s*\((?:[^()]|\([^()]*\))*,\s*false\s*\)", t):
+        return "set_config(..., false)", "Use set_config(name, value, true): it lasts until the transaction ends"
+    m = re.search(r"\b(pg_(?:try_)?advisory_lock(?:_shared)?)\s*\(", t)
+    if m:
+        return f"{m.group(1)}()", ("A session lock stays with the connection after the request: use "
+                                   "pg_advisory_xact_lock() inside BEGIN ... COMMIT")
     return None
 
 
@@ -5058,6 +5085,8 @@ def link(ir, out):
         with open(ll, "w") as f:
             f.write(ir)
         db = ["-DPIN_SQLITE", "-lsqlite3"] if needs_sqlite(ir) else []
+        if db and sys.platform.startswith("linux"):
+            db.append("-ldl")                   # PostgreSQL's libpq is loaded with dlopen (runtime/postgres.c)
         if os.environ.get("PIN_SANITIZE") == "1":
             # tests only (run_tests.py --sanitize): ASAN + UBSAN, built the way tools/sanitize.sh does (on Linux,
             # -O2 with -fsanitize=address fails on the runtime's assembly: "Undefined temporary symbol")

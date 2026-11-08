@@ -58,7 +58,7 @@ def fail(name, why):
 
 def build(src, out, emit_ll_only=False):
     cmd = PINAC + [src, "-o", out] + (["--emit-ll"] if emit_ll_only else [])
-    san = SANITIZE and os.sep + os.path.join("tests", "server") + os.sep in src
+    san = SANITIZE and any(os.sep + os.path.join("tests", d) + os.sep in src for d in ("server", "pg"))
     env = dict(os.environ, PIN_SANITIZE="1") if san else None
     return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
@@ -779,6 +779,99 @@ if "--no-server" not in sys.argv:
         finally:
             proc.terminate()
             proc.wait(timeout=5)
+
+PG_URL = os.environ.get("PIN_TEST_POSTGRES", "")
+if not PG_URL:
+    print("PostgreSQL (tests/pg, tests/server/pg.pn): skipped — set PIN_TEST_POSTGRES to a database URL that may be emptied")
+else:
+    print("PostgreSQL programs (tests/pg/*.pn)")
+    pg_env = dict(os.environ, DATABASE_URL=PG_URL, PIN_TEST_PG_DOWN="postgres://pin:secret@127.0.0.1:1/none")
+    for src in sorted(glob.glob(os.path.join(ROOT, "tests", "pg", "*.pn")), key=lambda p: "panic_" in p):
+        name = os.path.splitext(os.path.basename(src))[0]
+        out = os.path.join(BUILD, "pg_" + name)
+        b = build(src, out)
+        if b.returncode:
+            fail(rel(src), "compile failed: " + b.stderr)
+            continue
+        # a panic exits at once, with memory still in use: only use-after-free and the like count there
+        r = subprocess.run([out], capture_output=True, text=True, timeout=60,
+                           env=dict(pg_env, ASAN_OPTIONS="detect_leaks=0") if name.startswith("panic_") else pg_env)
+        if "ERROR: AddressSanitizer" in r.stderr or "ERROR: LeakSanitizer" in r.stderr or "runtime error:" in r.stderr:
+            fail(rel(src), r.stderr[-1500:])
+            continue
+        if name.startswith("panic_"):
+            exp_path = src[:-3] + ".expected"
+            if UPDATE:
+                open(exp_path, "w").write(r.stderr.strip() + "\n")
+            expected = open(exp_path).read().strip()
+            (ok if r.returncode == 1 and expected in r.stderr else
+             lambda n: fail(n, f"want exit 1 + '{expected}', got exit {r.returncode}: {r.stderr}"))(rel(src))
+            continue
+        exp_path = src[:-3] + ".out"
+        if UPDATE:
+            open(exp_path, "w").write(r.stdout)
+        expected = open(exp_path).read() if os.path.exists(exp_path) else None
+        (ok if r.returncode == 0 and r.stdout == expected else
+         lambda n: fail(n, f"exit {r.returncode}: {r.stderr}\n{r.stdout}"))(rel(src))
+
+    if "--no-server" not in sys.argv:
+        print("PostgreSQL server (tests/server/pg.pn on :8110, one thread)")
+        out = os.path.join(BUILD, "server_pg")
+        b = build(os.path.join(ROOT, "tests", "server", "pg.pn"), out)
+        if b.returncode:
+            fail("tests/server/pg.pn", "build failed: " + b.stderr[-400:])
+        else:
+            srv_url = PG_URL + ("&" if "?" in PG_URL else "?") + "application_name=pin_test_server"
+            proc = subprocess.Popen([out], env=dict(os.environ, PN_THREADS="1", DATABASE_URL=srv_url),
+                                    stdout=subprocess.DEVNULL, stderr=server_log(out))
+            try:
+                for _ in range(50):
+                    try:
+                        socket.create_connection(("127.0.0.1", 8110), timeout=0.2).close()
+                        break
+                    except OSError:
+                        time.sleep(0.1)
+                for (m, path, body), want in [
+                        (("POST", "/items", '{"name":"tea"}'), (201, '{"id":1}')),
+                        (("POST", "/items", '{"name":"tea"}'), (409, '{"error":"exists"}')),
+                        (("GET", "/boom", None), (500, '{"error":"Internal Server Error"}')),
+                        (("GET", "/tx-left", None), (200, '{"ok":true}')),
+                        (("GET", "/tx-boom", None), (500, '{"error":"Internal Server Error"}')),
+                        (("GET", "/leftovers", None), (200, '[{"n":0}]'))]:
+                    got = http(8110, m, path, body)
+                    (ok if got == want else lambda n: fail(n, f"want {want}\n        got  {got}"))(f"{m} {path}")
+                import threading  # noqa: E402
+                res = []
+                t0 = time.time()
+                ts = [threading.Thread(target=lambda: res.append(http(8110, "GET", "/slow"))) for _ in range(4)]
+                for th in ts:
+                    th.start()
+                for th in ts:
+                    th.join()
+                took = time.time() - t0
+                (ok if res.count((200, '{"slow":true}')) == 4 and took < 1.2 else
+                 lambda n: fail(n, f"{res} in {took:.2f}s"))(
+                    f"4 queries of 0.4 s on one thread wait together: {took:.2f} s, not 1.6 s")
+                t0 = time.time()
+                got = http(8110, "GET", "/late")
+                took = time.time() - t0
+                (ok if got[0] == 504 and took < 0.6 else lambda n: fail(n, f"{got} after {took:.2f}s"))(
+                    f"a query past the request's deadline: 504 in {took * 1000:.0f} ms")
+                for _ in range(3):                  # clients that leave while their query runs
+                    s = socket.create_connection(("127.0.0.1", 8110))
+                    s.sendall(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n")
+                    time.sleep(0.05)
+                    s.close()
+                time.sleep(0.6)
+                for _ in range(30):
+                    http(8110, "GET", "/boom")
+                conns = http(8110, "GET", "/conns")
+                n = json.loads(conns[1])[0]["n"] if conns[0] == 200 else -1
+                (ok if 1 <= n <= 4 else lambda x: fail(x, str(conns)))(
+                    f"after panics, cancelled queries and a deadline: {n} connection(s) open (at most 4)")
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)
 
 if SANITIZE:
     print("sanitizer reports in the servers' logs")

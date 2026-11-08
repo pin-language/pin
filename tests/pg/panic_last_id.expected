@@ -1,0 +1,1 @@
+panic: db_last_id(): PostgreSQL has no last insert id: add RETURNING id to the INSERT and read it with db_query(), e.g. db_query($db, "INSERT INTO t (name) VALUES (?) RETURNING id", [$name])

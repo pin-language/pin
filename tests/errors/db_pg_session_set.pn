@@ -1,0 +1,3 @@
+<?php
+$db = db_open(env("DATABASE_URL"));
+db_exec($db, "SET search_path = shop", []);

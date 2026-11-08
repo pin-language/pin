@@ -9,7 +9,7 @@
 //   jdecode.c  json_decode() into classes: strict checking and reading by position
 //   server.c   the HTTP server, headers, limits, SSE
 //   client.c   the http:// client, run(), read_line()
-//   sqlite.c   db_* (only with -DPIN_SQLITE)
+//   sqlite.c   db_* (only with -DPIN_SQLITE); it includes postgres.c (PostgreSQL through libpq, loaded with dlopen)
 #include "runtime/core.c"
 #include "runtime/tasks.c"
 #include "runtime/values.c"

@@ -1,0 +1,66 @@
+<?php
+// PostgreSQL through the same db_* functions (design/postgres.md). Run by run_tests.py when PIN_TEST_POSTGRES
+// holds a database URL; the database may be emptied.
+$url = env("DATABASE_URL");
+db_pool($url, 2, 60000);
+$db = db_open($url);
+db_exec($db, "DROP TABLE IF EXISTS pin_items", []);
+db_exec($db, "CREATE TABLE pin_items (id bigserial PRIMARY KEY, name text NOT NULL UNIQUE, qty int NOT NULL CHECK (qty >= 0), price numeric(10, 2), ok bool NOT NULL DEFAULT true, meta jsonb)", []);
+
+// ? becomes $1, $2 ... but not inside quotes, quoted names, comments or $$ strings
+$n = db_exec($db, "INSERT INTO pin_items (name, qty, price, meta) VALUES (?, ?, 1.5, '{\"tags\": [\"a?\"]}'), ('it''s ?', 3, NULL, NULL) -- a comment?", ["tea", "2"]);
+echo "inserted ", $n, "\n";
+$r = db_query($db, 'SELECT $$what?$$ AS "q?", /* ? */ ? AS v', ["x"]);
+while (db_next($r)) { echo db_string($r, "q?"), " ", db_string($r, "v"), "\n"; }
+
+// int and float values
+echo db_exec($db, "UPDATE pin_items SET qty = qty + ? WHERE qty < ?", [1, 100]), " updated\n";
+$f = db_query($db, "SELECT ?::float8 * 2 AS d", [1.25]);
+while (db_next($f)) { echo db_float($f, "d"), "\n"; }
+
+// constraints: -1 and db_error(), the connection stays usable
+echo db_exec($db, "INSERT INTO pin_items (name, qty) VALUES (?, ?)", ["tea", "1"]), " ", db_error($db), "\n";
+echo db_exec($db, "INSERT INTO pin_items (name, qty) VALUES (?, ?)", ["cake", "-1"]), " ", db_error($db), "\n";
+echo db_exec($db, "UPDATE pin_items SET qty = 0 WHERE name = ?", ["nothing"]), " [", db_error($db), "]\n";
+
+// RETURNING instead of db_last_id(); ON CONFLICT DO NOTHING: no row back means it was there already
+foreach (["cake", "cake"] as $name) {
+    $ins = db_query($db, "INSERT INTO pin_items (name, qty) VALUES (?, 1) ON CONFLICT (name) DO NOTHING RETURNING id", [$name]);
+    if (db_next($ins)) { echo "new ", $name, " id>0: ", db_int($ins, "id") > 0 ? "yes" : "no", "\n"; } else { echo $name, " exists\n"; }
+}
+
+// reading: strict numbers, NULL, bool
+$all = db_query($db, "SELECT name, qty, price, ok FROM pin_items ORDER BY name", []);
+while (db_next($all)) {
+    echo db_string($all, "name"), " qty=", db_int($all, "qty"), " price=", db_float($all, "price"),
+        " null=", db_is_null($all, "price") ? "yes" : "no", " ok=", db_int($all, "ok"), " ", db_string($all, "ok"), "\n";
+}
+
+// JSON: numbers, bool, json(b) as they are, NULL, NaN as a string
+echo db_json($db, "SELECT name, qty, price, ok, meta FROM pin_items WHERE name <> ? ORDER BY name", ["cake"]), "\n";
+echo db_json($db, "SELECT 'NaN'::numeric AS n, 2::int8 AS big, now() IS NOT NULL AS t, NULL::text AS z", []), "\n";
+
+// transactions; one left open is rolled back before the connection is reused
+db_exec($db, "BEGIN", []);
+db_exec($db, "UPDATE pin_items SET qty = 50 WHERE name = ?", ["tea"]);
+db_exec($db, "ROLLBACK", []);
+db_exec($db, "BEGIN", []);
+db_exec($db, "UPDATE pin_items SET qty = 99 WHERE name = ?", ["tea"]);
+$pid1 = db_query($db, "SELECT pg_backend_pid() AS pid", []);
+$first = 0;
+while (db_next($pid1)) { $first = db_int($pid1, "pid"); }
+$db = db_open($url);                       // the old $db goes back to the pool: ROLLBACK first
+$again = db_query($db, "SELECT pg_backend_pid() AS pid, (SELECT qty FROM pin_items WHERE name = 'tea') AS qty", []);
+while (db_next($again)) { echo "same connection: ", db_int($again, "pid") == $first ? "yes" : "no", ", qty ", db_int($again, "qty"), "\n"; }
+
+// G6: SQL built only from literals
+function search(db $db, string $name, int $min, string $sort): string {
+    $sql = "SELECT name, qty FROM pin_items WHERE 1 = 1";
+    list<string> $ps = [];
+    if ($name != "") { $sql .= " AND name = ?"; $ps[] = $name; }
+    if ($min > 0) { $sql .= " AND qty >= ?"; $ps[] = strval($min); }
+    if ($sort == "qty") { $sql .= " ORDER BY qty DESC, name"; } else { $sql .= " ORDER BY name"; }
+    return db_json($db, $sql, $ps);
+}
+echo search($db, "", 2, "qty"), "\n";
+echo search($db, "tea", 0, "name"), "\n";

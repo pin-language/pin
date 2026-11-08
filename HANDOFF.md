@@ -12,14 +12,14 @@ OpenAPI and MCP — all worked, 2 `tack check` rounds; its gaps were fixed (fres
 `tack::database()`, `tack new` writes tack.json + migrations/, a Reference section).
 The generator is the `tack` command (Python, pinac's parser); compiler changes it needed: `[name]` import
 paths, `Error` in modules, `ord`/`chr`/`rawurlencode`, `request_deadline()`. Not yet: cookies, CSRF, rate
-limits, `db_all`/`db_one` into classes, PostgreSQL. Design and decisions: docs `design/tack.md`.
+limits, `db_all`/`db_one` into classes, PostgreSQL in `tack check` (Pin has it now). Design and decisions: docs `design/tack.md`.
 
 | P | what | state |
 |---|---|---|
 | P1 | connection pool (`design/pool.md`) | **built** for SQLite: same programs, 181k–189k req/s vs 24.6k–26.0k (one-query handler, M2). `db_pool()`, K3/K4 compile errors. Not built: K6 statement cache |
 | P2 | `json_decode()` into a class | **built**: strict, paths in errors (`$.lines[1].qty: ...`), constructors run, nested classes / lists / `map<string,T>` |
 | P3 | parameter defaults + `null` | **defaults built** (also make `json_decode` fields optional). `null` **not built**: `design/null.md` has a 6-step build plan; too wide (types + flow + layout) to rush safely |
-| P4 | PostgreSQL (`design/postgres.md`) | **designed**; **built:** G6 (SQL from literals in a variable: search endpoints with optional filters, also SQLite) and `env()`. Not built: the libpq driver G1–G5 (PostgreSQL 16 + libpq are on the owner's Mac for it) |
+| P4 | PostgreSQL (`design/postgres.md`) | **built** (2026-11-08): G1–G7, libpq loaded with dlopen, non-blocking, pooled, K4 rules for PostgreSQL. Tests `tests/pg/` + `tests/server/pg.pn` run when `PIN_TEST_POSTGRES` is set (CI: Linux + macOS). Local: `PIN_TEST_POSTGRES=postgres://$USER@localhost/pin_test` (Homebrew postgresql@16) |
 | P5 | security built-ins | **built**: `hash`/`hash_hmac`("sha256"), `hash_equals`, `random_token`, `random_int`, `password_hash`/`password_verify` (PBKDF2-SHA256 600k) |
 
 Fresh-agent test (Sonnet, AI guide only, 2026-10-26): sign-up/login/me API with password_hash, sessions and
@@ -27,8 +27,8 @@ json_decode; product search with optional filters (G6) and a POST with an option
 first try, zero compile errors**, every curl case right. Its guide gaps were fixed (json_decode error forms,
 storing a token's hash for database lookups).
 
-Owner questions waiting: postgres.md Q1 (TLS through libpq), Q2 (`db_open` panic vs 503), Q3 (G6 — built, can
-be undone); tack.md Q1–Q4.
+Owner questions waiting: tack.md Q1–Q4. (postgres.md Q1–Q3: the owner chose "PostgreSQL" with the proposed
+answers, 2026-11-08 — TLS through libpq yes, `db_open` of a down server panics for now, G6 yes.)
 
 Releases (decided 2026-10-25, owner: "you decide"): **no 0.8.1**. The use-after-free fix (B12) is on
 `release/v0.1.0` (new installs get it, install.sh takes HEAD) and on `next`; it ships in **0.9.0** with

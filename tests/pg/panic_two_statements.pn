@@ -1,0 +1,3 @@
+<?php
+$db = db_open(env("DATABASE_URL"));
+db_exec($db, "UPDATE pin_items SET qty = 1; DELETE FROM pin_items", []);

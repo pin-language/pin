@@ -1,0 +1,17 @@
+inserted 2
+what? x
+2 updated
+2.5
+-1 duplicate key value violates unique constraint "pin_items_name_key"
+-1 new row for relation "pin_items" violates check constraint "pin_items_qty_check"
+0 []
+new cake id>0: yes
+cake exists
+cake qty=1 price=0 null=yes ok=1 t
+it's ? qty=4 price=0 null=yes ok=1 t
+tea qty=3 price=1.5 null=no ok=1 t
+[{"name":"it's ?","qty":4,"price":null,"ok":true,"meta":null},{"name":"tea","qty":3,"price":1.50,"ok":true,"meta":{"tags": ["a?"]}}]
+[{"n":"NaN","big":2,"t":true,"z":null}]
+same connection: yes, qty 3
+[{"name":"it's ?","qty":4},{"name":"tea","qty":3}]
+[{"name":"tea","qty":3}]
