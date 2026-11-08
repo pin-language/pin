@@ -1,14 +1,15 @@
-# HANDOFF — state as of 2026-10-26 (v0.8.0 released; the 0.9.0 set on `next`, not released)
+# HANDOFF — state as of 2026-11-08 (v0.8.0 released; the 0.9.0 set on `next`, not released)
 
-## 0. Next session (updated 2026-10-26, after the overnight run on the prerequisites)
+## 0. Next session (updated 2026-11-08)
 
-**Tack M1, M2, M3 and M6 are built** (M3 2026-10-26: guards, API keys, sessions; 2026-11-08: M2 OpenAPI 3.1 from the route types, M6 the routes as MCP tools over Streamable HTTP): github.com/pin-language/tack, branch `next` (its default: the first push;
-the repository is **private**), local clone ../pin-tack. `tack` command (Python: reads routes/ with pinac's
-parser, writes the dispatcher as Pin), package `tack.pn`, `examples/shop`, `tests/run.py` (13 checks), CI on
-Linux and macOS against pin's `next` (21 checks with openapi-spec-validator in CI). Design and decisions: docs
-`design/tack.md`. Next for Tack: M4 (stream routes, deadlines; deadlines need runtime support) and M5 (SQL checked
-at build time); not yet: cookies, CSRF, rate limits. Built overnight on `next` (pin and docs), CI green on Linux
-and macOS for each push, ASAN suite (`run_tests.py --sanitize`) 216/216, not released:
+**Tack M1–M6 are built** (2026-10-26 / 2026-11-08): github.com/pin-language/tack, branch `next` (its default:
+the first push; the repository is **private**), local clone ../pin-tack. M1 file routing, M2 OpenAPI 3.1 from
+the route types, M3 guards (deny by default) + API keys + sessions, M4 stream routes (SSE) + `deadline()`,
+M5 migrations + SQL prepared against them at build time, M6 the routes as MCP tools (Streamable HTTP; checked
+with the official MCP Python SDK in CI). `tests/run.py` 34 checks, CI on Linux and macOS against pin's `next`.
+The generator is the `tack` command (Python, pinac's parser); compiler changes it needed: `[name]` import
+paths, `Error` in modules, `ord`/`chr`/`rawurlencode`, `request_deadline()`. Not yet: cookies, CSRF, rate
+limits, `db_all`/`db_one` into classes, PostgreSQL. Design and decisions: docs `design/tack.md`.
 
 | P | what | state |
 |---|---|---|
