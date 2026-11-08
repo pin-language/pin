@@ -400,8 +400,13 @@ while (db_next($rows)) { echo db_string($rows, "name"), " ", db_string($rows, "q
 f("db_is_null", D, "db_is_null(rows $rows, string $column): bool", "Whether a column of the current row is NULL.",
   SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
 $rows = db_query($db, "SELECT name, qty FROM items", []);
-while (db_next($rows)) { echo db_is_null($rows, "qty") ? "qty is NULL" : "qty set", "\n"; }''',
-  ['Pin has no `null` yet, so check this before trusting a 0 or `""` from a nullable column.'])
+while (db_next($rows)) {
+    echo db_is_null($rows, "qty") ? "qty is NULL" : "qty set", "\n";
+    $qty = db_is_null($rows, "qty") ? null : db_int($rows, "qty");      // ?int
+    echo json_encode($qty), "\n";
+}''',
+  ['`db_int` / `db_float` / `db_string` read NULL as 0 / `""`, so check this before trusting them on a '
+   'nullable column; `db_is_null(...) ? null : db_int(...)` gives a `?int`.'])
 f("db_json", D, "db_json(db $db, string $sql, list $params): string",
   "Run a SELECT and get all rows as a JSON array of objects.",
   SETUP + r'''db_exec($db, "INSERT INTO items (name, qty, price) VALUES (?, ?, ?)", ["tea", "2", "40"]);

@@ -1,0 +1,13 @@
+{"stock":null,"active":null,"price":9.5,"name":"pen","qty":null}
+{"stock":4,"active":true,"price":null,"name":"pen","qty":null} 4
+{"stock":null,"active":true,"price":null,"name":"pen","qty":null} -5 null
+null 4 null true
+2
+5
+40 missing n -1
+none 3
+{"stock":null,"active":null,"price":9.5,"name":"cup","qty":3}
+{"stock":null,"active":null,"price":9.5,"name":"cup","qty":null}
+$.qty: want an integer, got a string
+{"item":null,"n":2}
+stock 10

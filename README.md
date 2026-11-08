@@ -86,7 +86,7 @@ echo total(squares(10)), "\n";          // 385
 3. Run with `pin run file.pn`. Run-time errors print `panic: ...` with the line and exit 1 (inside an
    HTTP handler they answer 500 and the server keeps going).
 
-Messages are written for agents trained on PHP: reaching for `extends`, `finally`, `switch`, `?int`,
+Messages are written for agents trained on PHP: reaching for `extends`, `finally`, `switch`,
 `array()`, closures or `include` gets "not in Pin yet — write this instead", not a parse error.
 
 ## Commands
@@ -214,8 +214,8 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 
 ## Not there yet
 
-Inheritance and interfaces, `?int` / `?float` / `?bool` and lists or maps holding null, `finally`, closures.
-`null` for strings, lists, maps and objects (`?User`, checked before use), `json_decode()` into a class, `go`/`await`, and SQLite and PostgreSQL (with a connection pool) are built.
+Inheritance and interfaces, lists or maps holding null, `finally`, closures.
+`null` (`?User`, `?int`, checked before use), `json_decode()` into a class, `go`/`await`, and SQLite and PostgreSQL (with a connection pool) are built.
 Most of these are already designed in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
 [CHANGELOG.md](CHANGELOG.md) for what changed.
 

@@ -2,13 +2,17 @@
 
 ## Unreleased
 
+- **`?int`, `?float`, `?bool`** (design/null.md step 5): the value and a "has a value" flag side by side in
+  registers, two 8-byte slots in an object. Checks, `??`, `?? throw`, `?->`, `?:`, `&` parameters, defaults and
+  JSON work as for `?string`. Programs without them compile to the same code as before (all 51 tests, examples
+  and benchmarks checked). Not yet: passing or returning them through `go` tasks.
 - **null** (design/null.md steps 1–4): `?string`, `?list<T>`, `?map<K,V>` and `?ClassName` for variables,
   parameters, returns and properties (a `?T` property starts as null). A `?T` variable must be checked before use;
   `if ($u !== null)`, `if ($u === null) { return; }`, `&&`, `||`, `!`, `isset($u)`, `while` and `?:` narrow it to
   `T`. `$u?->name`, `$x ?? "default"`, `find($id) ?? throw error(404, "...")`. `json_encode` writes `null`;
   `json_decode` gives null for a `?T` field that is null or missing. A class may hold `?Itself` (linked lists).
-  Same pointer as before with null = 0: programs without `?T` compile to the same code. Not yet: `?int` /
-  `?float` / `?bool`, `list<?T>` / `map<K,?T>`, narrowing a property. `=== null` on a value that is never null
+  Same pointer as before with null = 0: programs without `?T` compile to the same code. Not yet: `list<?T>` /
+  `map<K,?T>`, narrowing a property. `=== null` on a value that is never null
   is a compile error.
 - Fix: `list<?string>` lexed `<?` as the PHP open tag.
 - **PostgreSQL** with the same `db_*` functions: `db_open(env("DATABASE_URL"))` with a `postgres://` URL

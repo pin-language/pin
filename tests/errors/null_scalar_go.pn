@@ -1,0 +1,7 @@
+<?php
+function age(int $id): ?int { return $id > 0 ? 30 : null; }
+function main(): void {
+    $t = go age(1);
+    $a = await $t;
+}
+main();

@@ -1,0 +1,1 @@
+this value may be null (?int). Check it first with !== null, or give a default with ?? (json_encode() writes null as null)

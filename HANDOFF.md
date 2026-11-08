@@ -18,7 +18,7 @@ limits, `db_all`/`db_one` into classes, PostgreSQL in `tack check` (Pin has it n
 |---|---|---|
 | P1 | connection pool (`design/pool.md`) | **built** for SQLite: same programs, 181k–189k req/s vs 24.6k–26.0k (one-query handler, M2). `db_pool()`, K3/K4 compile errors. Not built: K6 statement cache |
 | P2 | `json_decode()` into a class | **built**: strict, paths in errors (`$.lines[1].qty: ...`), constructors run, nested classes / lists / `map<string,T>` |
-| P3 | parameter defaults + `null` | **built.** Defaults 2026-10-26; `null` steps 1–4 of `design/null.md` 2026-11-08: `?string`/`?list`/`?map`/`?Class`, narrowing of variables in `class Flow` (`nonnull`), `?->`, `??`, `?? throw`, JSON. Not built: step 5 `?int`/`?float`/`?bool`, step 6 `list<?T>`/`map<K,?T>`, narrowing a property (see null.md "As built"). Tests `tests/null_*.pn`, `tests/errors/null_*.pn` |
+| P3 | parameter defaults + `null` | **built.** Defaults 2026-10-26; `null` steps 1–4 of `design/null.md` 2026-11-08: `?string`/`?list`/`?map`/`?Class`, narrowing of variables in `class Flow` (`nonnull`), `?->`, `??`, `?? throw`, JSON. Step 5 `?int`/`?float`/`?bool` built 2026-11-09 (not through `go`). Not built: step 6 `list<?T>`/`map<K,?T>`, narrowing a property (see null.md "As built"). Tests `tests/null_*.pn`, `tests/errors/null_*.pn` |
 | P4 | PostgreSQL (`design/postgres.md`) | **built** (2026-11-08): G1–G7, libpq loaded with dlopen, non-blocking, pooled, K4 rules for PostgreSQL. Tests `tests/pg/` + `tests/server/pg.pn` run when `PIN_TEST_POSTGRES` is set (CI: Linux + macOS). Local: `PIN_TEST_POSTGRES=postgres://$USER@localhost/pin_test` (Homebrew postgresql@16) |
 | P5 | security built-ins | **built**: `hash`/`hash_hmac`("sha256"), `hash_equals`, `random_token`, `random_int`, `password_hash`/`password_verify` (PBKDF2-SHA256 600k) |
 
@@ -186,8 +186,8 @@ numbered list below is the older order; items 3, 4 and 7 are folded into P1–P5
    when a set is done. Next set: async (concurrency.md C1–C11).
 3. **Strings** (strings.md): UTF-8 validation at the edges (invalid request → 400), `substr` boundary
    panic, `mb_*`, `grapheme_*`.
-4. ~~**Null**~~ (null.md) steps 1–4 built on `next` 2026-11-08. Left: step 5 (`?int` etc. as `{i64, i1}`; measure
-   the benchmarks), step 6 (containers of `?T`), property narrowing. Fresh-agent test of null done 2026-11-09
+4. ~~**Null**~~ (null.md) steps 1–4 built on `next` 2026-11-08. Step 5 built 2026-11-09 (`{i64, i1}`; IR of all
+   51 programs unchanged). Left: step 6 (containers of `?T`), property narrowing. Fresh-agent test of null done 2026-11-09
    (Sonnet, guide only: clean on the first `pin check`, all curl cases right; the guide gap on optional JSON fields fixed).
 5. ~~`list<string>`~~ done in 0.2.0 (plus explode/implode/sort, query/form/JSON request helpers).
    Nested containers done in 0.5.0.

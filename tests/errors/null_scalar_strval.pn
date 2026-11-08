@@ -1,0 +1,3 @@
+<?php
+function qty(int $id): ?int { return $id > 0 ? 3 : null; }
+echo strval(qty(1)), "\n";

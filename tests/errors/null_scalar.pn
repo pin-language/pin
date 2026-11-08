@@ -1,4 +1,4 @@
 <?php
-class User { public string $name; function __construct(string $n) { $this->name = $n; } }
-function find(int $id): ?User { if ($id == 1) { return new User("a"); } return null; }
-function h(): ?int { return -1; }
+function age(string $name): ?int { if ($name == "ann") { return 31; } return null; }
+$a = age("bob");
+echo $a + 1, "\n";

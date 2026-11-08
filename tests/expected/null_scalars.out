@@ -1,0 +1,12 @@
+ann is 31
+  or 31, json 31, half 15.5
+bob is 0
+  or 0, json 0, half 0.0
+cat: unknown
+  or -1, json null, half null
+not set
+7
+3.0 nullfalsetrue
+yes
+7
+null 99

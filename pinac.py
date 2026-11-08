@@ -790,8 +790,18 @@ CLASSES = {}    # class key ("Order", or "shop::Order" in a module) -> ClassInfo
 NEEDED = {}     # helper functions the generated code calls: '@"free:list<Order>"' -> (kind, type)
 
 
+# ?int / ?float / ?bool: the value and a "has a value" flag, side by side (null.md N6). A variable holds the pair in
+# registers; in an object it is stored with the same layout (value first, so a variable known not to be null can
+# load just the value).
+OPT_SCALAR = {"?int": "{ i64, i1 }", "?float": "{ double, i1 }", "?bool": "{ i1, i1 }"}
+
+
+def is_opt_scalar(t):
+    return t in OPT_SCALAR
+
+
 def llty(t):
-    return {"int": "i64", "float": "double", "bool": "i1", "void": "void"}.get(t, "ptr")
+    return OPT_SCALAR.get(t) or {"int": "i64", "float": "double", "bool": "i1", "void": "void"}.get(t, "ptr")
 
 
 def fn_llret(ret, throws):
@@ -815,7 +825,8 @@ def is_class(t):
 
 
 def is_opt(t):
-    """?T: a string, list, map or object that may be null, stored as a pointer with null = 0 (null.md N6)."""
+    """?T: a value that may be null. Strings, lists, maps and objects: a pointer with null = 0; ?int, ?float,
+    ?bool: see OPT_SCALAR (null.md N6)."""
     return t.startswith("?")
 
 
@@ -839,7 +850,12 @@ def owns_ptr(t):
 
 def ell(t):
     """How a value is stored inside a list, an object field: bools take one byte, the rest 8."""
-    return {"int": "i64", "float": "double", "bool": "i8"}.get(t, "ptr")
+    return OPT_SCALAR.get(t) or {"int": "i64", "float": "double", "bool": "i8"}.get(t, "ptr")
+
+
+def nslots(t):
+    """How many 8-byte slots a property takes."""
+    return 2 if t in ("?int", "?float") else 1
 
 
 def esize(t):
@@ -1312,10 +1328,11 @@ class ClassInfo:
         self.exported = node.exported or not mid
         self.fields = {}        # name (without $) -> Field, in declaration order (the JSON order)
         self.methods = {}       # name -> Method
+        self.slots = 0          # 8-byte slots the fields take (?int and ?float take two)
 
     @property
     def size(self):
-        return 8 * max(1, len(self.fields))
+        return 8 * max(1, self.slots, len(self.fields))
 
 
 def gen_helper(mod, name, kind, t):
@@ -1341,6 +1358,26 @@ def gen_helper(mod, name, kind, t):
         return v
 
     def json_value(d, v, ft):
+        if is_opt_scalar(ft):               # null, or the value
+            x, f, b = tmp(), tmp(), tmp()
+            has, none, end = (tmp()[1:] + w for w in ("has", "none", "end"))
+            emit(f"{x} = extractvalue {llty(ft)} {v}, 0")
+            emit(f"{f} = extractvalue {llty(ft)} {v}, 1")
+            emit(f"br i1 {f}, label %{has}, label %{none}")
+            out.append(f"{has}:")
+            if ft == "?bool":
+                emit(f"{b} = zext i1 {x} to i8")
+                x = b
+            r1 = json_value(d, x, ft[1:])
+            emit(f"br label %{end}")
+            out.append(f"{none}:")
+            r2 = tmp()
+            emit(f"{r2} = call ptr @pn_str_add_str(ptr {d}, ptr {mod.lit('null')})")
+            emit(f"br label %{end}")
+            out.append(f"{end}:")
+            r = tmp()
+            emit(f"{r} = phi ptr [ {r1}, %{has} ], [ {r2}, %{none} ]")
+            return r
         r = tmp()
         if ft == "int":
             emit(f"{r} = call ptr @pn_str_add_int(ptr {d}, i64 {v})")
@@ -1926,12 +1963,22 @@ class FuncGen:
         if o.kind == "var" and o.name in self.vars and is_opt(self.vars[o.name]):
             v, _ = self.use_var(o.name, e.line)
             t = self.vars[o.name]
+            if is_opt_scalar(t):                # use_var loaded only the value if it is checked already
+                v = self.tmp()
+                self.emit(f"{v} = load {llty(t)}, ptr {self.slot(o.name)}")
         else:
             v, t = self.borrow(o)
         if not is_opt(t):
             raise CompileError(f"{show(o)} is {t}, which is never null, so this check is always "
                                f"{'false' if e.op == '==' else 'true'}. Remove it (only ?T values can be null)", e.line)
         r = self.tmp()
+        if is_opt_scalar(t):
+            f = self.tmp()
+            self.emit(f"{f} = extractvalue {llty(t)} {v}, 1")
+            if e.op == "!=":
+                return f, "bool", False
+            self.emit(f"{r} = xor i1 {f}, true")
+            return r, "bool", False
         self.emit(f"{r} = icmp {'eq' if e.op == '==' else 'ne'} ptr {v}, null")
         return r, "bool", False
 
@@ -1972,9 +2019,17 @@ class FuncGen:
             self.emit(f"br label %{end}")
             self.place_label(end)
             return None, "void", False
-        if strip_opt(rt) in ("int", "float", "bool"):
-            raise CompileError(f"{show(e)} would be ?{rt}, which is not in Pin yet (null.md step 5). Write "
-                               f"if ({show(e.obj)} !== null) {{ ... {show(e.obj)}->{e.name} ... }}", e.line)
+        if strip_opt(rt) in ("int", "float", "bool"):     # $u?->age: ?int
+            res_t = "?" + strip_opt(rt)
+            if rt != res_t:
+                r = self.wrap_opt(r, res_t)
+            self.flush_temps(mark)
+            done = self.label
+            self.emit(f"br label %{end}")
+            self.place_label(end)
+            p = self.tmp()
+            self.emit(f"{p} = phi {llty(res_t)} [ zeroinitializer, %{start} ], [ {r}, %{done} ]")
+            return p, res_t, False
         if strip_opt(rt) in ("db", "rows", "sub", "stream"):
             raise CompileError(f"{show(e)} gives {rt}, which cannot be null. Write if ({show(e.obj)} !== null) "
                                f"{{ ... }}", e.line)
@@ -2027,6 +2082,8 @@ class FuncGen:
         return r, t
 
     def coerce(self, val, t, want, line, what):
+        if is_opt_scalar(want) and t in ("int", "float", "bool"):     # 5 where ?int goes: the pair (5, has)
+            return self.wrap_opt(self.coerce(val, t, want[1:], line, what), want)
         if t == want or (is_opt(want) and t == want[1:]):      # a T fits where ?T is wanted
             return val
         if is_opt(t) and t[1:] == want:
@@ -2037,6 +2094,20 @@ class FuncGen:
             self.emit(f"{r} = sitofp i64 {val} to double")
             return r
         raise CompileError(f"{what}: expected {want} but got {t}", line)
+
+    def wrap_opt(self, v, t):
+        """A ?int / ?float / ?bool that holds v."""
+        a, b = self.tmp(), self.tmp()
+        self.emit(f"{a} = insertvalue {llty(t)} undef, {llty(t[1:])} {v}, 0")
+        self.emit(f"{b} = insertvalue {llty(t)} {a}, i1 true, 1")
+        return b
+
+    def opt_parts(self, v, t):
+        """(value, has a value) of a ?int / ?float / ?bool."""
+        x, f = self.tmp(), self.tmp()
+        self.emit(f"{x} = extractvalue {llty(t)} {v}, 0")
+        self.emit(f"{f} = extractvalue {llty(t)} {v}, 1")
+        return x, f
 
     def borrow(self, e, hint=None):
         """Evaluate an expression for reading only; owned results are freed after the statement."""
@@ -2099,6 +2170,8 @@ class FuncGen:
         if k == "str":
             return self.mod.lit(e.val), "string", False
         if k == "null":
+            if hint and is_opt_scalar(hint):
+                return "zeroinitializer", hint, False
             if hint and is_opt(hint):
                 return "null", hint, True
             raise CompileError("null can only go where a ?T type is expected (a ?T variable, parameter, property or "
@@ -2235,7 +2308,8 @@ class FuncGen:
             ot = self.static_type(e.obj)
             if ot and is_opt(ot) and is_class(ot[1:]):
                 f = CLASSES[ot[1:]].fields.get(e.name)
-                return ("?" + strip_opt(f.type)) if f and is_heap(f.type) else None
+                return ("?" + strip_opt(f.type)) if f and (is_heap(f.type) or strip_opt(f.type) in
+                                                           ("int", "float", "bool")) else None
             return None
         if k in ("index", "append"):
             st = self.static_type(e.seq)
@@ -2439,6 +2513,9 @@ class FuncGen:
             raise CompileError(f"unknown function {c.name}()", e.line)
         params, (_, ret), throws = self.mod.params[key], self.mod.funcs[key], self.mod.throws.get(key, False)
         c = self.with_defaults(c, params, self.mod.defaults.get(key), c.name)
+        if is_opt_scalar(ret) or any(is_opt_scalar(pt) for pt, _, _ in params):
+            raise CompileError(f"go {c.name}(): a task cannot take or give ?int, ?float or ?bool yet. Pass a value "
+                               f"and a bool, or a ?string", e.line)
         mark = len(self.temps)
         slots, roots, lent = [], set(), set()
         for i, (a, (pt, pn, ref)) in enumerate(zip(c.args, params)):
@@ -2597,6 +2674,9 @@ class FuncGen:
             return self.call("ptr", "@pn_str_from_float", f"double {v}"), "string", True
         if t == "bool":
             return self.bool_str(v), "string", False
+        if is_opt(t):
+            raise CompileError(f"this value may be null ({t}). Check it first with !== null, or give a default "
+                               f"with ?? (json_encode() writes null as null)", line)
         raise CompileError(f"cannot turn a {t} into a string (use json_encode())", line)
 
     def to_int(self, v, t, line):
@@ -2618,6 +2698,9 @@ class FuncGen:
             self.emit(f"{r} = zext i1 {v} to i64")
         elif t == "string":
             return self.call("i64", "@pn_str_to_int", f"ptr {v}")
+        elif is_opt(t):
+            raise CompileError(f"this value may be null ({t}). Check it first with !== null, or give a default "
+                               f"with ??", line)
         else:
             raise CompileError(f"cannot turn a {t} into an int", line)
         return r
@@ -2693,6 +2776,9 @@ class FuncGen:
 
     def load_elem(self, p, et):
         r = self.tmp()
+        if is_opt_scalar(et):                   # a property: stored as the pair itself
+            self.emit(f"{r} = load {llty(et)}, ptr {p}")
+            return r
         tb = f", !tbaa {ELEM_TBAA[et]}" if et in ELEM_TBAA else ""
         self.emit(f"{r} = load {ell(et)}, ptr {p}{tb}")
         if et == "bool":
@@ -2702,6 +2788,9 @@ class FuncGen:
         return r
 
     def store_elem(self, p, v, et):
+        if is_opt_scalar(et):
+            self.emit(f"store {llty(et)} {v}, ptr {p}")
+            return
         tb = f", !tbaa {ELEM_TBAA[et]}" if et in ELEM_TBAA else ""
         if et == "bool":
             z = self.tmp()
@@ -2847,6 +2936,8 @@ class FuncGen:
             raise CompileError(f"{show(e.l)} is {lt}, which is never null, so ?? has nothing to do. (?? also works "
                                f"on a list item or map entry, e.g. $m[$k] ?? 0)", e.line)
         inner = lt[1:]
+        if is_opt_scalar(lt):
+            return self.coalesce_scalar(e, lv, lt)
         has, dflt, merge = self.newlabel("nn"), self.newlabel("isnull"), self.newlabel("coal")
         c = self.tmp()
         self.emit(f"{c} = icmp ne ptr {lv}, null")
@@ -2898,6 +2989,68 @@ class FuncGen:
             self.emit(f"{keep} = phi ptr [ null, %{end1} ], [ {rv}, %{end2} ]")
             self.temps.append((keep, res_t))
         return r, res_t, owned
+
+    def json_opt_scalar(self, v, t):
+        """json_encode() of a ?int / ?float / ?bool: an owned string ("null" is a literal, never freed)."""
+        x, c = self.opt_parts(v, t)
+        has, none, end = self.newlabel("jhas"), self.newlabel("jnull"), self.newlabel("jend")
+        self.emit(f"br i1 {c}, label %{has}, label %{none}")
+        self.place_label(has)
+        if t == "?int":
+            r1 = self.call("ptr", "@pn_str_from_int", f"i64 {x}")
+        elif t == "?float":
+            r1 = self.call("ptr", "@pn_json_float", f"double {x}")
+        else:
+            r1 = self.tmp()
+            self.emit(f"{r1} = select i1 {x}, ptr {self.mod.lit('true')}, ptr {self.mod.lit('false')}")
+        self.emit(f"br label %{end}")
+        self.place_label(none)
+        self.emit(f"br label %{end}")
+        self.place_label(end)
+        r = self.tmp()
+        self.emit(f"{r} = phi ptr [ {r1}, %{has} ], [ {self.mod.lit('null')}, %{none} ]")
+        return r
+
+    def coalesce_scalar(self, e, lv, lt):
+        """$n ?? 0 on a ?int / ?float / ?bool; the default is evaluated only when $n is null."""
+        inner = lt[1:]
+        x, c = self.opt_parts(lv, lt)
+        has, dflt, merge = self.newlabel("nn"), self.newlabel("isnull"), self.newlabel("coal")
+        self.emit(f"br i1 {c}, label %{has}, label %{dflt}")
+        self.place_label(has)
+        if e.r.kind == "throwexpr":
+            self.emit(f"br label %{merge}")
+            self.place_label(dflt)
+            mark = len(self.temps)
+            v, t = self.owned_value(e.r.val, "Error", e.r.line)
+            if t != "Error":
+                raise CompileError(f'throw needs an Error, e.g. ?? throw error(404, "not found") — not {t}', e.line)
+            self.fail_count += 1
+            self.can_propagate(e.line, "?? throw is not allowed here")
+            self.route_error(v, e.line)
+            del self.temps[mark:]
+            self.place_label(merge)
+            return x, inner, False
+        end1 = self.label
+        self.emit(f"br label %{merge}")
+        self.place_label(dflt)
+        mark = len(self.temps)
+        rv, rt, _ = self.expr(e.r, lt)
+        if rt == lt:
+            res_t = lt                          # $a ?? $b with both ?int: still ?int
+        elif rt == inner or (rt == "int" and inner == "float"):
+            res_t = inner
+            rv = self.coerce(rv, rt, inner, e.line, "the default after ??")
+        else:
+            raise CompileError(f"both sides of ?? must have the same type: {show(e.l)} is {lt} but the default is "
+                               f"{rt}", e.line)
+        self.flush_temps(mark)
+        end2 = self.label
+        self.emit(f"br label %{merge}")
+        self.place_label(merge)
+        r = self.tmp()
+        self.emit(f"{r} = phi {llty(res_t)} [ {lv if res_t == lt else x}, %{end1} ], [ {rv}, %{end2} ]")
+        return r, res_t, False
 
     def coalesce(self, e):
         """$m[$k] ?? default   /   $list[$i] ?? default"""
@@ -2983,7 +3136,7 @@ class FuncGen:
         else:
             va, ta = self.branch_value(e.a, want, e.line)
         self.flow.nonnull -= added
-        end_a = self.label
+        end_a, pos_a = self.label, len(self.body)
         self.emit(f"br label %{merge}")
         self.place_label(b_l)
         added = self.narrow(no)
@@ -2992,17 +3145,34 @@ class FuncGen:
         else:
             vb, tb = self.branch_value(e.b, want or ta, e.line)
         self.flow.nonnull -= added
-        end_b = self.label
+        end_b, pos_b = self.label, len(self.body)
         self.emit(f"br label %{merge}")
         self.place_label(merge)
+        arm_a, arm_b = ta, tb
         if ta is None or tb is None:            # $ok ? $user : null  ->  ?User
             base = strip_opt(ta or tb)
-            if not is_heap(base) or base in ("db", "rows", "sub", "stream"):
-                raise CompileError(f"?: with null on one side needs a string, list, map or object on the other "
-                                   f"(?{base} is not in Pin yet)", e.line)
+            if base not in ("int", "float", "bool") and (not is_heap(base) or base in ("db", "rows", "sub", "stream")):
+                raise CompileError(f"?: with null on one side needs a value that can be null on the other (got "
+                                   f"{base})", e.line)
             ta = tb = "?" + base
-        elif is_opt(ta) or is_opt(tb):
+        elif (is_opt(ta) or is_opt(tb)) and strip_opt(ta) == strip_opt(tb):
             ta = tb = "?" + strip_opt(ta)
+        if is_opt_scalar(ta):                   # $ok ? 5 : null: make the pair at the end of each arm
+            for pos, arm, which in sorted([(pos_b, arm_b, "b"), (pos_a, arm_a, "a")], reverse=True):
+                if arm is None:
+                    if which == "a":
+                        va = "zeroinitializer"
+                    else:
+                        vb = "zeroinitializer"
+                elif arm != ta:
+                    x, y = self.tmp(), self.tmp()
+                    old = va if which == "a" else vb
+                    self.body[pos:pos] = [f"  {x} = insertvalue {llty(ta)} undef, {llty(arm)} {old}, 0",
+                                          f"  {y} = insertvalue {llty(ta)} {x}, i1 true, 1"]
+                    if which == "a":
+                        va = y
+                    else:
+                        vb = y
         if ta != tb:
             raise CompileError(f"both sides of ?: must have the same type (got {ta} and {tb}). "
                                f"Convert one side, e.g. strval($n) or intval($s)", e.line)
@@ -3729,6 +3899,8 @@ class FuncGen:
         if name == "json_encode":
             self.argc(e, 1)
             v, t = self.borrow(args[0])
+            if is_opt_scalar(t):
+                return self.json_opt_scalar(v, t), "string", True
             if is_opt(t):                       # null -> null (null.md N8)
                 bad = unjsonable(t)
                 if bad:
@@ -4750,10 +4922,6 @@ def resolve_type(t, mid, imports, line, file=None):
         return t
     if t.startswith("?"):
         inner = resolve_type(t[1:], mid, imports, line, file)
-        if inner in ("int", "float", "bool"):
-            raise CompileError(f"?{inner} is not in Pin yet (only ?string, ?list<...>, ?map<...> and ?ClassName so far: "
-                               f"null.md step 5). Use a value that means 'none', e.g. -1, or a parameter default",
-                               line, file)
         if inner in ("void", "db", "rows", "sub", "stream") or is_task(inner):
             raise CompileError(f"{inner} cannot be null: ?{inner} is not a type", line, file)
         return "?" + inner
@@ -5065,7 +5233,8 @@ def compile_file(path, src=None):
                 except CompileError as err:
                     err.file = ci.file
                     raise
-            ci.fields[pr.name] = Field(pr.name, ft, pr.vis, pr.default, len(ci.fields), pr.line)
+            ci.fields[pr.name] = Field(pr.name, ft, pr.vis, pr.default, ci.slots, pr.line)
+            ci.slots += nslots(ft)
         for m in ci.node.methods:
             if m.name in ci.methods:
                 raise CompileError(f"class {ci.name} has two methods called {m.name}()", m.line, ci.file)
