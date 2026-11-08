@@ -492,6 +492,20 @@ $x = try hub_next($s, 10) catch ($e) { ""; };
 $y = try hub_next($s, 10) catch ($e) { ""; };
 echo $y, " has id ", hub_last_id($s), "\n";''',
   ["Send it as the SSE event id (`sse_send_id`) so a client can resume from it."])
+f("request_deadline", H, "request_deadline(int $ms): void", "Give the running request at most `$ms` milliseconds.",
+  r'''function handle(string $method, string $path, string $body): string throws {
+    request_deadline(300);                     // the whole request, tasks included
+    $s = hub_subscribe("orders");
+    return try hub_next($s, 5000);             // ends at 300 ms with error 504
+}
+echo "inside serve() only\n";''',
+  ["When the time is up, every wait of the request ends — `await`, `sleep_ms`, `hub_next`, `http_get` / "
+   "`http_post`, `run`, also inside its tasks — and fails with error 504; whatever the handler returns after "
+   "that, the client gets `504 {\"error\":\"Gateway Timeout\"}`.",
+   "Code that computes without waiting is not interrupted: the deadline takes effect at its next wait.",
+   "Calling it again can only make the deadline earlier. Outside a `serve()` request it does nothing.",
+   "1 to 3600000 ms (else panic)."],
+  php="Like `set_time_limit()` for one request, but it also stops the request's tasks and network waits.")
 f("sse_start", H, "sse_start(): void throws",
   "Turn the response into a Server-Sent Events stream (`text/event-stream`), sent as it is written.",
   r'''function handle(string $method, string $path, string $body): string throws {

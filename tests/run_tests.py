@@ -737,6 +737,49 @@ if "--no-server" not in sys.argv:
             proc.terminate()
             proc.wait(timeout=5)
 
+if "--no-server" not in sys.argv:
+    print("request deadlines (tests/server/deadline.pn on :8097)")
+    out = os.path.join(BUILD, "server_deadline")
+    b = build(os.path.join(ROOT, "tests", "server", "deadline.pn"), out)
+    if b.returncode:
+        fail("tests/server/deadline.pn", "build failed: " + b.stderr[-400:])
+    else:
+        proc = subprocess.Popen([out], env=dict(os.environ, PN_THREADS="2"), stdout=subprocess.DEVNULL,
+                                stderr=server_log(out))
+        try:
+            for _ in range(50):
+                try:
+                    socket.create_connection(("127.0.0.1", 8097), timeout=0.2).close()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            for path, want, body in [("/wait", 504, '{"error":"Gateway Timeout"}'),
+                                     ("/sleep", 504, '{"error":"Gateway Timeout"}'),
+                                     ("/tasks", 504, '{"error":"Gateway Timeout"}'),
+                                     ("/caught", 504, '{"error":"Gateway Timeout"}'),
+                                     ("/fast", 200, '{"fast":true}')]:
+                t0 = time.time()
+                got = http(8097, "GET", path)
+                took = time.time() - t0
+                (ok if got == (want, body) and took < 1.5 else lambda n: fail(n, f"{got} after {took:.2f}s"))(
+                    f"GET {path}: {want} in {took * 1000:.0f} ms")
+            before = open_fds(proc.pid)
+            import threading  # noqa: E402
+            res = []
+            ts = [threading.Thread(target=lambda: res.append(http(8097, "GET", "/tasks")[0])) for _ in range(100)]
+            for th in ts:
+                th.start()
+            for th in ts:
+                th.join()
+            grew = open_fds(proc.pid) - before
+            alive = http(8097, "GET", "/fast")
+            (ok if res.count(504) == 100 and grew < 10 and alive[0] == 200 else
+             lambda n: fail(n, f"{sorted(set(res))} fds+{grew} {alive}"))(
+                "100 parallel requests past their deadline: all 504, nothing left open, the server keeps going")
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
 if SANITIZE:
     print("sanitizer reports in the servers' logs")
     for log in sorted(glob.glob(os.path.join(BUILD, "*.log"))):

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`request_deadline($ms)`**: the whole request — its waits and its tasks' waits (`await`, `sleep_ms`, `hub_next`,
+  `http_*`, `run`) — gets at most that long; then every wait fails with 504 and the client gets `504 Gateway
+  Timeout`, whatever the handler returns afterwards. Built on the same cancellation as a client that leaves;
+  computing loops are not interrupted. Checked under load and with ASAN (tests/server/deadline.pn).
 - `ord()`, `chr()` and `rawurlencode()` (PHP's): bytes to numbers and back, and percent-encoding for values in URLs
   (used by Tack's MCP tools to build request paths).
 - Import paths may have `[name]` / `[...name]` parts (route files of the Tack framework): `import

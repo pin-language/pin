@@ -210,6 +210,55 @@ static void handler_task(void *arg) {
     if (r->panicked) die();                     // a task it started panicked after it finished waiting
 }
 
+// ---- request deadlines (design: pin-language/docs design/tack.md T6)
+// request_deadline(ms) puts the running request on this thread's list; the worker loop cancels it when the
+// time comes, the same way as when the client leaves: every wait of its tasks ends, now with 504, and the
+// answer is 504 whatever the handler returns afterwards. Computing loops are not interrupted (no waits).
+static __thread Req *dl_head;
+
+static void dl_unlink(Req *r) {
+    if (!r->dl_linked) return;
+    if (r->dl_prev) r->dl_prev->dl_next = r->dl_next; else dl_head = r->dl_next;
+    if (r->dl_next) r->dl_next->dl_prev = r->dl_prev;
+    r->dl_prev = r->dl_next = NULL;
+    r->dl_linked = 0;
+}
+
+void pn_request_deadline(int64_t ms) {
+    if (!cur_req || !cur_req->conn) return;      // outside a server request (a CLI program, a test): nothing
+    if (ms < 1 || ms > 3600000) panic_msg("request_deadline(): give 1 to 3600000 milliseconds");
+    int64_t at = now_ms() + ms;
+    if (cur_req->deadline && cur_req->deadline <= at) return;   // an earlier deadline stays
+    cur_req->deadline = at;
+    if (!cur_req->dl_linked) {
+        cur_req->dl_next = dl_head;
+        if (dl_head) dl_head->dl_prev = cur_req;
+        dl_head = cur_req;
+        cur_req->dl_linked = 1;
+    }
+}
+
+// Cancel the requests whose deadline passed; the ms until the next one, or -1.
+static int64_t deadlines_fire(int64_t now) {
+    int64_t next = -1;
+    for (Req *r = dl_head, *nx; r; r = nx) {
+        nx = r->dl_next;
+        if (now >= r->deadline) {
+            dl_unlink(r);
+            if (!r->cancelled) {
+                r->timed_out = 1;
+                r->cancelled = 1;
+                for (Task *t = r->tasks; t; t = t->req_next) wake_waiting(t);
+            }
+        } else if (next < 0 || r->deadline - now < next) {
+            next = r->deadline - now;
+        }
+    }
+    return next;
+}
+
+static const char timeout_body[] = "{\"error\":\"Gateway Timeout\"}";
+
 // The request's task ended: write the response (unless the client is gone) and free the request.
 static void request_done(Task *t) {
     RunArgs *ra = t->ctx;
@@ -218,9 +267,9 @@ static void request_done(Task *t) {
     if (c->streaming) {
         c->close_after = 1;                     // the handler wrote the body; the end of the stream is a close
     } else if (!c->orphan) {
-        int64_t st = r->status;
-        const char *body = ra->resp ? ra->resp->data : internal_error_body;
-        size_t blen = ra->resp ? (size_t)ra->resp->len : sizeof internal_error_body - 1;
+        int64_t st = r->timed_out ? 504 : r->status;
+        const char *body = r->timed_out ? timeout_body : ra->resp ? ra->resp->data : internal_error_body;
+        size_t blen = r->timed_out ? sizeof timeout_body - 1 : ra->resp ? (size_t)ra->resp->len : sizeof internal_error_body - 1;
         char head[160];
         int hn = snprintf(head, sizeof head, "HTTP/1.1 %lld %s\r\n%s", (long long)st, reason(st),
                           r->resp_has_ctype ? "" : "Content-Type: application/json\r\n");
@@ -234,6 +283,7 @@ static void request_done(Task *t) {
     }
     c->busy = NULL;
     task_unlink_req(t);
+    dl_unlink(r);                               // before the free: the deadline list must not point at it
     req_free_all(r);                            // the response body, method, path, body and anything left over
     free(r->hdr); free(r->resp_hdr); free(r);
     t->req = NULL;
@@ -604,6 +654,8 @@ static void *worker(void *arg) {
             if (!c->dead) conn_progress(ep, c, now);
         }
         int64_t wait = timers_fire(now);
+        int64_t dl = deadlines_fire(now);
+        if (dl >= 0 && (wait < 0 || dl < wait)) wait = dl;
         if (ready_head) continue;
         int n = poll_wait(ep, evs, 256, wait < 0 || wait > 1000 ? 1000 : (int)wait);
         now = now_ms();

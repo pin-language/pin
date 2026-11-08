@@ -57,7 +57,11 @@ typedef struct Req {
     int panicked;                       // a task of this request panicked: the whole request answers 500
     struct Task *root;                  // the handler's task
     struct Task *tasks;                 // every live task of the request (linked through req_next)
-    int cancelled;                      // the client is gone (a stream's connection closed)
+    int cancelled;                      // the client is gone (a stream's connection closed), or the deadline passed
+    int timed_out;                      // request_deadline() passed: waits fail with 504, the answer is 504
+    int64_t deadline;                   // absolute ms (now_ms), 0 = none
+    struct Req *dl_prev, *dl_next;      // this thread's requests with a deadline (server.c)
+    int dl_linked;
     void *conn;                         // its connection (Conn *), for sse_*
 } Req;
 
