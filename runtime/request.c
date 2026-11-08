@@ -335,3 +335,29 @@ Str *pn_env(Str *name) {
     const char *v = memchr(name->data, 0, (size_t)name->len) ? NULL : getenv(name->data);
     return v ? str_from(v, (int64_t)strlen(v)) : str_alloc(0);
 }
+
+// ord("A") = 65: the first byte (0 for ""), like PHP.  chr(65) = "A": one byte, n taken modulo 256 like PHP.
+int64_t pn_ord(Str *s) { return s->len ? (unsigned char)s->data[0] : 0; }
+
+Str *pn_chr(int64_t n) {
+    char c = (char)(((n % 256) + 256) % 256);
+    return str_from(&c, 1);
+}
+
+// rawurlencode: %XX for every byte but A-Z a-z 0-9 - _ . ~ (RFC 3986), like PHP's rawurlencode.
+Str *pn_rawurlencode(Str *s) {
+    static const char hex[] = "0123456789ABCDEF";
+    Str *out = str_alloc(checked_size(s->len, 3, 0));
+    int64_t n = 0;
+    for (int64_t i = 0; i < s->len; i++) {
+        unsigned char c = (unsigned char)s->data[i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+            c == '.' || c == '~') {
+            out->data[n++] = (char)c;
+        } else {
+            out->data[n++] = '%'; out->data[n++] = hex[c >> 4]; out->data[n++] = hex[c & 15];
+        }
+    }
+    out->len = n; out->data[n] = 0;
+    return out;
+}

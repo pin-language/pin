@@ -18,6 +18,16 @@ def f(name, cat, sig, summary, example, notes=(), php=None, run=True, kind="func
 S, L, N, V, J, H = "strings", "lists-and-maps", "numbers", "conversions", "json", "http"
 
 # ----------------------------------------------------------------------------------------- strings
+f("ord", S, "ord(string $s): int", "The first byte of a string as a number (0 to 255); 0 for `\"\"`.",
+  r'''echo ord("A"), " ", ord("a"), " ", ord(""), " ", ord("ไ"), "\n";''',
+  ["A byte, not a character: Thai and other non-ASCII characters are several bytes."])
+f("chr", S, "chr(int $n): string", "A one-byte string with the byte `$n` (taken modulo 256, like PHP).",
+  r'''echo chr(72), chr(105), chr(33 + 256), "\n";''')
+f("rawurlencode", S, "rawurlencode(string $s): string",
+  "Percent-encode everything but `A-Z a-z 0-9 - _ . ~`, for a value inside a URL path or query.",
+  r'''echo "/search?q=" . rawurlencode("tea & cake/ไทย"), "\n";''',
+  ["Spaces become `%20` (PHP's `urlencode` writes `+`; Pin has only this one)."],
+  php="Same as PHP's `rawurlencode`.")
 f("strlen", S, "strlen(string $s): int", "Length of a string in bytes.",
   r'''echo strlen("hello"), " ", strlen("ไทย"), " ", strlen(""), "\n";''',
   ["Counts bytes, not characters: each Thai character is 3 bytes in UTF-8."])

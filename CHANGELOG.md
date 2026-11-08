@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ord()`, `chr()` and `rawurlencode()` (PHP's): bytes to numbers and back, and percent-encoding for values in URLs
+  (used by Tack's MCP tools to build request paths).
 - Import paths may have `[name]` / `[...name]` parts (route files of the Tack framework): `import
   routes/users/[id] as user;` (a name with `as` is required for them). The built-in `Error` type can be named in
   modules too (it was "unknown type" outside the main file).

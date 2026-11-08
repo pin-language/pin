@@ -1,4 +1,7 @@
 {
+ "ord": "65 97 0 224\n",
+ "chr": "Hi!\n",
+ "rawurlencode": "/search?q=tea%20%26%20cake%2F%E0%B9%84%E0%B8%97%E0%B8%A2\n",
  "strlen": "5 9 0\n",
  "substr": "world|llo|ell|ell||\n",
  "strpos": "2 -1 0\n",
