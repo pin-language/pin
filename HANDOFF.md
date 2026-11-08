@@ -2,11 +2,12 @@
 
 ## 0. Next session (updated 2026-10-26, after the overnight run on the prerequisites)
 
-**Tack M1 and M3 are built** (2026-10-26; M3 = guards with deny by default, API keys, sessions): github.com/pin-language/tack, branch `next` (its default: the first push;
+**Tack M1, M2 and M3 are built** (M3 2026-10-26: guards, API keys, sessions; M2 2026-11-08: OpenAPI 3.1 from the route types): github.com/pin-language/tack, branch `next` (its default: the first push;
 the repository is **private**), local clone ../pin-tack. `tack` command (Python: reads routes/ with pinac's
 parser, writes the dispatcher as Pin), package `tack.pn`, `examples/shop`, `tests/run.py` (13 checks), CI on
-Linux and macOS against pin's `next` (18 checks). Design and decisions: docs `design/tack.md`. Next for Tack:
-M2 (OpenAPI from the route types) or M4 (stream routes, deadlines); not yet: cookies, CSRF, rate limits. Built overnight on `next` (pin and docs), CI green on Linux
+Linux and macOS against pin's `next` (21 checks with openapi-spec-validator in CI). Design and decisions: docs
+`design/tack.md`. Next for Tack: M4 (stream routes, deadlines) or M6 (MCP from the OpenAPI data); not yet:
+cookies, CSRF, rate limits. Built overnight on `next` (pin and docs), CI green on Linux
 and macOS for each push, ASAN suite (`run_tests.py --sanitize`) 216/216, not released:
 
 | P | what | state |
