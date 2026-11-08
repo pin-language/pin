@@ -187,8 +187,8 @@ numbered list below is the older order; items 3, 4 and 7 are folded into P1–P5
 3. **Strings** (strings.md): UTF-8 validation at the edges (invalid request → 400), `substr` boundary
    panic, `mb_*`, `grapheme_*`.
 4. ~~**Null**~~ (null.md) steps 1–4 built on `next` 2026-11-08. Left: step 5 (`?int` etc. as `{i64, i1}`; measure
-   the benchmarks), step 6 (containers of `?T`), property narrowing. A fresh-agent test of null (lookup,
-   optional header, optional JSON field) is not done yet.
+   the benchmarks), step 6 (containers of `?T`), property narrowing. Fresh-agent test of null done 2026-11-09
+   (Sonnet, guide only: clean on the first `pin check`, all curl cases right; the guide gap on optional JSON fields fixed).
 5. ~~`list<string>`~~ done in 0.2.0 (plus explode/implode/sort, query/form/JSON request helpers).
    Nested containers done in 0.5.0.
 6. ~~Request headers + timeouts~~ done in 0.6.0 (`tests/server/limits.pn`: slowloris, smuggling, injection,
