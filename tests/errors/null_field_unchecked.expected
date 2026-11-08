@@ -1,0 +1,1 @@
+$p->note may be null (?string). Put it in a variable and check that: $x = $p->note; if ($x !== null) { ... }, or give a default with $p->note ?? ... (a check on a property or call result does not carry over to the next use)

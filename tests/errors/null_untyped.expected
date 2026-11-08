@@ -1,0 +1,1 @@
+null can only go where a ?T type is expected (a ?T variable, parameter, property or return value). For a new variable write its type: ?User $u = null;

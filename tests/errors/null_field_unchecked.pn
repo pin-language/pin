@@ -1,0 +1,4 @@
+<?php
+class User { public string $name; function __construct(string $n) { $this->name = $n; } }
+function find(int $id): ?User { if ($id == 1) { return new User("a"); } return null; }
+class P { public ?string $note; } $p = new P(); echo strlen($p->note);

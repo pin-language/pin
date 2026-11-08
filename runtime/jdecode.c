@@ -430,6 +430,11 @@ IntOrError pn_jd_field(Str *j, int64_t p, Str *key) {
 
 int64_t pn_jd_has(Str *j, int64_t p, Str *key) { return jd_find(j, p, key) >= 0; }
 
+// Is the value at p JSON null? (a ?T field: null.md N8)
+int64_t pn_jd_null(Str *j, int64_t p) {
+    return !jd_bad_pos(j, p) && j->len - p >= 4 && !memcmp(j->data + p, "null", 4);
+}
+
 // ---- arrays: position of the first item (-1 if empty), then of each next one (-1 at the end)
 IntOrError pn_jd_first(Str *j, int64_t p) {
     IntOrError r = {-1, NULL};

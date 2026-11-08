@@ -1,0 +1,1 @@
+list<?string> is not in Pin yet (null.md step 6): a list cannot hold null. Leave the missing items out, or use a map keyed by position

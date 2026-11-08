@@ -1,0 +1,2 @@
+<?php
+function h(map<string,?string> $m): int { return 0; }

@@ -1,0 +1,47 @@
+<?php
+// how checks narrow a ?T variable (null.md N2): if / else, early return, while, &&, ||, !, ternary, isset
+class User { public string $name; function __construct(string $n) { $this->name = $n; } }
+function find(int $id): ?User { if ($id < 3) { return new User("u$id"); } return null; }
+function early(int $id): string {
+    $u = find($id);
+    if ($u === null) { return "none"; }
+    return $u->name;                     // the null path returned
+}
+function negated(int $id): string {
+    $u = find($id);
+    if (!($u !== null)) { return "none"; }
+    return $u->name;
+}
+function either(int $id): string {
+    $u = find($id);
+    if ($u === null || $u->name == "u0") { return "skip"; }
+    return $u->name;                     // || : both checks failed, so $u is set
+}
+function elsebranch(int $id): string {
+    $u = find($id);
+    if ($u === null) { return "none"; } else { echo ""; }
+    return $u->name;
+}
+function wait(): string {
+    $id = 5;
+    $u = find($id);
+    while ($u === null) { $id -= 1; $u = find($id); }
+    return $u->name;                     // the loop ends only when $u is not null
+}
+function lend(?User &$u): void { $u = null; }
+function lent(): string {
+    $u = find(1);
+    if ($u !== null) { lend(&$u); }
+    return $u?->name ?? "cleared by lend()";
+}
+echo early(1), " ", early(4), "\n";
+echo negated(2), " ", negated(9), "\n";
+echo either(0), " ", either(1), " ", either(7), "\n";
+echo elsebranch(1), " ", elsebranch(5), "\n";
+echo wait(), "\n";
+echo lent(), "\n";
+$v = find(2);
+echo isset($v) ? $v->name : "unset", "\n";
+echo $v !== null ? "yes " . $v->name : "no", "\n";
+$w = find(8);
+echo $w === null ? "w is null" : $w->name, "\n";

@@ -20,7 +20,7 @@
  "copy": "2 3 [[1],[2]] [[1,9],[2]]\n",
  "sort": "[1,2,3] [\"Alice\",\"bob\",\"carol\"]\n",
  "rsort": "[3,2,1]\n",
- "isset": "ynyn\n",
+ "isset": "ynyn\nnull\n",
  "array_key_exists": "yes\n",
  "unset": "{\"b\":2}\n",
  "intdiv": "3 -3\n",

@@ -76,7 +76,7 @@ f("fill", L, "fill(int $n, int|float|bool|string $value): list", "A new list wit
 $flags[1] = true;
 echo json_encode($flags), " ", json_encode(fill(2, "x")), "\n";''',
   ["A negative or impossibly large `$n` panics."], php="Pin's version of `array_fill(0, $n, $value)`.")
-f("copy", L, "copy(list|map|object|string $x): same type", "An independent copy you own, with everything inside it.",
+f("copy", L, "copy(list|map|object|string|?T $x): same type", "An independent copy you own, with everything inside it.",
   r'''$a = [1, 2];
 $b = copy($a);
 $b[] = 3;
@@ -101,12 +101,16 @@ f("rsort", L, "rsort(list $xs): void", "Sort a list variable in place, largest f
 rsort($xs);
 echo json_encode($xs), "\n";''',
   ["Same rules as `sort()`."])
-f("isset", L, "isset($list[$i] | $map[$key]): bool", "Whether a list index is in range or a map key exists.",
+f("isset", L, "isset($list[$i] | $map[$key] | ?T $x): bool", "Whether a list index is in range, a map key exists, or a ?T variable is not null.",
   r'''$m = ["tea" => 40];
 $xs = [10, 20];
-echo isset($m["tea"]) ? "y" : "n", isset($m["cake"]) ? "y" : "n", isset($xs[1]) ? "y" : "n", isset($xs[5]) ? "y" : "n", "\n";''',
-  ["Use it (or `??`) before reading a key that may be missing: reading a missing map key panics."],
-  php="Works only on one list item or map entry; there is no `null`, so there is no `isset($x)` for a plain variable.")
+echo isset($m["tea"]) ? "y" : "n", isset($m["cake"]) ? "y" : "n", isset($xs[1]) ? "y" : "n", isset($xs[5]) ? "y" : "n", "\n";
+?string $note = null;
+echo isset($note) ? "set" : "null", "\n";''',
+  ["Use it (or `??`) before reading a key that may be missing: reading a missing map key panics.",
+   "`isset($x)` on a `?T` variable is the same as `$x !== null`, and like it, counts `$x` as checked in the "
+   "branch where it is true."],
+  php="Works on one list item, one map entry, or one `?T` variable; not on a property path or an expression.")
 f("array_key_exists", L, "array_key_exists(key, map|list $m): bool", "Same as `isset($m[$key])`.",
   r'''$m = ["a" => 1];
 echo array_key_exists("a", $m) ? "yes" : "no", "\n";''',
@@ -163,7 +167,7 @@ f("(string)", V, "(string) $x", "Cast to string: the same as `strval()`.",
   notes=["There is no `(bool)` cast: compare instead, e.g. `$n != 0`."])
 
 # ----------------------------------------------------------------------------------------- json
-f("json_encode", J, "json_encode(int|float|bool|string|list|map|object $x): string", "JSON text for a value.",
+f("json_encode", J, "json_encode(int|float|bool|string|list|map|object|?T $x): string", "JSON text for a value.",
   r'''class Line {
     public function __construct(public string $item, public int $qty, private int $cost) {}
 }
@@ -171,7 +175,8 @@ echo json_encode(["name" => "ไทย", "note" => "a\"b"]), " ", json_encode([1
 echo json_encode([new Line("tea", 2, 80)]), " ", json_encode([[1, 2], [3]]), "\n";''',
   ["UTF-8 text is kept as is (like `JSON_UNESCAPED_UNICODE`); whole floats keep `.0`.",
    "Objects become JSON objects of their public properties, in declaration order; private properties are left out.",
-   "A map has one value type; for a JSON object with mixed values, use a class."],
+   "A map has one value type; for a JSON object with mixed values, use a class.",
+   "A null `?T` value (or property) is written `null`; null properties are kept in the output, like PHP."],
   php=r"PHP escapes non-ASCII as `\uXXXX` and drops `.0` unless `JSON_PRESERVE_ZERO_FRACTION` is set.")
 f("json_raw", J, "json_raw(string $json, string $key): string",
   "The JSON text of one value of an object (an object, an array or anything), to read further with the json_* functions.",
@@ -212,7 +217,8 @@ Order $bad = try json_decode("{\"item\":\"tea\",\"qty\":\"2\"}") catch ($e) { ec
    "an int, `null`), invalid JSON or nesting deeper than 64 levels fail with `error(400, \"<path>: <what>\")`, "
    "e.g. `$.lines[1].qty: want an integer, got a string`.",
    "Optional fields: give the constructor parameter a default (`public int $limit = 20`); a field may then be "
-   "left out. Every other field must be there (a class without `__construct` needs all its public properties).",
+   "left out. A `?T` field (`?string $email`) accepts JSON `null` and may also be left out; both give null. "
+   "Every other field must be there (a class without `__construct` needs all its public properties).",
    "A class with `__construct` is built by calling it with the JSON fields named like its parameters, so its "
    "checks run (throw `error(400, ...)` there). A class without one gets its public properties filled.",
    "Fields may be int, float (an integer is accepted), bool, string, other classes, `list<T>` and "

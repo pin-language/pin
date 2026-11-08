@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **null** (design/null.md steps 1–4): `?string`, `?list<T>`, `?map<K,V>` and `?ClassName` for variables,
+  parameters, returns and properties (a `?T` property starts as null). A `?T` variable must be checked before use;
+  `if ($u !== null)`, `if ($u === null) { return; }`, `&&`, `||`, `!`, `isset($u)`, `while` and `?:` narrow it to
+  `T`. `$u?->name`, `$x ?? "default"`, `find($id) ?? throw error(404, "...")`. `json_encode` writes `null`;
+  `json_decode` gives null for a `?T` field that is null or missing. A class may hold `?Itself` (linked lists).
+  Same pointer as before with null = 0: programs without `?T` compile to the same code. Not yet: `?int` /
+  `?float` / `?bool`, `list<?T>` / `map<K,?T>`, narrowing a property. `=== null` on a value that is never null
+  is a compile error.
+- Fix: `list<?string>` lexed `<?` as the PHP open tag.
 - **PostgreSQL** with the same `db_*` functions: `db_open(env("DATABASE_URL"))` with a `postgres://` URL
   (design/postgres.md). libpq does the protocol, SCRAM and TLS; it is loaded at run time only by programs that
   open PostgreSQL, so SQLite programs need nothing new. Queries never block the thread (4 × `pg_sleep(0.4)` on one

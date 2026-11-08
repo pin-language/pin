@@ -18,7 +18,7 @@ limits, `db_all`/`db_one` into classes, PostgreSQL in `tack check` (Pin has it n
 |---|---|---|
 | P1 | connection pool (`design/pool.md`) | **built** for SQLite: same programs, 181k–189k req/s vs 24.6k–26.0k (one-query handler, M2). `db_pool()`, K3/K4 compile errors. Not built: K6 statement cache |
 | P2 | `json_decode()` into a class | **built**: strict, paths in errors (`$.lines[1].qty: ...`), constructors run, nested classes / lists / `map<string,T>` |
-| P3 | parameter defaults + `null` | **defaults built** (also make `json_decode` fields optional). `null` **not built**: `design/null.md` has a 6-step build plan; too wide (types + flow + layout) to rush safely |
+| P3 | parameter defaults + `null` | **built.** Defaults 2026-10-26; `null` steps 1–4 of `design/null.md` 2026-11-08: `?string`/`?list`/`?map`/`?Class`, narrowing of variables in `class Flow` (`nonnull`), `?->`, `??`, `?? throw`, JSON. Not built: step 5 `?int`/`?float`/`?bool`, step 6 `list<?T>`/`map<K,?T>`, narrowing a property (see null.md "As built"). Tests `tests/null_*.pn`, `tests/errors/null_*.pn` |
 | P4 | PostgreSQL (`design/postgres.md`) | **built** (2026-11-08): G1–G7, libpq loaded with dlopen, non-blocking, pooled, K4 rules for PostgreSQL. Tests `tests/pg/` + `tests/server/pg.pn` run when `PIN_TEST_POSTGRES` is set (CI: Linux + macOS). Local: `PIN_TEST_POSTGRES=postgres://$USER@localhost/pin_test` (Homebrew postgresql@16) |
 | P5 | security built-ins | **built**: `hash`/`hash_hmac`("sha256"), `hash_equals`, `random_token`, `random_int`, `password_hash`/`password_verify` (PBKDF2-SHA256 600k) |
 
@@ -173,7 +173,8 @@ numbered list below is the older order; items 3, 4 and 7 are folded into P1–P5
 
 1. ~~Shared control-flow analysis~~ — **done** as `class Flow` (per-path assigned/moved/live, merged at
    joins; loops require the back-edge state to be no worse than the loop head, which avoids a fixpoint).
-   Still to add on top of it when the features arrive: null-narrowed vars (null.md N2), live borrows
+   Still to add on top of it when the features arrive: ~~null-narrowed vars (null.md N2)~~ (built 2026-11-08 as
+   `Flow.nonnull`), live borrows
    (ownership-v2 R2 — needs "last use" liveness, a backward pass over the function body), pending tasks
    (concurrency.md C1). Each is one more field in `Flow` plus its merge rule.
 2. ~~Error handling~~ done in 0.6.0: `throws`, `try`, `catch`, `error(code, msg)`, handler `throws`.
@@ -185,7 +186,9 @@ numbered list below is the older order; items 3, 4 and 7 are folded into P1–P5
    when a set is done. Next set: async (concurrency.md C1–C11).
 3. **Strings** (strings.md): UTF-8 validation at the edges (invalid request → 400), `substr` boundary
    panic, `mb_*`, `grapheme_*`.
-4. **Null** (null.md). Classes (ownership-v2 R1–R7) done in 0.5.0 — null needs `?T` properties now.
+4. ~~**Null**~~ (null.md) steps 1–4 built on `next` 2026-11-08. Left: step 5 (`?int` etc. as `{i64, i1}`; measure
+   the benchmarks), step 6 (containers of `?T`), property narrowing. A fresh-agent test of null (lookup,
+   optional header, optional JSON field) is not done yet.
 5. ~~`list<string>`~~ done in 0.2.0 (plus explode/implode/sort, query/form/JSON request helpers).
    Nested containers done in 0.5.0.
 6. ~~Request headers + timeouts~~ done in 0.6.0 (`tests/server/limits.pn`: slowloris, smuggling, injection,

@@ -6,16 +6,16 @@
 
 Has: functions; go/await tasks, a Hub for messages between requests, Server-Sent Events, an http://
 client and run(); nested JSON reading (json_raw) and read_line() for stdin (MCP servers: package
-github.com/pin-language/mcp); throws/try/catch errors; classes (no inheritance) with methods and & parameters; int, float, bool, string; list<T> and
+github.com/pin-language/mcp); throws/try/catch errors; null as ?string / ?list / ?map / ?Class, checked before use; classes (no inheritance) with methods and & parameters; int, float, bool, string; list<T> and
 ordered map<K,V>, nested freely; ownership checks; a multi-threaded
 JSON HTTP server (serve) with query/form/JSON-body helpers; SQLite and PostgreSQL (db_*) where SQL injection does not compile;
 modules (import/export, module::fn()); Git packages (pin get, pin.lock with sha256).
-Not yet: inheritance/interfaces, null, finally, closures.
+Not yet: inheritance/interfaces, ?int/?float/?bool, finally, closures.
 By design: no TLS — a proxy does https in both directions (design/tls.md).
 
 Read the AI guide before writing Pin — https://github.com/pin-language/docs/blob/HEAD/ai-guide.md (raw URL below): it is the complete language on one page. The PHP habits
 that do not compile, most common first:
-- no null / ?T: use -1, "", an empty list or a bool
+- null only in ?T types (?User, ?string, ?list<int>): check `$u !== null` (or `?->`, `??`) before use; no ?int yet (use -1)
 - a map holds ONE value type: for JSON objects with mixed values declare a class and json_encode(new Obj(...))
 - empty containers need a type: list<int> $xs = []; map<string,int> $m = [];
 - functions that can fail are declared `: T throws`; every call needs `try f()` or `try f() catch ($e) { ...; value; }`

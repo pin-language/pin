@@ -3,7 +3,7 @@
 > **🤖 AI coding agents: before writing any Pin code, read the complete guide —
 > https://github.com/pin-language/docs/blob/HEAD/ai-guide.md** (one page; plain text:
 > https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md). Pin looks like PHP but
-> many PHP habits do not compile: no `null`, a map holds one value type (use a class for mixed JSON), empty
+> many PHP habits do not compile: `null` only in `?T` types and checked before use, a map holds one value type (use a class for mixed JSON), empty
 > containers need a type, calls that can fail need `try`. Loop on `pin check --json file.pn`. See also
 > [AGENTS.md](AGENTS.md) and [llms.txt](llms.txt).
 
@@ -86,7 +86,7 @@ echo total(squares(10)), "\n";          // 385
 3. Run with `pin run file.pn`. Run-time errors print `panic: ...` with the line and exit 1 (inside an
    HTTP handler they answer 500 and the server keeps going).
 
-Messages are written for agents trained on PHP: reaching for `extends`, `finally`, `switch`, `null`,
+Messages are written for agents trained on PHP: reaching for `extends`, `finally`, `switch`, `?int`,
 `array()`, closures or `include` gets "not in Pin yet — write this instead", not a parse error.
 
 ## Commands
@@ -214,8 +214,8 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 
 ## Not there yet
 
-Inheritance and interfaces, `null` / nullable types, `finally`, closures.
-`json_decode()` into a class, `go`/`await`, and SQLite and PostgreSQL (with a connection pool) are built.
+Inheritance and interfaces, `?int` / `?float` / `?bool` and lists or maps holding null, `finally`, closures.
+`null` for strings, lists, maps and objects (`?User`, checked before use), `json_decode()` into a class, `go`/`await`, and SQLite and PostgreSQL (with a connection pool) are built.
 Most of these are already designed in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
 [CHANGELOG.md](CHANGELOG.md) for what changed.
 
