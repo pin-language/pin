@@ -6,7 +6,10 @@
 the first push; the repository is **private**), local clone ../pin-tack. M1 file routing, M2 OpenAPI 3.1 from
 the route types, M3 guards (deny by default) + API keys + sessions, M4 stream routes (SSE) + `deadline()`,
 M5 migrations + SQL prepared against them at build time, M6 the routes as MCP tools (Streamable HTTP; checked
-with the official MCP Python SDK in CI). `tests/run.py` 34 checks, CI on Linux and macOS against pin's `next`.
+with the official MCP Python SDK in CI). `tests/run.py` 37 checks, CI on Linux and macOS against pin's `next`.
+Fresh-agent test (Sonnet, README + AI guide only, 2026-11-08): a notes API with sessions, guards, SSE, a deadline,
+OpenAPI and MCP — all worked, 2 `tack check` rounds; its gaps were fixed (fresh test database via
+`tack::database()`, `tack new` writes tack.json + migrations/, a Reference section).
 The generator is the `tack` command (Python, pinac's parser); compiler changes it needed: `[name]` import
 paths, `Error` in modules, `ord`/`chr`/`rawurlencode`, `request_deadline()`. Not yet: cookies, CSRF, rate
 limits, `db_all`/`db_one` into classes, PostgreSQL. Design and decisions: docs `design/tack.md`.
