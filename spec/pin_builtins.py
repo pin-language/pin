@@ -654,8 +654,9 @@ f("password_hash", SEC, "password_hash(string $password): string",
 echo substr($h, 0, 22), "...\n";''',
   ["PBKDF2-HMAC-SHA256 with 600,000 rounds (OWASP's figure for this algorithm) and a random 16-byte salt, "
    "stored as `$pbkdf2-sha256$600000$<salt>$<hash>`; two calls give different strings.",
-   "Slow on purpose: about 0.5 s on an Apple M2 (portable C; hardware SHA instructions are not used yet). It "
-   "keeps the server thread busy meanwhile, so call it only at sign-up and password change.",
+   "Slow on purpose: about 0.04 s on an Apple M2 (the CPU's SHA-256 instructions on arm64), about 0.5 s where "
+   "the portable code runs (x86 for now). It keeps the server thread busy meanwhile: call it at sign-up, "
+   "sign-in and password change only.",
    "Store the whole string (it fits in TEXT); check with `password_verify()`."],
   php="`password_hash($password, PASSWORD_DEFAULT)` without the second argument; PHP uses bcrypt, Pin PBKDF2, so "
       "hashes do not move between them.")

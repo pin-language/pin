@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `password_hash` / `password_verify` use the CPU's SHA-256 instructions on arm64 (Apple, and Linux when the CPU
+  has them): ~0.04 s instead of ~0.5 s on an M2, same results (checked against the portable code on 100,000
+  random blocks and the published vectors). x86 still uses the portable code.
 - **`request_deadline($ms)`**: the whole request — its waits and its tasks' waits (`await`, `sleep_ms`, `hub_next`,
   `http_*`, `run`) — gets at most that long; then every wait fails with 504 and the client gets `504 Gateway
   Timeout`, whatever the handler returns afterwards. Built on the same cancellation as a client that leaves;

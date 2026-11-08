@@ -153,7 +153,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | B11 | Panic outside a request still `exit(1)` (correct for CLI programs) | runtime | by design |
 | B12 | ~~use-after-free on every HTTP request (`request_done` / `cur_req`), crashed under load~~ fixed 2026-10-25; found by the pool measurement (pin-language/docs design/pool.md step 0). CI had not sanitized any server since 0.7.0: now `run_tests.py --sanitize` | runtime | memory safety |
 | B13 | ~~HTTP/1.0 keep-alive: no `Connection: keep-alive` in the answer, so `ab -k` hung~~ fixed 2026-10-26 (test in limits) | server | low |
-| B14 | `password_hash` / `password_verify` take ~0.5 s and hold the server thread meanwhile (portable SHA-256; OpenSSL with ARMv8/SHA-NI instructions: 0.06 s). Fix: hardware SHA, or run PBKDF2 off the worker thread | runtime | speed |
+| B14 | ~~`password_hash` ~0.5 s~~ arm64 uses the SHA-256 instructions since 2026-11-08 (~0.04 s on M2). Left: x86 SHA-NI (Linux x86 still ~0.5 s; untested: Linux arm64's getauxval path, no CI runner) | runtime | speed |
 | B15 | a full pool makes `db_open()` panic (500) after 5 s, not answer 503 (`db_open` does not `throws`) | runtime | low |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int
