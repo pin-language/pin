@@ -1625,6 +1625,37 @@ def lent_names(node):
     return out
 
 
+def changed_roots(node):
+    """Variables whose objects code inside node may change: targets of assignments into paths, the objects of
+    method calls (any method: kept simple), and what unset() / sort() / foreach with & work on. Checks on their
+    properties do not hold across such code (null.md N2)."""
+    out = set()
+
+    def root_of(e):
+        r, _ = path_root(e) if isinstance(e, Node) else (None, ())
+        if r:
+            out.add(r)
+
+    def walk(x):
+        if isinstance(x, Node):
+            if x.kind == "assign":
+                root_of(x.target)
+            elif x.kind in ("mcall", "nsmcall"):
+                root_of(x.obj)
+            elif x.kind == "call" and x.name in ("unset", "sort", "rsort") and x.args:
+                root_of(x.args[0])
+            elif x.kind == "foreach" and getattr(x, "ref", False):
+                root_of(x.seq)
+            for k, v in x.__dict__.items():
+                if k not in ("kind", "line"):
+                    walk(v)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+    walk(node)
+    return out
+
+
 def written_names(node):
     """Variables a piece of code may give a new value: assigned, declared, a foreach or catch variable, or lent
     with &. A loop that writes $u cannot keep $u checked-not-null from before the loop (null.md N2)."""
@@ -1841,6 +1872,7 @@ class FuncGen:
         """Every change goes through here: `root` is the variable the changed data hangs from, `props` the
         properties on the way ($o->items[] = ...: "$o", ("items",))."""
         at = self.at if at is None else at
+        self.drop_paths([root], props)
         if root == "$this" and self.method:
             if not self.method.changing:
                 if not self.mod.inferring:
@@ -1941,15 +1973,31 @@ class FuncGen:
             if e is not None and e.kind == "var":
                 raise CompileError(f"{w} may be null ({t}). Check it first with if ({w} !== null) {{ ... }}, or give "
                                    f"a default with {w} ?? ...", line)
+            if e is not None and e.kind == "field" and self.path_key(e):
+                root = self.path_key(e).split("->")[0]
+                raise CompileError(f"{w} may be null ({t}). Check it first with if ({w} !== null) {{ ... }} (the "
+                                   f"check holds until {root} is changed), or give a default with {w} ?? ...", line)
             raise CompileError(f"{w} may be null ({t}). Put it in a variable and check that: $x = {w}; if ($x !== "
                                f"null) {{ ... }}, or give a default with {w} ?? ... (a check on a property or "
                                f"call result does not carry over to the next use)", line)
 
     def null_facts(self, e):
-        """(variables not null when e is true, variables not null when e is false)"""
+        """(variables and property paths not null when e is true, ... when e is false)"""
         t, f = self._facts(e)
-        lent = lent_names(e)
-        return t - lent, f - lent
+        gone = lent_names(e) | changed_roots(e)       # changed inside the condition itself
+        keep = lambda ks: {k for k in ks if k.split("->")[0] not in gone}
+        return keep(t), keep(f)
+
+    def checkable_path(self, e):
+        """The key of a property path of ?T type ($u->email), or None."""
+        if e.kind != "field":
+            return None
+        key = self.path_key(e)
+        if key is None:
+            return None
+        ot = self.static_type(e.obj)
+        f = CLASSES[ot].fields.get(e.name) if ot and is_class(ot) else None
+        return key if f and is_opt(f.type) else None
 
     def _facts(self, e):
         k = e.kind
@@ -1957,17 +2005,31 @@ class FuncGen:
             o = e.r if e.l.kind == "null" else e.l
             if o.kind == "var" and is_opt(self.vars.get(o.name, "")):
                 return ({o.name}, set()) if e.op == "!=" else (set(), {o.name})
+            key = self.checkable_path(o)
+            if key:
+                return ({key}, set()) if e.op == "!=" else (set(), {key})
         if k == "call" and e.name == "isset" and len(e.args) == 1 and e.args[0].kind == "var" \
                 and is_opt(self.vars.get(e.args[0].name, "")):
             return {e.args[0].name}, set()
+        if k == "call" and e.name == "isset" and len(e.args) == 1 and self.checkable_path(e.args[0]):
+            return {self.checkable_path(e.args[0])}, set()
         if k == "unary" and e.op == "!":
             t, f = self._facts(e.e)
             return f, t
         if k == "bin" and e.op in ("&&", "||"):
             tl, fl = self._facts(e.l)
+            added = self.narrow(tl if e.op == "&&" else fl)     # $u->a !== null && $u->a->b !== null
             tr, fr = self._facts(e.r)
+            self.flow.nonnull -= added
             return (tl | tr, fl & fr) if e.op == "&&" else (tl & tr, fl | fr)
         return set(), set()
+
+    def forget_written(self, node):
+        """Before a loop: forget the checks the loop body may undo (variables it writes, paths of objects it
+        changes) — the next round may see null again."""
+        names = written_names(node)
+        self.flow.nonnull -= names
+        self.drop_paths(names | changed_roots(node))
 
     def narrow(self, names):
         """Count `names` as not null until undo(); returns what to undo."""
@@ -1995,7 +2057,15 @@ class FuncGen:
                 v = self.tmp()
                 self.emit(f"{v} = load {llty(t)}, ptr {self.slot(o.name)}")
         else:
-            v, t = self.borrow(o)
+            key = self.path_key(o) if o.kind == "field" else None
+            again = key in self.flow.nonnull    # a checked property compared again: read its real ?T value
+            if again:
+                self.flow.nonnull.discard(key)
+            try:
+                v, t = self.borrow(o)
+            finally:
+                if again:
+                    self.flow.nonnull.add(key)
         if not is_opt(t):
             raise CompileError(f"{show(o)} is {t}, which is never null, so this check is always "
                                f"{'false' if e.op == '==' else 'true'}. Remove it (only ?T values can be null)", e.line)
@@ -2319,7 +2389,42 @@ class FuncGen:
         o, ot = self.obj_value(e.obj)
         self.not_null(e.obj, ot, e.line)
         f = self.field_info(ot, e.name, e.line)
-        return self.load_at(self.field_ptr(o, f), f.type, "elem"), f.type, False
+        v, t = self.load_at(self.field_ptr(o, f), f.type, "elem"), f.type
+        if self.path_checked(e, t):             # checked not null and unchanged since (null.md N2)
+            if is_opt_scalar(t):
+                x = self.tmp()
+                self.emit(f"{x} = extractvalue {llty(t)} {v}, 0")
+                v = x
+            t = t[1:]
+        return v, t, False
+
+    # property paths ($u->email, $this->a->b) checked not null: kept in Flow.nonnull as "$u->email" until
+    # anything changes $u (every change goes through mutating(), and loops forget what their body changes)
+    def path_key(self, e):
+        if e.kind == "var":
+            return e.name if e.name in self.vars else None
+        if e.kind == "field":
+            k = self.path_key(e.obj)
+            return k and f"{k}->{e.name}"
+        return None
+
+    def path_checked(self, e, t):
+        if not is_opt(t):
+            return False
+        k = self.path_key(e)
+        return k is not None and "->" in k and k in self.flow.nonnull
+
+    def drop_paths(self, roots, props=()):
+        """Forget checked paths of these variables; with props, only those that overlap the changed property
+        ($u->addr = ... keeps $u->email checked)."""
+        roots = set(roots)
+        gone = set()
+        for k in self.flow.nonnull:
+            if "->" in k:
+                r, *p = k.split("->")
+                if r in roots and overlaps(tuple(p), tuple(props)):
+                    gone.add(k)
+        self.flow.nonnull -= gone
 
     def static_type(self, e):
         """The type of a path or call without generating code, or None when it cannot be told this way."""
@@ -2330,6 +2435,8 @@ class FuncGen:
             ot = self.static_type(e.obj)
             if ot and is_class(ot):
                 f = CLASSES[ot].fields.get(e.name)
+                if f and self.path_checked(e, f.type):
+                    return f.type[1:]
                 return f.type if f else None
             return None
         if k == "nsfield":
@@ -2490,6 +2597,8 @@ class FuncGen:
             self.require_assigned(root, call.line)
         if t != want and a.kind == "var" and self.vars.get(root) == want:
             t = want                            # a checked ?T variable lent as ?T: it may come back null
+        if t != want and a.kind == "field" and self.path_key(a) in self.flow.nonnull and "?" + t == want:
+            t = want                            # the same for a checked property (mutating() forgets the check)
         if t != want:
             raise CompileError(f"{who}() needs {want} for &{show(a)}, but it is {t}", call.line)
         if a.kind == "var" and is_opt(want):
@@ -4090,8 +4199,8 @@ class FuncGen:
         if name in ("isset", "array_key_exists"):
             if name == "isset":
                 self.argc(e, 1)
-                if args[0].kind == "var" and is_opt(self.vars.get(args[0].name, "")):     # isset($u): not null
-                    return self.null_compare(Node("bin", e.line, op="!=", l=args[0], r=Node("null", e.line)))
+                if (args[0].kind == "var" and is_opt(self.vars.get(args[0].name, ""))) or self.checkable_path(args[0]):
+                    return self.null_compare(Node("bin", e.line, op="!=", l=args[0], r=Node("null", e.line)))   # not null
                 if args[0].kind != "index":
                     raise CompileError("isset() needs a list item or map entry, e.g. isset($m[$k]), or a ?T "
                                        "variable", e.line)
@@ -4525,6 +4634,7 @@ class FuncGen:
             self.flow.maybe.discard(name)
         self.emit(f"store {llty(t)} {v}, ptr {self.slot(name)}")
         self.flow.assigned.add(name)
+        self.drop_paths([name])                 # a new object: nothing checked on the old one holds
         if is_opt(t):                           # $u = new User(...) is known not null; $u = find(...) is not
             if is_opt(vt):
                 self.flow.nonnull.discard(name)
@@ -4707,7 +4817,12 @@ class FuncGen:
                 raise CompileError(f"{show(tg.seq)} is {st}; $a[] = value appends to lists only", line)
             tt = elem_of(st)
         else:
+            key = self.path_key(tg) if tg.kind == "field" else None
+            checked = key in self.flow.nonnull
+            self.flow.nonnull.discard(key)      # storing into $u->email: its declared ?T type, not the checked T
             tt = self.static_type(tg)
+            if checked:
+                self.flow.nonnull.add(key)
             if tt is None:
                 self.place(tg, line)            # reports what is wrong with the path
                 raise CompileError(f"cannot assign to {show(tg)}", line)
@@ -4734,6 +4849,8 @@ class FuncGen:
             if is_heap(t):
                 self.call("void", free_fn(t), f"ptr {self.load_at(p, t, st)}")
             self.store_at(p, v, t, st)
+            if tg.kind == "field" and is_opt(t) and not is_opt(vt) and self.path_key(tg):
+                self.flow.nonnull.add(self.path_key(tg))    # $u->email = "a@b.c": not null from here on
             if this_field:
                 self.flow.assigned.add(f"$this->{tg.name}")
             return
@@ -4800,7 +4917,7 @@ class FuncGen:
 
     def loop(self, cond, step, body, node):
         head, bodyl, stepl, end = (self.newlabel(x) for x in ("loop", "body", "step", "endloop"))
-        self.flow.nonnull -= written_names([cond, step, body])     # the next round may see them null again
+        self.forget_written([cond, step, body])     # the next round may see them null again
         head_flow = self.flow.copy()
         exit_flow = head_flow
         self.open_loops.append((node.first, node.order, node.kills))
@@ -4895,7 +5012,7 @@ class FuncGen:
         walked = root is not None
         if walked:
             self.iterating.append((root, props, s.line))
-        self.flow.nonnull -= written_names(s.body)
+        self.forget_written(s.body)
         head_flow = self.flow.copy()
         head, bodyl, stepl, end = (self.newlabel(x) for x in ("fe", "febody", "festep", "feend"))
         self.place_label(head)

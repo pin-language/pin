@@ -1,0 +1,13 @@
+<?php
+// a checked property stops counting as checked when a changing method runs on its object
+class User {
+    public ?string $email;
+    public function __construct() {}
+    public function forget(): void { $this->email = null; }
+}
+$u = new User();
+$u->email = "a@b.c";
+if ($u->email !== null) {
+    $u->forget();
+    echo strlen($u->email);
+}

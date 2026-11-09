@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A checked property counts as not null** (null.md N2): `if ($u->email !== null) { strlen($u->email); }`,
+  `$u->addr !== null && $u->addr->zip !== null`, `$this->email`, until the object is changed (assignment, a
+  changing method, `&`, or a loop that does so).
 - **`mb_strtolower`, `mb_strtoupper`** (full Unicode case, final sigma) and **`normalizer_normalize()`** with
   `Normalizer::FORM_C` / `FORM_D` / `FORM_KC` / `FORM_KD` (strings.md ST5, ST6): every code point and 200,000
   strings give what Python gives. Binaries are now linked with dead stripping: a program carries only the parts

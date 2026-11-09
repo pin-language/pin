@@ -1,0 +1,1 @@
+tests/errors/null_field_changed.pn:12: error: $u->email may be null (?string)

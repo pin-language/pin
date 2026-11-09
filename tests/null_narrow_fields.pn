@@ -1,0 +1,32 @@
+// property paths narrowed by a check (null.md N2): $u->email, $u->addr->zip, $this->email; kept until the object changes
+class Address { public function __construct(public string $city, public ?string $zip = null) {} }
+class User {
+    public ?string $email;
+    public ?Address $addr;
+    public ?int $age;
+    public function __construct(public string $name) {}
+    public function forget(): void { $this->email = null; }
+    public function shout(): string {
+        if ($this->email === null) { return "no email"; }
+        return strtoupper($this->email);
+    }
+}
+$u = new User("ann");
+$u->email = "a@b.c";
+$u->addr = new Address("Bangkok", "10110");
+$u->age = 30;
+if ($u->email !== null) { echo strlen($u->email), " ", $u->email, "\n"; }
+if ($u->addr !== null && $u->addr->zip !== null) { echo $u->addr->city, " ", strlen($u->addr->zip), "\n"; }
+if ($u->age !== null) { echo $u->age + 1, "\n"; }
+if (isset($u->email)) { echo "isset ", $u->email, "\n"; }
+echo $u->shout(), "\n";
+function show(User $u): string {
+    if ($u->addr === null) { return "nowhere"; }
+    return $u->addr->city;
+}
+echo show($u), "\n";
+$u->email = "x@y.z";
+echo strlen($u->email), "\n";       // assigned a string just now: not null
+$n = 0;
+while ($u->age !== null && $n < 3) { $n += $u->age; $u->age = null; }
+echo $n, "\n";
