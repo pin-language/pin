@@ -1087,7 +1087,7 @@ BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_po
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
             "url_path", "query_param", "form_param", "query_has", "form_has", "floatval", "json_has",
             "db_open", "db_exec", "db_query", "db_json", "db_next", "db_int", "db_float", "db_string",
-            "db_is_null", "db_last_id", "db_error", "db_pool", "hash", "hash_hmac", "hash_equals", "random_token",
+            "db_is_null", "db_last_id", "db_error", "db_pool", "db_all", "db_one", "hash", "hash_hmac", "hash_equals", "random_token",
             "random_int", "password_hash", "password_verify", "env", "time", "request_deadline", "ord", "chr", "rawurlencode", "json_decode", "__jd_doc", "__jd_object", "__jd_field",
             "__jd_int", "__jd_float", "__jd_bool", "__jd_string", "__jd_first", "__jd_next", "__jd_mfirst",
             "__jd_key", "__jd_val", "__jd_mnext", "__jd_has", "__jd_null", "json_string", "json_int", "json_float",
@@ -1119,6 +1119,7 @@ declare { i64, ptr } @pn_jd_bool(ptr, i64)
 declare { ptr, ptr } @pn_jd_string(ptr, i64)
 declare { i64, ptr } @pn_jd_first(ptr, i64)
 declare i64 @pn_jd_next(ptr, i64)
+declare void @pn_db_row_panic(ptr, ptr)
 declare { i64, ptr } @pn_jd_mfirst(ptr, i64)
 declare ptr @pn_jd_key(ptr, i64)
 declare i64 @pn_jd_val(ptr, i64)
@@ -3621,6 +3622,80 @@ class FuncGen:
                                f'(list<string>, list<int> or list<float>), e.g. ["tea", "2"]; got {t}', e.line)
         return v, KIND[elem_of(t)]
 
+    def db_rows_into(self, e, hint):
+        """db_all($db, $sql, $params) -> list<C>, db_one(...) -> ?C: the rows as objects of the class where the
+        value goes, read through db_json() and the class's json_decode() reader (T7). A row that does not fit the
+        class is a bug in the program, so it panics (500), not a 400."""
+        name = e.name
+        want = elem_of(hint) if hint and name == "db_all" and is_list(hint) else \
+            hint[1:] if hint and name == "db_one" and is_opt(hint) else None
+        if not (want and is_class(want) and not getattr(CLASSES[want], "builtin", False)):
+            shape = "list<User> $users = db_all($db, ...);" if name == "db_all" else "?User $u = db_one($db, ...);"
+            raise CompileError(f"{name}() needs to know the class of the rows: write it where the type is known, "
+                               f"e.g. {shape} (or return it from a function declared : "
+                               f"{'list<User>' if name == 'db_all' else '?User'})", e.line)
+        ci = CLASSES[want]
+        why = decodable(want)
+        if why:
+            raise CompileError(f"{name}() cannot build a {ci.name}: {why}", e.line)
+        key = f"__jd_C_{ci.name}" if not ci.mid else f"{ci.mid}::__jd_C_{ci.name}"
+        if key not in self.mod.funcs:
+            raise CompileError(f"{name}() cannot build a {ci.name} here: one of its fields names a class its "
+                               f"module does not import", e.line)
+        j, _, _ = self.db_builtin(Node("call", e.line, name="db_json", args=e.args))   # same SQL rules
+        what = self.mod.lit(f"{name}() into {ci.name}")
+
+        def checked(ret, fn, args):              # a reader's error: the row does not fit, a panic
+            r, v, err = self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{r} = call {fn_llret(ret, True)} {fn}({', '.join(args)})")
+            self.emit(f"{v} = extractvalue {fn_llret(ret, True)} {r}, 0")
+            self.emit(f"{err} = extractvalue {fn_llret(ret, True)} {r}, 1")
+            c, ok, bad = self.tmp(), self.newlabel("rowok"), self.newlabel("rowbad")
+            self.emit(f"{c} = icmp ne ptr {err}, null")
+            self.emit(f"br i1 {c}, label %{bad}, label %{ok}, !prof !11")
+            self.place_label(bad)
+            self.call("void", "@pn_db_row_panic", f"ptr {err}", f"ptr {what}")
+            self.emit("unreachable")
+            self.place_label(ok)
+            return v
+
+        doc = checked("int", "@pn_jd_doc", [f"ptr {j}"])
+        q0 = checked("int", "@pn_jd_first", [f"ptr {j}", f"i64 {doc}"])
+        dec = f'@"f.{key}"'
+        if name == "db_one":                     # the first row, or null when there is none
+            start, has, end = self.label, self.newlabel("row"), self.newlabel("rows")
+            c = self.tmp()
+            self.emit(f"{c} = icmp sge i64 {q0}, 0")
+            self.emit(f"br i1 {c}, label %{has}, label %{end}")
+            self.place_label(has)
+            o = checked(want, dec, [f"ptr {j}", f"i64 {q0}"])
+            got = self.label
+            self.emit(f"br label %{end}")
+            self.place_label(end)
+            r = self.tmp()
+            self.emit(f"{r} = phi ptr [ null, %{start} ], [ {o}, %{got} ]")
+            self.call("void", "@pn_str_free", f"ptr {j}")
+            return r, "?" + want, True
+        lst = self.call("ptr", "@pn_list_new", "i64 8")
+        pre, head, body, done = self.label, self.newlabel("rowhead"), self.newlabel("rowbody"), self.newlabel("rowend")
+        self.emit(f"br label %{head}")
+        self.place_label(head)
+        q, qn, c = self.tmp(), self.tmp(), self.tmp()
+        phi_at = len(self.body)
+        self.emit("")                            # the phi, filled in below once the loop's last block is known
+        self.emit(f"{c} = icmp sge i64 {q}, 0")
+        self.emit(f"br i1 {c}, label %{body}, label %{done}")
+        self.place_label(body)
+        o = checked(want, dec, [f"ptr {j}", f"i64 {q}"])
+        self.call("void", "@pn_list_push", f"ptr {lst}", "i64 8", f"i64 {self.to_bits(o, want)}")
+        self.emit(f"{qn} = call i64 @pn_jd_next(ptr {j}, i64 {q})")
+        back = self.label
+        self.emit(f"br label %{head}")
+        self.body[phi_at] = f"  {q} = phi i64 [ {q0}, %{pre} ], [ {qn}, %{back} ]"
+        self.place_label(done)
+        self.call("void", "@pn_str_free", f"ptr {j}")
+        return lst, f"list<{want}>", True
+
     def db_builtin(self, e):
         name = e.name
         if name in ("db_open", "db_pool") and e.args and e.args[0].kind == "str" and \
@@ -4188,6 +4263,8 @@ class FuncGen:
             if name == "json_int":
                 return self.call("i64", fn, f"ptr {src}", f"ptr {key}"), "int", False
             return self.i64_to_bool(self.call("i64", fn, f"ptr {src}", f"ptr {key}")), "bool", False
+        if name in ("db_all", "db_one"):
+            return self.db_rows_into(e, hint)
         if name.startswith("db_"):
             return self.db_builtin(e)
         if name == "json_encode":
@@ -5565,7 +5642,7 @@ def compile_file(path, src=None):
             raise CompileError(f"class {ci.name} contains itself through its properties, so no {ci.name} could ever "
                                f"be built. Hold it in a list (list<{ci.name}>), make the property ?{ci.name}, or "
                                f"store an id instead", ci.node.line, ci.file)
-    if any("json_decode" in read_source(file) for file in order):
+    if any(re.search(r"json_decode|db_all|db_one", read_source(file)) for file in order):   # they share the readers
         gen_decoders(mods, order)
     for file in order:
         mid, funcs, _, table, _ = mods[file]

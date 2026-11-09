@@ -14,7 +14,7 @@ The generator is the `tack` command (Python, pinac's parser); compiler changes i
 paths, `Error` in modules, `ord`/`chr`/`rawurlencode`, `request_deadline()`. PostgreSQL in Tack built 2026-11-09
 (`"database": {"env": "DATABASE_URL"}`: check prepares the SQL on the server in a rolled-back transaction,
 tests in a fresh schema, migrations under an advisory lock; sessions use Pin's new `time()`). Cookie sessions + CSRF
-check + rate limits built 2026-11-09. Not yet: `db_all`/`db_one` into classes. Design and decisions: docs `design/tack.md`.
+check + rate limits built 2026-11-09. `db_all`/`db_one` into classes built 2026-11-09 (columns checked by `tack check`). Design and decisions: docs `design/tack.md`.
 
 | P | what | state |
 |---|---|---|

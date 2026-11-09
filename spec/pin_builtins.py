@@ -484,6 +484,33 @@ echo db_json($db, "SELECT id, name, qty, price FROM items ORDER BY id", []), "\n
    "PostgreSQL: integer, float and numeric columns become numbers (`NaN` and `Infinity` strings), `bool` "
    "`true`/`false`, `json`/`jsonb` are included as they are, everything else (dates, uuid, text) a string.",
    "The easiest way to answer an API request with query results — no loop, no string building."])
+f("db_all", D, "db_all(db $db, string $sql, list $params): list<T>",
+  "Run a SELECT and get every row as an object of the class where the list goes.",
+  r'''class Item {
+    public function __construct(public int $id, public string $name, public ?int $qty = null) {}
+}
+''' + SETUP + r'''db_exec($db, "INSERT INTO items (name, qty) VALUES ('tea', 2), ('cake', NULL)", []);
+list<Item> $items = db_all($db, "SELECT id, name, qty FROM items ORDER BY id", []);
+foreach ($items as $i) { echo $i->name, " ", $i->qty ?? 0, "\n"; }''',
+  ["The class comes from where the value goes: `list<Item> $xs = db_all(...)` or `return db_all(...)` from a "
+   "function declared `: list<Item>`. Column names are the constructor's parameters (or the public properties); "
+   "`?T` and parameters with a default may be missing, NULL gives null.",
+   "A row that does not fit (a missing or extra column, a wrong type, the constructor refuses it) is a bug in the "
+   "program and **panics** (500 in a handler). Tack checks the columns against the class when you build.",
+   "SQLite has no booleans: read 0 / 1 into an `int`. Same SQL rules as `db_query()` (literal SQL, `?` values)."],
+  php="Like PDO's `fetchAll(PDO::FETCH_CLASS, Item::class)`, but typed and checked.")
+f("db_one", D, "db_one(db $db, string $sql, list $params): ?T",
+  "Run a SELECT and get the first row as an object of the class where it goes, or null when there is none.",
+  r'''class Item {
+    public function __construct(public int $id, public string $name) {}
+}
+''' + SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES ('tea')", []);
+?Item $t = db_one($db, "SELECT id, name FROM items WHERE name = ?", ["tea"]);
+?Item $x = db_one($db, "SELECT id, name FROM items WHERE name = ?", ["nope"]);
+echo $t?->name ?? "none", " ", $x?->name ?? "none", "\n";''',
+  ["Write it as `?Item $i = db_one(...)`, then check: `if ($i === null) { throw error(404, \"...\"); }`.",
+   "Only the first row is read; add `LIMIT 1` when more could match. The same rules as `db_all()`."],
+  php="Like PDO's `fetchObject()`, but typed: null instead of `false`.")
 f("db_last_id", D, "db_last_id(db $db): int", "The id of the last row inserted on this connection.",
   SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
 db_exec($db, "INSERT INTO items (name) VALUES (?)", ["cake"]);

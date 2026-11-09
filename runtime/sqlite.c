@@ -317,6 +317,16 @@ int64_t pn_db_last_id(Db *d) {
                         "with db_query(), e.g. db_query($db, \"INSERT INTO t (name) VALUES (?) RETURNING id\", [$name])");
     return d->h ? sqlite3_last_insert_rowid(d->h) : 0;
 }
+// db_all() / db_one(): a row that does not fit the class (a column missing, one too many, a wrong type, or
+// the constructor refused it) is a bug in the program: panic with the reader's message ($[row].column: ...).
+void pn_db_row_panic(PinError *e, Str *what) {
+    fflush(stdout);
+    fprintf(stderr, "panic: %.*s: a row does not fit the class: %.*s (the SELECT's column names must be the "
+            "class's fields; SQLite has no booleans: 0 / 1 read as int)\n", (int)what->len, what->data,
+            (int)e->message->len, e->message->data);
+    die();
+}
+
 Str *pn_db_error(Db *d) { return str_from_lossy(d->err, (int64_t)strlen(d->err)); }
 
 // the whole result as a JSON array of objects, with JSON types from SQLite's (NULL -> null)

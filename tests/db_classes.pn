@@ -1,0 +1,17 @@
+// db_all() / db_one(): rows straight into objects of the class where the value goes (T7)
+class Product {
+    public function __construct(public int $id, public string $name, public int $price, public ?string $note = null) {}
+}
+function cheap(db $db, int $max): list<Product> {
+    return db_all($db, "SELECT id, name, price, note FROM products WHERE price <= ? ORDER BY id", [strval($max)]);
+}
+$db = db_open(":memory:");
+db_exec($db, "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price INTEGER NOT NULL, note TEXT)", []);
+db_exec($db, "INSERT INTO products (name, price, note) VALUES ('tea', 45, NULL), ('cake', 120, 'ไทย'), ('rice', 30, NULL)", []);
+foreach (cheap($db, 50) as $p) { echo $p->id, " ", $p->name, " ", $p->price, " ", $p->note ?? "-", "\n"; }
+?Product $one = db_one($db, "SELECT id, name, price, note FROM products WHERE name = ?", ["cake"]);
+if ($one !== null) { echo $one->name, " ", $one->note ?? "-", "\n"; }
+?Product $none = db_one($db, "SELECT id, name, price, note FROM products WHERE name = ?", ["nope"]);
+echo $none === null ? "no row\n" : "row\n";
+list<Product> $all = db_all($db, "SELECT id, name, price FROM products ORDER BY price DESC", []);
+echo count($all), " ", json_encode($all), "\n";

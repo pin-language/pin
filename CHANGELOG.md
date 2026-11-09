@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`db_all()` / `db_one()`**: rows straight into objects, `list<Order> $os = db_all($db, "SELECT ...", [])`,
+  `?Order $o = db_one(...)`. The class comes from where the value goes; a row that does not fit panics. Tack
+  checks the columns against the class at build time (SQLite and PostgreSQL).
 - SHA-256 uses the x86 SHA extensions when the CPU has them (as it already did on arm64): `password_hash()` on
   Linux x86 servers gets the same ~13x as on Apple M2.
 - A request whose `db_open()` finds no free pooled connection within 5 s, or a PostgreSQL server that does not

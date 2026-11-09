@@ -1,0 +1,1 @@
+panic: db_all() into Product: a row does not fit the class: $[0]: missing field "price"
