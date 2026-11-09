@@ -142,7 +142,7 @@ __attribute__((noreturn)) static void pg_connect_fail(PGconn *c, const char *wha
     snprintf(msg, sizeof msg, "%s: %s", what, pq.errorMessage(c));
     pq.finish(c);
     pg_trim(msg);
-    db_panic(fn, msg);
+    db_unavailable(fn, msg);                    // the server is down or unreachable: 503 in a request
 }
 
 static PGconn *pg_connect(const char *url, const char *fn) {
@@ -435,7 +435,7 @@ static Db *pg_open(Str *url) {
                 pg_shown(u, shown, sizeof shown);
                 snprintf(msg, sizeof msg, "all %d connections of this thread to %s stayed in use for %d s "
                          "(raise the limit with db_pool(), or close a $db before waiting)", max, shown, POOL_WAIT_MS / 1000);
-                db_panic("db_open()", msg);
+                db_unavailable("db_open()", msg);
             }
             pn_sleep(2);
         }

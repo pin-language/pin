@@ -199,8 +199,8 @@ static void handler_task(void *arg) {
         req_kill_tasks(r);
         r->resp_hdr_len = 0; r->resp_has_ctype = 0;        // a 500 carries none of the handler's headers
         req_free_all(r);
-        fprintf(stderr, "  in request %s -> 500\n", ra->what);
-        r->status = 500;
+        r->status = r->panic_status ? r->panic_status : 500;
+        fprintf(stderr, "  in request %s -> %lld\n", ra->what, (long long)r->status);
         ra->resp = NULL;
         return;
     }

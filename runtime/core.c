@@ -55,6 +55,7 @@ typedef struct Req {
     char *resp_hdr; size_t resp_hdr_len, resp_hdr_cap;   // extra response header lines (plain malloc)
     int resp_has_ctype;
     int panicked;                       // a task of this request panicked: the whole request answers 500
+    int panic_status;                   // the status a panic answers instead of 500 (503: no database connection)
     struct Task *root;                  // the handler's task
     struct Task *tasks;                 // every live task of the request (linked through req_next)
     int cancelled;                      // the client is gone (a stream's connection closed), or the deadline passed

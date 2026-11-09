@@ -159,7 +159,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | B12 | ~~use-after-free on every HTTP request (`request_done` / `cur_req`), crashed under load~~ fixed 2026-10-25; found by the pool measurement (pin-language/docs design/pool.md step 0). CI had not sanitized any server since 0.7.0: now `run_tests.py --sanitize` | runtime | memory safety |
 | B13 | ~~HTTP/1.0 keep-alive: no `Connection: keep-alive` in the answer, so `ab -k` hung~~ fixed 2026-10-26 (test in limits) | server | low |
 | B14 | ~~`password_hash` ~0.5 s~~ arm64 uses the SHA-256 instructions since 2026-11-08 (~0.04 s on M2). Left: x86 SHA-NI (Linux x86 still ~0.5 s; untested: Linux arm64's getauxval path, no CI runner) | runtime | speed |
-| B15 | a full pool makes `db_open()` panic (500) after 5 s, not answer 503 (`db_open` does not `throws`) | runtime | low |
+| B15 | ~~a full pool makes `db_open()` panic (500)~~ fixed 2026-11-09: still a panic, but it answers 503 (also for a PostgreSQL server that is down): `Req.panic_status` | runtime | done |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int
 overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.

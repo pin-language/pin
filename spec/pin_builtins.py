@@ -408,7 +408,7 @@ echo db_exec($db, "CREATE TABLE t (x INTEGER)", []), "\n";''',
    "does not compile, so the password stays out of git. It needs PostgreSQL's client library at run time "
    "(Ubuntu/Debian `libpq5`, macOS `brew install libpq`); TLS options go in the URL (`?sslmode=require`).",
    "PostgreSQL waits never block the thread: while one request waits for the database, the others run. A "
-   "server that is down panics (500) after up to 10 s."],
+   "server that is down panics after up to 10 s; inside a handler that answers 503 (try again later), not 500."],
   php="Pin's version of `new PDO('sqlite:shop.db')` / `new PDO('pgsql:...')`.")
 f("db_pool", D, "db_pool(string $path, int $per_thread, int $idle_ms): void",
   "Set the connection pool for one database file or PostgreSQL URL (optional).",
@@ -417,7 +417,7 @@ echo "pool set\n";''',
   ["Without it each file gets 4 connections per thread, closed after 60 s unused.",
    "Only at the top level of the program, before `serve()` (compile error inside a function).",
    "When a thread's connections are all in use, `db_open()` waits (other requests keep running) for up to "
-   "5 seconds, then panics — a 500 inside a handler. A handler holds a connection while it waits "
+   "5 seconds, then panics — a 503 inside a handler (clients may retry). A handler holds a connection while it waits "
    "(`sleep_ms`, `await`, `http_get`), so raise the limit for handlers like that.",
    "PostgreSQL: threads × `$per_thread` must stay under the server's `max_connections` (100 by default); "
    "the program prints a warning at the first connection when it does not."],

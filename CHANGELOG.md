@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A request whose `db_open()` finds no free pooled connection within 5 s, or a PostgreSQL server that does not
+  answer, now gets **503** instead of 500 (B15). It is still a panic; only the status changed.
 - `go` tasks take and give `?int`, `?float`, `?bool` (also through `await_all` and `await_timeout`).
 - **A checked property counts as not null** (null.md N2): `if ($u->email !== null) { strlen($u->email); }`,
   `$u->addr !== null && $u->addr->zip !== null`, `$this->email`, until the object is changed (assignment, a

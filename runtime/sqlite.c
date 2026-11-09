@@ -104,6 +104,14 @@ __attribute__((noreturn)) static void db_panic(const char *what, const char *det
     die();
 }
 
+// Inside a request the panic answers 503 instead of 500: the database is there but out of reach for now (every
+// pooled connection stayed busy, or the server does not answer). B15: db_open() does not fail with an error
+// value, so this is still a panic, only with the status that tells clients to try again.
+__attribute__((noreturn)) static void db_unavailable(const char *what, const char *detail) {
+    if (cur_req) cur_req->panic_status = 503;
+    db_panic(what, detail);
+}
+
 #include "postgres.c"
 
 static sqlite3 *db_connect(Str *path) {
@@ -146,7 +154,7 @@ Db *pn_db_open(Str *path) {
                 char msg[200];
                 snprintf(msg, sizeof msg, "all %d connections of this thread to %s stayed in use for %d s "
                          "(raise the limit with db_pool(), or close a $db before waiting)", max, path->data, POOL_WAIT_MS / 1000);
-                db_panic("db_open()", msg);
+                db_unavailable("db_open()", msg);
             }
             pn_sleep(2);                                  // other tasks on this thread run meanwhile
         }

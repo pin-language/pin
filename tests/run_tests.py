@@ -468,6 +468,14 @@ if "--no-server" not in sys.argv:
                 th.join()
             (ok if held.count((200, '{"held":true}')) == 12 else lambda n: fail(n, str(sorted(set(held)))[:300]))(
                 "12 requests holding their connection, 1 per thread (db_pool): the others wait, none fail")
+            held = []
+            ts = [threading.Thread(target=lambda: held.append(http(8086, "GET", "/hold-long")[0])) for _ in range(5)]
+            for th in ts:
+                th.start()
+            for th in ts:
+                th.join()
+            (ok if 503 in held and set(held) <= {200, 503} else lambda n: fail(n, str(held)))(
+                "a connection still busy after 5 s: 503, not 500 (B15; 5 requests, 4 threads, 1 connection each)")
         finally:
             proc.terminate()
             proc.wait(timeout=5)
