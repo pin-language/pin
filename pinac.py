@@ -1010,8 +1010,6 @@ PHP_FUNCTION_HINTS = {
     "array_push": "write $xs[] = $value;", "array_pop": "no array_pop() yet",
     "array_merge": "no array_merge() yet: copy() one list and append the other in a loop",
     "array_slice": "no array_slice() yet: copy the range in a loop", "count_chars": "not in Pin",
-    "sprintf": "no sprintf() yet: build the string with . and \"$var\" interpolation",
-    "printf": "no printf() yet: use echo with . or \"$var\" interpolation",
     "print_r": "no print_r(): echo json_encode($value)", "var_dump": "no var_dump(): echo json_encode($value)",
     "print": "use echo",
     "fgets": "try read_line() reads one line of standard input", "readline": "try read_line()",
@@ -1030,7 +1028,7 @@ PHP_FUNCTION_HINTS = {
     "crypt": "password_hash($password) / password_verify($password, $hash)",
     "urlencode": "rawurlencode($s) (spaces as %20; for query values too)",
     "getenv": "env(\"NAME\") reads an environment variable (\"\" when it is not set)",
-    "date": "no dates yet: time() gives Unix seconds", "microtime": "time() gives whole Unix seconds (no finer clock yet)", "exit": "return from the top level instead",
+"microtime": "time() gives whole Unix seconds (no finer clock yet)", "exit": "return from the top level instead",
     "die": "return from the top level instead",
     "header": "response_header(\"Name\", \"value\") adds a response header; http_status() sets the status",
     "getallheaders": "request_header(\"Name\") reads one request header (\"\" if absent)",
@@ -1071,7 +1069,7 @@ CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int",
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1129,6 +1127,8 @@ declare ptr @pn_mb_chr(i64)
 declare i64 @pn_mb_ord(ptr)
 declare ptr @pn_mb_case(ptr, i64)
 declare ptr @pn_str_replace(ptr, ptr, ptr)
+declare ptr @pn_fmt(ptr, i64, i64, i64, i64, i64)
+declare ptr @pn_date(ptr, i64)
 declare ptr @pn_str_trim_side(ptr, i64)
 declare ptr @pn_ucfirst(ptr, i64)
 declare ptr @pn_htmlspecialchars(ptr)
@@ -3780,6 +3780,66 @@ class FuncGen:
             return self.call("ptr", "@pn_db_error", f"ptr {d}"), "string", True
         raise CompileError(f"unknown function {name}()", e.line)
 
+    def sprintf(self, e, name):
+        """sprintf("%05.2f %s", $x, $s): the format must be a literal, so each conversion's type is checked here
+        and the call becomes a chain of pn_fmt (no varargs at run time)."""
+        if not e.args or e.args[0].kind != "str":
+            raise CompileError(f"{name}() needs its format as a string literal, e.g. {name}(\"%s costs %.2f\", "
+                               f"$item, $price)", e.line)
+        fmt, vals = e.args[0].val, e.args[1:]
+        d = self.call("ptr", "@pn_str_new", "i64 32")
+        i, k, lit = 0, 0, ""
+        spec_re = re.compile(r"%([-+ 0]*)(\d*)(?:\.(\d+))?([sdufFexXobc%])")
+        while i < len(fmt):
+            if fmt[i] != "%":
+                lit += fmt[i]
+                i += 1
+                continue
+            m = spec_re.match(fmt, i)
+            if not m:
+                raise CompileError(f"{name}(): unknown conversion at \"{fmt[i:i + 4]}\" (Pin has %s %d %u %f %F %e %x %X "
+                                   f"%o %b %c %%, with - + 0 space, width and .precision)", e.line)
+            i = m.end()
+            if m.group(4) == "%":
+                lit += "%"
+                continue
+            if lit:
+                d = self.call("ptr", "@pn_str_add_str", f"ptr {d}", f"ptr {self.mod.lit(lit)}")
+                lit = ""
+            if k >= len(vals):
+                raise CompileError(f"{name}(): the format has more conversions than values (%{m.group(4)} is number {k + 1})",
+                                   e.line)
+            flags = sum({"-": 1, "0": 2, "+": 4, " ": 8}[c] for c in set(m.group(1)))
+            width = int(m.group(2) or 0)
+            prec = int(m.group(3)) if m.group(3) is not None else -1
+            if prec >= 0:
+                flags |= 16
+            conv = m.group(4)
+            v, t = self.borrow(vals[k])
+            k += 1
+            if conv == "s":
+                if t != "string":
+                    v, _, owned = self.to_string(v, t, e.line)
+                    if owned:
+                        self.temps.append((v, "string"))
+                bits = self.to_bits(v, "string")
+            elif conv in "fFe":
+                if t not in ("int", "float"):
+                    raise CompileError(f"{name}(): %{conv} needs a number, the value is {t}", e.line)
+                bits = self.to_bits(self.coerce(v, t, "float", e.line, name), "float")
+            else:
+                if t != "int":
+                    raise CompileError(f"{name}(): %{conv} needs an int, the value is {t}"
+                                       + (" (use %f for a float, or intval())" if t == "float" else ""), e.line)
+                bits = v
+            d = self.call("ptr", "@pn_fmt", f"ptr {d}", f"i64 {ord(conv)}", f"i64 {flags}", f"i64 {width}",
+                          f"i64 {prec}", f"i64 {bits}")
+        if lit:
+            d = self.call("ptr", "@pn_str_add_str", f"ptr {d}", f"ptr {self.mod.lit(lit)}")
+        if k < len(vals):
+            raise CompileError(f"{name}(): {len(vals)} values but the format uses {k}", e.line)
+        return d
+
     def num_arg(self, e, i, what):
         v, t = self.borrow(e.args[i])
         if t not in ("int", "float"):
@@ -4225,6 +4285,20 @@ class FuncGen:
             s = self.str_arg(e, 0)
             form = self.int_arg(e, 1) if len(args) == 2 else "16"      # Normalizer::FORM_C, as in PHP
             return self.call("ptr", "@pn_normalize", f"ptr {s}", f"i64 {form}"), "string", True
+        if name in ("sprintf", "printf"):
+            r = self.sprintf(e, name)
+            if name == "sprintf":
+                return r, "string", True
+            self.call("void", "@pn_print_str", f"ptr {r}")
+            n = self.tmp()
+            self.emit(f"{n} = load i64, ptr {r}")
+            self.call("void", "@pn_str_free", f"ptr {r}")
+            return n, "int", False
+        if name == "date":
+            self.argc(e, 1, 2)
+            f = self.str_arg(e, 0)
+            ts = self.int_arg(e, 1) if len(args) == 2 else self.call("i64", "@pn_time")
+            return self.call("ptr", "@pn_date", f"ptr {f}", f"i64 {ts}"), "string", True
         if name == "str_replace":
             self.argc(e, 3)
             a, b, c = self.str_arg(e, 0), self.str_arg(e, 1), self.str_arg(e, 2)

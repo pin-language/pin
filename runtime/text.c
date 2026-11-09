@@ -222,3 +222,133 @@ uint64_t pn_list_extreme(List *l, int64_t kind, int64_t want_max) {
     }
     return best;
 }
+
+// ---- sprintf (the compiler splits the literal format and calls this once per conversion)
+// conv: 's' 'd' 'u' 'f' 'F' 'e' 'x' 'X' 'o' 'b' 'c'; flags: 1 '-' (left), 2 '0' (zeros), 4 '+', 8 ' ', 16 has a
+// precision. bits: the Str * for 's', the double's bits for 'f' 'F' 'e', the int otherwise. Width and precision
+// count bytes as in PHP, but %.Ns never cuts a character in half.
+Str *pn_fmt(Str *d, int64_t conv, int64_t flags, int64_t width, int64_t prec, uint64_t bits) {
+    char buf[512], spec[32];
+    const char *p = buf;
+    int64_t n;
+    if (width > 4096) width = 4096;
+    if (prec > 100) prec = 100;
+    if (conv == 's') {
+        Str *s = (Str *)bits;
+        n = s->len;
+        if ((flags & 16) && prec < n) {
+            n = prec;
+            while (n > 0 && n < s->len && ((unsigned char)s->data[n] & 0xC0) == 0x80) n--;   // a whole character
+        }
+        p = s->data;
+    } else if (conv == 'b') {
+        uint64_t v = bits;
+        char t[65];
+        int k = 0;
+        do { t[k++] = (char)('0' + (v & 1)); v >>= 1; } while (v);
+        for (int i = 0; i < k; i++) buf[i] = t[k - 1 - i];
+        n = k;
+    } else if (conv == 'c') {
+        Str *c = add_utf8(NULL, (uint32_t)((int64_t)bits < 0 || bits > 0x10FFFF || (bits >= 0xD800 && bits <= 0xDFFF) ? 0xFFFD : bits));
+        d = str_add_bytes(d, c->data, c->len);
+        pn_str_free(c);
+        return d;
+    } else {
+        int k = 0;
+        spec[k++] = '%';
+        if (flags & 4) spec[k++] = '+';
+        if (flags & 8) spec[k++] = ' ';
+        if (flags & 16) k += snprintf(spec + k, sizeof spec - (size_t)k, ".%d", (int)prec);
+        if (conv == 'f' || conv == 'F' || conv == 'e') {
+            double v;
+            memcpy(&v, &bits, 8);
+            if (!(flags & 16) && conv != 'e') k += snprintf(spec + k, sizeof spec - (size_t)k, ".6");
+            spec[k++] = conv == 'F' ? 'f' : (char)conv;
+            spec[k] = 0;
+            n = snprintf(buf, sizeof buf, spec, v);
+            char *x = conv == 'e' ? strchr(buf, 'e') : NULL;   // PHP writes 1.5e+3, C 1.5e+03
+            if (x && (x[1] == '+' || x[1] == '-')) {
+                char *z = x + 2;
+                while (z[0] == '0' && z[1]) z++;
+                memmove(x + 2, z, strlen(z) + 1);
+                n = (int64_t)strlen(buf);
+            }
+        } else {
+            if (conv == 'd') { spec[k++] = 'l'; spec[k++] = 'l'; spec[k++] = 'd'; }
+            else { spec[k++] = 'l'; spec[k++] = 'l'; spec[k++] = conv == 'u' ? 'u' : (char)conv; }
+            spec[k] = 0;
+            n = snprintf(buf, sizeof buf, spec, (long long)bits);
+        }
+        if (n < 0) n = 0;
+        if (n >= (int64_t)sizeof buf) n = sizeof buf - 1;
+    }
+    int64_t pad = width > n ? width - n : 0;
+    if (!(flags & 1) && pad) {
+        int zero = (flags & 2) && conv != 's';
+        if (zero && n && (p[0] == '-' || p[0] == '+' || p[0] == ' ')) { d = str_add_bytes(d, p, 1); p++; n--; }   // -0005
+        for (int64_t i = 0; i < pad; i++) d = str_add_bytes(d, zero ? "0" : " ", 1);
+    }
+    d = str_add_bytes(d, p, n);
+    if ((flags & 1) && pad) for (int64_t i = 0; i < pad; i++) d = str_add_bytes(d, " ", 1);
+    return d;
+}
+
+// ---- date($format, $timestamp): PHP's format letters, always in UTC (Pin has no time zones yet)
+Str *pn_date(Str *fmt, int64_t ts) {
+    static const char *days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+    static const char *months[] = {"January", "February", "March", "April", "May", "June", "July", "August",
+                                   "September", "October", "November", "December"};
+    time_t t = (time_t)ts;
+    struct tm tm;
+    gmtime_r(&t, &tm);
+    Str *d = str_alloc(32);
+    char b[64];
+    for (int64_t i = 0; i < fmt->len; i++) {
+        char c = fmt->data[i];
+        int n = -1;
+        switch (c) {
+        case 'd': n = snprintf(b, sizeof b, "%02d", tm.tm_mday); break;
+        case 'j': n = snprintf(b, sizeof b, "%d", tm.tm_mday); break;
+        case 'S': { int m = tm.tm_mday;
+                    n = snprintf(b, sizeof b, "%s", m % 10 == 1 && m != 11 ? "st" : m % 10 == 2 && m != 12 ? "nd" :
+                                                    m % 10 == 3 && m != 13 ? "rd" : "th"); break; }
+        case 'D': n = snprintf(b, sizeof b, "%.3s", days[tm.tm_wday]); break;
+        case 'l': n = snprintf(b, sizeof b, "%s", days[tm.tm_wday]); break;
+        case 'N': n = snprintf(b, sizeof b, "%d", tm.tm_wday ? tm.tm_wday : 7); break;
+        case 'w': n = snprintf(b, sizeof b, "%d", tm.tm_wday); break;
+        case 'z': n = snprintf(b, sizeof b, "%d", tm.tm_yday); break;
+        case 'F': n = snprintf(b, sizeof b, "%s", months[tm.tm_mon]); break;
+        case 'M': n = snprintf(b, sizeof b, "%.3s", months[tm.tm_mon]); break;
+        case 'm': n = snprintf(b, sizeof b, "%02d", tm.tm_mon + 1); break;
+        case 'n': n = snprintf(b, sizeof b, "%d", tm.tm_mon + 1); break;
+        case 't': { static const int md[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+                    int y = tm.tm_year + 1900, leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+                    n = snprintf(b, sizeof b, "%d", md[tm.tm_mon] + (tm.tm_mon == 1 && leap)); break; }
+        case 'L': { int y = tm.tm_year + 1900; n = snprintf(b, sizeof b, "%d", (y % 4 == 0 && y % 100 != 0) || y % 400 == 0); break; }
+        case 'Y': n = snprintf(b, sizeof b, "%d", tm.tm_year + 1900); break;
+        case 'y': n = snprintf(b, sizeof b, "%02d", (tm.tm_year + 1900) % 100); break;
+        case 'a': n = snprintf(b, sizeof b, "%s", tm.tm_hour < 12 ? "am" : "pm"); break;
+        case 'A': n = snprintf(b, sizeof b, "%s", tm.tm_hour < 12 ? "AM" : "PM"); break;
+        case 'g': n = snprintf(b, sizeof b, "%d", tm.tm_hour % 12 ? tm.tm_hour % 12 : 12); break;
+        case 'h': n = snprintf(b, sizeof b, "%02d", tm.tm_hour % 12 ? tm.tm_hour % 12 : 12); break;
+        case 'G': n = snprintf(b, sizeof b, "%d", tm.tm_hour); break;
+        case 'H': n = snprintf(b, sizeof b, "%02d", tm.tm_hour); break;
+        case 'i': n = snprintf(b, sizeof b, "%02d", tm.tm_min); break;
+        case 's': n = snprintf(b, sizeof b, "%02d", tm.tm_sec); break;
+        case 'v': n = snprintf(b, sizeof b, "000"); break;
+        case 'u': n = snprintf(b, sizeof b, "000000"); break;
+        case 'e': case 'T': n = snprintf(b, sizeof b, "UTC"); break;
+        case 'P': n = snprintf(b, sizeof b, "+00:00"); break;
+        case 'p': n = snprintf(b, sizeof b, "Z"); break;
+        case 'O': n = snprintf(b, sizeof b, "+0000"); break;
+        case 'Z': n = snprintf(b, sizeof b, "0"); break;
+        case 'U': n = snprintf(b, sizeof b, "%lld", (long long)ts); break;
+        case 'c': n = (int)strftime(b, sizeof b, "%Y-%m-%dT%H:%M:%S+00:00", &tm); break;
+        case 'r': n = (int)strftime(b, sizeof b, "%a, %d %b %Y %H:%M:%S +0000", &tm); break;
+        case '\\': if (i + 1 < fmt->len) { i++; d = str_add_bytes(d, fmt->data + i, 1); } continue;
+        }
+        if (n < 0) d = str_add_bytes(d, &c, 1);
+        else d = str_add_bytes(d, b, n);
+    }
+    return d;
+}

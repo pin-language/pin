@@ -118,6 +118,23 @@ f("strtoupper", S, "strtoupper(string $s): string", "Upper-case copy; only a–z
 f("trim", S, "trim(string $s): string", "Copy without leading and trailing whitespace.",
   r'''echo "[", trim("  padded \n"), "]\n";''',
   [r"Removes spaces, tabs, `\n`, `\r` and `\v`. There is no second argument yet."])
+f("sprintf", S, "sprintf(string $format, ...$values): string", "Format values into a string, like C and PHP.",
+  r'''echo sprintf("%s: %5.2f baht, %03d items, %x", "tea", 45.5, 7, 255), "\n";
+echo sprintf("[%-6s] [%6s] %+d %.1e %%", "ab", "ab", 3, 1234.5), "\n";''',
+  ["`%s` (any value), `%d` `%u` `%x` `%X` `%o` `%b` `%c` (int; `%c` is the character with that code point), "
+   "`%f` `%F` `%e` (number), `%%`; flags `-` `+` `0` space, a width and `.precision`.",
+   "The format must be a string literal: the compiler checks each value's type against it and the count.",
+   "Widths count bytes as in PHP, but `%.2s` never cuts a character in half."],
+  php="`sprintf()` without `%1$s` positions or `*` widths.")
+f("printf", S, "printf(string $format, ...$values): int", "Print what `sprintf` would give; returns its length in bytes.",
+  r'''printf("%-5s|%5.1f|\n", "tea", 2.25);''')
+f("date", N, "date(string $format, int $timestamp = time()): string", "A time as text, with PHP's format letters, in UTC.",
+  r'''echo date("Y-m-d H:i:s", 0), " ", date("D, jS F Y", 1762646400), " ", date("c", 1762646400), "\n";''',
+  ["Letters: `d D j l N S w z F m M n t L Y y a A g G h H i s v u e T P p O Z U c r`; `\\` before a letter keeps it "
+   "as it is. Anything else is copied.",
+   "Always UTC: Pin has no time zones yet (`T` is `UTC`, `P` is `+00:00`). For an API, `date(\"c\")` (ISO 8601) "
+   "or plain `time()` numbers are the usual choice."],
+  php="Like `date()` with `date.timezone=UTC`.")
 f("str_replace", S, "str_replace(string $search, string $replace, string $subject): string",
   "Replace every `$search` in `$subject`.",
   r'''echo str_replace("cat", "dog", "cat and catalog"), " ", str_replace("-", "", "08-1234-5678"), "\n";''',

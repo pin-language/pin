@@ -88,6 +88,8 @@ offset inside a character panics, a request whose path or body is not UTF-8 gets
 
 ### Language and built-ins
 
+- **`sprintf` / `printf`** with a literal format (each value's type is checked against it at compile time: `%d`
+  with a float does not build), and **`date($format, $ts)`** with PHP's letters, in UTC. Both match PHP's output.
 - **21 PHP helpers:** `str_replace`, `ltrim`, `rtrim`, `ucfirst`, `lcfirst`, `htmlspecialchars`, `base64_encode`,
   `base64_decode` (throws for non-base64 or non-UTF-8), `rawurldecode`, `urldecode`, `number_format`, `round` (PHP's
   half-away-from-zero, `round(1.955, 2)` is 1.96), `floor`, `ceil`, `abs`, `max` / `min` (two numbers or a list),

@@ -1,0 +1,2 @@
+<?php
+echo sprintf("%d items", 2.5);
