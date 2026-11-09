@@ -1,29 +1,50 @@
 # Changelog
 
-## Unreleased
+## Unreleased (planned 0.9.0)
 
-- **A recursion that goes too deep no longer kills the server**: it is a panic, so that request answers 500 and the
-  others go on (before, the whole process crashed: one request could take a server down). Outside a server it is a
-  clear message and exit code 1. Guard pages below task stacks grew from one page to 64 KB. Throughput unchanged.
-- `request_ip()`: the client's address (like `$_SERVER['REMOTE_ADDR']`).
+Breaking, on purpose (strings are always UTF-8): `chr()` above 127 panics (use `mb_chr()`), `substr()` with an
+offset inside a character panics, a request whose path or body is not UTF-8 gets 400.
+
+### Memory safety and robustness
+
+- **Fix (memory safety):** every HTTP request wrote into freed memory after its answer (`request_done` left
+  `cur_req` pointing at the freed request; the task switch copied it back and `task_release` wrote through it).
+  Under load with database handlers the server crashed (SIGSEGV). Most likely there since 0.7.0 (tasks); not bisected.
 - **Fixed a use-after-free:** a list literal whose items were lists or maps from `try f()` (or a borrowed
   `$maybe ?? [...]`) freed them while the new list still held them. List and map literals now take owned items,
   copy borrowed ones, and free what they hold when a later item fails (that used to leak).
-- **`db_all()` / `db_one()`**: rows straight into objects, `list<Order> $os = db_all($db, "SELECT ...", [])`,
-  `?Order $o = db_one(...)`. The class comes from where the value goes; a row that does not fit panics. Tack
-  checks the columns against the class at build time (SQLite and PostgreSQL).
-- SHA-256 uses the x86 SHA extensions when the CPU has them (as it already did on arm64): `password_hash()` on
-  Linux x86 servers gets the same ~13x as on Apple M2.
+- **A recursion that goes too deep no longer kills the server**: it is a panic, so that request answers 500 and the
+  others go on (before, the whole process crashed: one request could take a server down). Outside a server it is a
+  clear message and exit code 1. Guard pages below task stacks grew from one page to 64 KB. Throughput unchanged.
+- `python3 tests/run_tests.py --sanitize` builds the HTTP servers with ASAN + UBSAN and fails on any report;
+  CI runs it (tools/sanitize.sh only runs programs that exit, so the servers were never sanitized since 0.7.0).
 - A request whose `db_open()` finds no free pooled connection within 5 s, or a PostgreSQL server that does not
   answer, now gets **503** instead of 500 (B15). It is still a panic; only the status changed.
-- `go` tasks take and give `?int`, `?float`, `?bool` (also through `await_all` and `await_timeout`).
+### Null
+
+- **null** (design/null.md steps 1–4): `?string`, `?list<T>`, `?map<K,V>` and `?ClassName` for variables,
+  parameters, returns and properties (a `?T` property starts as null). A `?T` variable must be checked before use;
+  `if ($u !== null)`, `if ($u === null) { return; }`, `&&`, `||`, `!`, `isset($u)`, `while` and `?:` narrow it to
+  `T`. `$u?->name`, `$x ?? "default"`, `find($id) ?? throw error(404, "...")`. `json_encode` writes `null`;
+  `json_decode` gives null for a `?T` field that is null or missing. A class may hold `?Itself` (linked lists).
+  Same pointer as before with null = 0: programs without `?T` compile to the same code. `=== null` on a value that is never null
+  is a compile error.
+- **`?int`, `?float`, `?bool`** (design/null.md step 5): the value and a "has a value" flag side by side in
+  registers, two 8-byte slots in an object. Checks, `??`, `?? throw`, `?->`, `?:`, `&` parameters, defaults and
+  JSON work as for `?string`. Programs without them compile to the same code as before (all 51 tests, examples
+  and benchmarks checked).
+- **`list<?T>` and `map<K,?T>`** (design/null.md step 6): items that may be null, e.g. `[1, null, 3]` or
+  `map<string,?string>`. An item is `?T` (check it, or `$xs[$i] ?? 0`, which also covers a null item);
+  `isset()` is false for a null item as in PHP; `fill($n, null)`; JSON both ways. Existing programs compile to the
+  same code (one new `declare` line).
 - **A checked property counts as not null** (null.md N2): `if ($u->email !== null) { strlen($u->email); }`,
   `$u->addr !== null && $u->addr->zip !== null`, `$this->email`, until the object is changed (assignment, a
   changing method, `&`, or a loop that does so).
-- **`mb_strtolower`, `mb_strtoupper`** (full Unicode case, final sigma) and **`normalizer_normalize()`** with
-  `Normalizer::FORM_C` / `FORM_D` / `FORM_KC` / `FORM_KD` (strings.md ST5, ST6): every code point and 200,000
-  strings give what Python gives. Binaries are now linked with dead stripping: a program carries only the parts
-  of the runtime it uses (hello: 148 KB → 54 KB).
+- `go` tasks take and give `?int`, `?float`, `?bool` (also through `await_all` and `await_timeout`).
+- Fix: `list<?string>` lexed `<?` as the PHP open tag.
+
+### Strings
+
 - **Strings are always valid UTF-8** (design/strings.md ST1, ST3, ST4). A request whose path or body is not UTF-8
   gets 400; other text from outside (headers, `%XX` values, database columns, other servers' answers, `run()`,
   `read_line()`, `env()`) has bad bytes replaced by U+FFFD. `substr()` panics instead of cutting a character in
@@ -31,25 +52,15 @@
   `mb_strpos`, `mb_chr`, `mb_ord`, `grapheme_strlen`, `grapheme_substr` (UAX #29, Unicode 17, checked against
   Python's `unicodedata.iter_graphemes()` on 100,000 strings). HTTP throughput unchanged (`ab`, 215k–218k req/s
   new vs 202k–219k old).
-- **`list<?T>` and `map<K,?T>`** (design/null.md step 6): items that may be null, e.g. `[1, null, 3]` or
-  `map<string,?string>`. An item is `?T` (check it, or `$xs[$i] ?? 0`, which also covers a null item);
-  `isset()` is false for a null item as in PHP; `fill($n, null)`; JSON both ways. Existing programs compile to the
-  same code (one new `declare` line).
-- **`time()`**: Unix seconds, like PHP. Tack's sessions use it instead of SQLite's clock, so their SQL runs on
-  PostgreSQL too. `date()` / `microtime()` are still compile errors that point at it.
-- **`?int`, `?float`, `?bool`** (design/null.md step 5): the value and a "has a value" flag side by side in
-  registers, two 8-byte slots in an object. Checks, `??`, `?? throw`, `?->`, `?:`, `&` parameters, defaults and
-  JSON work as for `?string`. Programs without them compile to the same code as before (all 51 tests, examples
-  and benchmarks checked). 
-- **null** (design/null.md steps 1–4): `?string`, `?list<T>`, `?map<K,V>` and `?ClassName` for variables,
-  parameters, returns and properties (a `?T` property starts as null). A `?T` variable must be checked before use;
-  `if ($u !== null)`, `if ($u === null) { return; }`, `&&`, `||`, `!`, `isset($u)`, `while` and `?:` narrow it to
-  `T`. `$u?->name`, `$x ?? "default"`, `find($id) ?? throw error(404, "...")`. `json_encode` writes `null`;
-  `json_decode` gives null for a `?T` field that is null or missing. A class may hold `?Itself` (linked lists).
-  Same pointer as before with null = 0: programs without `?T` compile to the same code. Not yet: `list<?T>` /
-  `map<K,?T>`, narrowing a property. `=== null` on a value that is never null
-  is a compile error.
-- Fix: `list<?string>` lexed `<?` as the PHP open tag.
+- **`mb_strtolower`, `mb_strtoupper`** (full Unicode case, final sigma) and **`normalizer_normalize()`** with
+  `Normalizer::FORM_C` / `FORM_D` / `FORM_KC` / `FORM_KD` (strings.md ST5, ST6): every code point and 200,000
+  strings give what Python gives. Binaries are now linked with dead stripping: a program carries only the parts
+  of the runtime it uses (hello: 148 KB → 54 KB).
+- `ord()`, `chr()` and `rawurlencode()` (PHP's): bytes to numbers and back, and percent-encoding for values in URLs
+  (used by Tack's MCP tools to build request paths).
+
+### Databases
+
 - **PostgreSQL** with the same `db_*` functions: `db_open(env("DATABASE_URL"))` with a `postgres://` URL
   (design/postgres.md). libpq does the protocol, SCRAM and TLS; it is loaded at run time only by programs that
   open PostgreSQL, so SQLite programs need nothing new. Queries never block the thread (4 × `pg_sleep(0.4)` on one
@@ -58,24 +69,25 @@
   `postgres://` literal in `db_open`/`db_pool`, and SQL that would change a pooled connection (`SET` without
   `LOCAL`, `RESET`, `LISTEN`, `PREPARE`, `DISCARD`, `LOAD`, `set_config(..., false)`, session advisory locks).
   Tested in CI against PostgreSQL 16 on Linux and macOS, also under ASAN + UBSAN.
-- `password_hash` / `password_verify` use the CPU's SHA-256 instructions on arm64 (Apple, and Linux when the CPU
-  has them): ~0.04 s instead of ~0.5 s on an M2, same results (checked against the portable code on 100,000
-  random blocks and the published vectors). x86 still uses the portable code.
-- **`request_deadline($ms)`**: the whole request — its waits and its tasks' waits (`await`, `sleep_ms`, `hub_next`,
-  `http_*`, `run`) — gets at most that long; then every wait fails with 504 and the client gets `504 Gateway
-  Timeout`, whatever the handler returns afterwards. Built on the same cancellation as a client that leaves;
-  computing loops are not interrupted. Checked under load and with ASAN (tests/server/deadline.pn).
-- `ord()`, `chr()` and `rawurlencode()` (PHP's): bytes to numbers and back, and percent-encoding for values in URLs
-  (used by Tack's MCP tools to build request paths).
-- Import paths may have `[name]` / `[...name]` parts (route files of the Tack framework): `import
-  routes/users/[id] as user;` (a name with `as` is required for them). The built-in `Error` type can be named in
-  modules too (it was "unknown type" outside the main file).
-- Fix: an HTTP/1.0 client asking for keep-alive is now told `Connection: keep-alive` (`ab -k` hung).
+- **Connection pool** (pin-language/docs design/pool.md, P1): `db_open()` takes a connection from a pool the
+  runtime keeps per server thread, and the end of `$db`'s scope gives it back — clean only (an open transaction
+  is rolled back; after a panic or a cancelled request it is closed). Same programs, ~7× more requests per
+  second for a one-query SQLite handler (181k–189k vs 24.6k–26.0k req/s, M2, load generator on the same
+  machine). `db_pool($path, $per_thread, $idle_ms)` at the top level sets the limits (default 4, 60 s); a full
+  pool makes `db_open()` wait up to 5 s, then panic with 503. `:memory:` is never pooled.
 - **SQL from literals in a variable** (postgres.md G6): `$sql = "SELECT ... WHERE 1 = 1"; if ($q != "") { $sql .=
   " AND name = ?"; $ps[] = $q; }` now compiles — a variable whose every write is literal pieces is accepted as SQL,
   so search endpoints with optional filters and sorting need no SQL injection risk. Anything else still does not
   compile, and the connection rule (K4) checks the variable's pieces too.
-- `env("NAME")`: an environment variable (`""` when unset), for secrets like database URLs.
+- **`db_all()` / `db_one()`**: rows straight into objects, `list<Order> $os = db_all($db, "SELECT ...", [])`,
+  `?Order $o = db_one(...)`. The class comes from where the value goes; a row that does not fit panics. Tack
+  checks the columns against the class at build time (SQLite and PostgreSQL).
+- New compile errors: a `db` / `rows` passed to `go` (open one inside the task); SQL that changes the
+  connection for its next user (`PRAGMA foreign_keys = ...`, `ATTACH`, `CREATE TEMP`); `db_pool()` inside a
+  function.
+
+### Language and built-ins
+
 - **Parameter defaults** (P3, first half): `function page(string $q, int $limit = 20)`; literals only, last in the
   list, not on `&` parameters; works for functions, methods, constructors and `go`. In `json_decode()` a
   constructor parameter with a default is an optional field.
@@ -84,26 +96,35 @@
   `error(400, "$.lines[1].qty: want an integer, got a string")`. A class with `__construct` is built through it
   (its checks run); fields can be classes, `list<T>` and `map<string,T>` to any depth. The compiler writes one
   decoder per class in Pin (`gen_decoders`) on top of `runtime/jdecode.c`, which reads the text by position.
+- **`time()`**: Unix seconds, like PHP. Tack's sessions use it instead of SQLite's clock, so their SQL runs on
+  PostgreSQL too. `date()` / `microtime()` are still compile errors that point at it.
+- `env("NAME")`: an environment variable (`""` when unset), for secrets like database URLs.
+- Import paths may have `[name]` / `[...name]` parts (route files of the Tack framework): `import
+  routes/users/[id] as user;` (a name with `as` is required for them). The built-in `Error` type can be named in
+  modules too (it was "unknown type" outside the main file).
+- `request_ip()`: the client's address (like `$_SERVER['REMOTE_ADDR']`).
+
+### HTTP server
+
+- **`request_deadline($ms)`**: the whole request — its waits and its tasks' waits (`await`, `sleep_ms`, `hub_next`,
+  `http_*`, `run`) — gets at most that long; then every wait fails with 504 and the client gets `504 Gateway
+  Timeout`, whatever the handler returns afterwards. Built on the same cancellation as a client that leaves;
+  computing loops are not interrupted. Checked under load and with ASAN (tests/server/deadline.pn).
+- Fix: an HTTP/1.0 client asking for keep-alive is now told `Connection: keep-alive` (`ab -k` hung).
+
+### Security
+
 - **Security built-ins** (P5): `hash("sha256", $s)`, `hash_hmac("sha256", $data, $key)`, `hash_equals()` (constant
   time), `random_token($bytes)` (hex), `random_int($min, $max)` (OS randomness, no bias), `password_hash()` /
   `password_verify()` (PBKDF2-HMAC-SHA256, 600,000 rounds, random salt). SHA-256 / HMAC / PBKDF2 are written in
   `runtime/crypto.c` (no new library) and checked against NIST, RFC 4231 and RFC 7914 vectors. Known cost:
-  ~0.5 s per password hash on an M2 (OpenSSL with hardware SHA: 0.06 s) — hardware instructions later.
+  ~0.5 s per password hash with the portable code; the CPU's SHA-256 instructions are used on arm64 and x86 (below).
   `md5`, `sha1`, `rand`, `mt_rand`, `random_bytes`, `uniqid` and `PASSWORD_DEFAULT` now say what to write instead.
-- **Connection pool** (pin-language/docs design/pool.md, P1): `db_open()` takes a connection from a pool the
-  runtime keeps per server thread, and the end of `$db`'s scope gives it back — clean only (an open transaction
-  is rolled back; after a panic or a cancelled request it is closed). Same programs, ~7× more requests per
-  second for a one-query SQLite handler (181k–189k vs 24.6k–26.0k req/s, M2, load generator on the same
-  machine). `db_pool($path, $per_thread, $idle_ms)` at the top level sets the limits (default 4, 60 s); a full
-  pool makes `db_open()` wait up to 5 s, then panic. `:memory:` is never pooled.
-- New compile errors: a `db` / `rows` passed to `go` (open one inside the task); SQL that changes the
-  connection for its next user (`PRAGMA foreign_keys = ...`, `ATTACH`, `CREATE TEMP`); `db_pool()` inside a
-  function.
-- **Fix (memory safety):** every HTTP request wrote into freed memory after its answer (`request_done` left
-  `cur_req` pointing at the freed request; the task switch copied it back and `task_release` wrote through it).
-  Under load with database handlers the server crashed (SIGSEGV). Most likely there since 0.7.0 (tasks); not bisected.
-- `python3 tests/run_tests.py --sanitize` builds the HTTP servers with ASAN + UBSAN and fails on any report;
-  CI runs it (tools/sanitize.sh only runs programs that exit, so the servers were never sanitized since 0.7.0).
+- `password_hash` / `password_verify` use the CPU's SHA-256 instructions on arm64 (Apple, and Linux when the CPU
+  has them): ~0.04 s instead of ~0.5 s on an M2, same results (checked against the portable code on 100,000
+  random blocks and the published vectors).
+- SHA-256 uses the x86 SHA extensions when the CPU has them (as it already did on arm64): `password_hash()` on
+  Linux x86 servers gets the same ~13x as on Apple M2.
 
 ## 0.8.0 — 2026-10-25
 
