@@ -3166,6 +3166,11 @@ class FuncGen:
         """$u ?? default  /  $u ?? throw error(...): the left side is a ?T value (null.md N3)."""
         lv, lt, lowned = self.expr(e.l)
         if not is_opt(lt):
+            checked = (e.l.kind == "var" and is_opt(self.vars.get(e.l.name, ""))) or \
+                (e.l.kind == "field" and self.path_key(e.l) in self.flow.nonnull)
+            if checked:
+                raise CompileError(f"{show(e.l)} cannot be null here (it was checked or given a value above), so ?? "
+                                   f"has nothing to do: use {show(e.l)} as it is", e.line)
             raise CompileError(f"{show(e.l)} is {lt}, which is never null, so ?? has nothing to do. (?? also works "
                                f"on a list item or map entry, e.g. $m[$k] ?? 0)", e.line)
         inner = lt[1:]

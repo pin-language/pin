@@ -159,7 +159,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | B12 | ~~use-after-free on every HTTP request (`request_done` / `cur_req`), crashed under load~~ fixed 2026-10-25; found by the pool measurement (pin-language/docs design/pool.md step 0). CI had not sanitized any server since 0.7.0: now `run_tests.py --sanitize` | runtime | memory safety |
 | B13 | ~~HTTP/1.0 keep-alive: no `Connection: keep-alive` in the answer, so `ab -k` hung~~ fixed 2026-10-26 (test in limits) | server | low |
 | B14 | ~~`password_hash` ~0.5 s~~ arm64 uses the SHA-256 instructions since 2026-11-08 (~0.04 s on M2). x86 SHA-NI built 2026-11-09 (CPUID check; `PIN_SHA_SOFTWARE=1` forces the portable code; CI step prints whether the runner has `sha_ni` and checks both; the ubuntu-latest runner has it: tests/crypto.pn 0.28 s with it, 1.22 s without, outputs equal). Untested: Linux arm64's getauxval path, no CI runner | runtime | speed |
-| B16 | ~~a list literal kept a borrowed heap item (`[$maybe ?? [7]]`) or freed an owned one it had pushed (`[try f(), ...]` of lists) — use-after-free~~ fixed 2026-11-09 (`tests/literal_items.pn`) | `pinac.py listlit` | done |
+| B16 | ~~a list literal kept a borrowed heap item (`[$maybe ?? [7]]`) or freed an owned one it had pushed (`[try f(), ...]` of lists) — use-after-free~~ fixed 2026-11-09 (`tests/literal_items.pn`). `tools/fuzz_ownership.py` (306 programs: value kinds × places, ASAN + UBSAN) finds nothing else | `pinac.py listlit` | done |
 | B15 | ~~a full pool makes `db_open()` panic (500)~~ fixed 2026-11-09: still a panic, but it answers 503 (also for a PostgreSQL server that is down): `Req.panic_status` | runtime | done |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int
