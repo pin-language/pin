@@ -88,6 +88,8 @@ offset inside a character panics, a request whose path or body is not UTF-8 gets
 
 ### Language and built-ins
 
+- **`array_map("label", $xs)`** and **`array_filter($xs, "cheap")`** with a function name (checked signature;
+  the compiler writes the loop); `array_filter` renumbers from 0.
 - **`usort($xs, "by_price")`**: sort lists of objects (or ints, floats, strings, lists, maps) with a function of
   the same file named as a string, `(T $a, T $b): int` checked at compile time; stable, as PHP 8.
 - **Bit operators** `| & ^ ~ << >>` and `|= &= ^= <<= >>=` on ints (PHP 8 precedence; a shift of 64+ is 0, a

@@ -1002,9 +1002,7 @@ PHP_FUNCTION_HINTS = {
     "str_split": "no str_split() yet: use mb_substr($s, $i, 1) in a loop (grapheme_substr for what a reader sees)",
         "ksort": "no ksort() yet: maps keep insertion order; collect the keys in a list and sort() it",
     "asort": "no asort() yet: write the loop", "arsort": "no arsort() yet: write the loop",
-    "array_map": "no array_map() yet: use a for/foreach loop into a new list",
-    "array_filter": "no array_filter() yet: use a foreach loop into a new list",
-    "array_reduce": "no array_reduce() yet: use a foreach loop",
+            "array_reduce": "no array_reduce() yet: use a foreach loop",
         "array_push": "write $xs[] = $value;",         "count_chars": "not in Pin",
     "print_r": "no print_r(): echo json_encode($value)", "var_dump": "no var_dump(): echo json_encode($value)",
     "print": "use echo",
@@ -1064,7 +1062,7 @@ CONSTANTS = {"JSON_PRETTY_PRINT": ("int", 128), "JSON_UNESCAPED_SLASHES": ("int"
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "usort", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "usort", "array_map", "array_filter", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -4344,6 +4342,62 @@ class FuncGen:
             self.emit(f"{n} = load i64, ptr {r}")
             self.call("void", "@pn_str_free", f"ptr {r}")
             return n, "int", False
+        if name in ("array_map", "array_filter"):
+            self.argc(e, 2)
+            fe, le = (args[0], args[1]) if name == "array_map" else (args[1], args[0])
+            lv, lt = self.borrow(le)
+            if not is_list(lt):
+                raise CompileError(f"{name}() works on a list, not {lt}", e.line)
+            et = elem_of(lt)
+            key = self.fkey(Node("call", e.line, name=fe.val, args=[]), quiet=True) if fe.kind == "str" else None
+            sig = self.mod.funcs.get(key) if key else None
+            want = "bool" if name == "array_filter" else None
+            shape = (f'array_map("name", $xs) needs a function of this file taking one {et}: function name({et} $x): T'
+                     if name == "array_map" else
+                     f'array_filter($xs, "name") needs a function of this file declared as function name({et} $x): bool')
+            if not sig or sig[0] != [et] or (want and sig[1] != want) or sig[1] == "void" or \
+                    self.mod.throws.get(key, False):
+                raise CompileError(shape + " (it cannot throw)", e.line)
+            rt = sig[1] if name == "array_map" else et
+            if name == "array_filter" and uncopyable(et):
+                raise CompileError(f"array_filter() copies the items it keeps, and {uncopyable(et)} cannot be copied",
+                                   e.line)
+            out = self.call("ptr", "@pn_list_new", f"i64 {esize(rt)}")
+            n = self.tmp()
+            self.emit(f"{n} = load i64, ptr {lv}, !tbaa !1")
+            pre, head, body, done = self.label, self.newlabel("maph"), self.newlabel("mapb"), self.newlabel("mape")
+            self.emit(f"br label %{head}")
+            self.place_label(head)
+            i, i2, c = self.tmp(), self.tmp(), self.tmp()
+            phi_at = len(self.body)
+            self.emit("")
+            self.emit(f"{c} = icmp slt i64 {i}, {n}")
+            self.emit(f"br i1 {c}, label %{body}, label %{done}")
+            self.place_label(body)
+            x = self.load_elem(self.list_elem_ptr(lv, et, i), et)
+            r = self.call(llty(sig[1]), f'@"f.{key}"', f"{llty(et)} {x}")
+            if name == "array_map":                 # the result is new (a returned value is owned)
+                v = r
+            else:
+                keep, skip = self.newlabel("keep"), self.newlabel("skip")
+                self.emit(f"br i1 {r}, label %{keep}, label %{skip}")
+                self.place_label(keep)
+                v = x
+                if is_heap(et):
+                    v = self.call("ptr", copy_fn(et), f"ptr {x}")
+            if is_opt_scalar(rt):
+                self.store_elem(self.call("ptr", "@pn_list_push_slot", f"ptr {out}", f"i64 {esize(rt)}"), v, rt)
+            else:
+                self.call("void", "@pn_list_push", f"ptr {out}", f"i64 {esize(rt)}", f"i64 {self.to_bits(v, rt)}")
+            if name == "array_filter":
+                self.emit(f"br label %{skip}")
+                self.place_label(skip)
+            self.emit(f"{i2} = add i64 {i}, 1")
+            back = self.label
+            self.emit(f"br label %{head}")
+            self.body[phi_at] = f"  {i} = phi i64 [ 0, %{pre} ], [ {i2}, %{back} ]"
+            self.place_label(done)
+            return out, f"list<{rt}>", True
         if name == "usort":
             self.argc(e, 2)
             a, h = args

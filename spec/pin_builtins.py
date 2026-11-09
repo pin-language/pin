@@ -201,6 +201,18 @@ f("implode", S, "implode(string $glue, list<string|int|float> $xs): string", "Jo
 f("PHP_EOL", S, "PHP_EOL: string", r'The string `"\n"`.', r'''echo "line", PHP_EOL;''', kind="constant")
 
 # ----------------------------------------------------------------------------------------- lists and maps
+f("array_map", L, "array_map(string $function, list<T> $xs): list<R>", "A new list: the function applied to each item.",
+  r'''function label(int $satang): string { return number_format($satang / 100, 2); }
+echo json_encode(array_map("label", [4500, 12000])), "\n";''',
+  ["`$function` is the name of a function in the same file taking one `T` and giving any `R`; it cannot be "
+   "`throws`. The compiler writes the loop: no callback at run time."],
+  php="`array_map('label', $xs)` with a function name (Pin has no closures yet); one list.")
+f("array_filter", L, "array_filter(list<T> $xs, string $keep): list<T>", "A new list of the items the function keeps.",
+  r'''function cheap(int $price): bool { return $price < 100; }
+echo json_encode(array_filter([45, 120, 30], "cheap")), "\n";''',
+  ["`$keep` names a function of the same file `(T $x): bool`. The kept items are copied, and the new list is "
+   "renumbered from 0 (PHP keeps the old keys)."],
+  php="PHP keeps the original keys; Pin's result is a list numbered from 0.")
 f("usort", L, "usort(list<T> $xs, string $compare): void", "Sort a list in place with your own comparison function.",
   r'''class Item { public function __construct(public string $name, public int $price) {} }
 function by_price(Item $a, Item $b): int { return $a->price - $b->price; }

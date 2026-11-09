@@ -46,6 +46,8 @@
  "explode": "[\"a\",\"b\",\"\",\"c\"] 1\n",
  "implode": "tea, cake | 1-2-3\n",
  "PHP_EOL": "line\n",
+ "array_map": "[\"45.00\",\"120.00\"]\n",
+ "array_filter": "[45,30]\n",
  "usort": "rice tea cake \n",
  "array_pop": "3 2\n",
  "array_shift": "a [\"b\"]\n",
