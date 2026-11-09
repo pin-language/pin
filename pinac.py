@@ -4556,7 +4556,8 @@ class FuncGen:
         if k == "decl":
             vt = self.rt(s.vtype, s.line)
             if s.name in self.vars and self.vars[s.name] != vt:
-                raise CompileError(f"{s.name} is already {self.vars[s.name]}; a variable keeps one type", s.line)
+                raise CompileError(f"{s.name} is already {self.vars[s.name]}; a variable keeps one type in the whole "
+                                   f"function (every branch too): use another name here", s.line)
             if not self.is_borrow(s.name, s.val):
                 self.declare(s.name, vt)
             self.assign_var(s.name, s.val, s.line, want=vt)
@@ -4650,7 +4651,8 @@ class FuncGen:
         if want and vt != want:
             raise CompileError(f"{name} is declared {want} but {show(val_e)} is {vt}", line)
         if name in self.vars and self.vars[name] != vt:
-            raise CompileError(f"{name} is already {self.vars[name]}; a variable keeps one type", line)
+            raise CompileError(f"{name} is already {self.vars[name]}; a variable keeps one type in the whole "
+                               f"function (every branch too): use another name here", line)
         roots = set(self.borrow_vars[root]) if root in self.borrow_vars else {(root, props)}
         for r, _ in roots:
             if r in self.loop_scope and name in self.loop_scope[r]:
@@ -4714,7 +4716,8 @@ class FuncGen:
         if want and t != want:
             raise CompileError(f"{name} is declared {want} but the task gives {t}", line)
         if name in self.vars and self.vars[name] != t:
-            raise CompileError(f"{name} is already {self.vars[name]}; a variable keeps one type", line)
+            raise CompileError(f"{name} is already {self.vars[name]}; a variable keeps one type in the whole "
+                               f"function (every branch too): use another name here", line)
         self.declare(name, t)
         self.emit(f"store ptr {v}, ptr {self.slot(name)}")      # the old one was awaited (moved): slot is null
         self.moved.pop(name, None)

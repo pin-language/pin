@@ -1,0 +1,6 @@
+<?php
+function f(bool $a): int {
+    if ($a) { $x = 1; return $x; }
+    $x = "one";
+    return strlen($x);
+}
