@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Fixed a use-after-free:** a list literal whose items were lists or maps from `try f()` (or a borrowed
+  `$maybe ?? [...]`) freed them while the new list still held them. List and map literals now take owned items,
+  copy borrowed ones, and free what they hold when a later item fails (that used to leak).
 - **`db_all()` / `db_one()`**: rows straight into objects, `list<Order> $os = db_all($db, "SELECT ...", [])`,
   `?Order $o = db_one(...)`. The class comes from where the value goes; a row that does not fit panics. Tack
   checks the columns against the class at build time (SQLite and PostgreSQL).

@@ -159,6 +159,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | B12 | ~~use-after-free on every HTTP request (`request_done` / `cur_req`), crashed under load~~ fixed 2026-10-25; found by the pool measurement (pin-language/docs design/pool.md step 0). CI had not sanitized any server since 0.7.0: now `run_tests.py --sanitize` | runtime | memory safety |
 | B13 | ~~HTTP/1.0 keep-alive: no `Connection: keep-alive` in the answer, so `ab -k` hung~~ fixed 2026-10-26 (test in limits) | server | low |
 | B14 | ~~`password_hash` ~0.5 s~~ arm64 uses the SHA-256 instructions since 2026-11-08 (~0.04 s on M2). x86 SHA-NI built 2026-11-09 (CPUID check; `PIN_SHA_SOFTWARE=1` forces the portable code; CI step prints whether the runner has `sha_ni` and checks both; the ubuntu-latest runner has it: tests/crypto.pn 0.28 s with it, 1.22 s without, outputs equal). Untested: Linux arm64's getauxval path, no CI runner | runtime | speed |
+| B16 | ~~a list literal kept a borrowed heap item (`[$maybe ?? [7]]`) or freed an owned one it had pushed (`[try f(), ...]` of lists) — use-after-free~~ fixed 2026-11-09 (`tests/literal_items.pn`) | `pinac.py listlit` | done |
 | B15 | ~~a full pool makes `db_open()` panic (500)~~ fixed 2026-11-09: still a panic, but it answers 503 (also for a PostgreSQL server that is down): `Req.panic_status` | runtime | done |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int
@@ -182,8 +183,8 @@ numbered list below is the older order; items 3, 4 and 7 are folded into P1–P5
 2. ~~Error handling~~ done in 0.6.0: `throws`, `try`, `catch`, `error(code, msg)`, handler `throws`.
    How: `fn_llret` returns `{T, ptr}`; `failing_call` / `error_branch` / `route_error` send the error to the
    innermost `Catch` (freeing temporaries past its marks) or out of the function. Catch blocks inside an
-   expression set the statement's temporaries aside (`temp_stack`). Known gap: owned items already moved into
-   a list literal under construction leak if a later item fails (error path only).
+   expression set the statement's temporaries aside (`temp_stack`). The gap where owned items of a list / map literal
+   leaked when a later item failed is closed (2026-11-09, with the use-after-free below).
    Owner, 2026-10-25: release cadence was too fast — batch features; work happens on branch `next`, release
    when a set is done. Next set: async (concurrency.md C1–C11).
 3. ~~**Strings**~~ (strings.md) ST1/ST3/ST4 built 2026-11-09: UTF-8 at the edges (request path/body → 400,

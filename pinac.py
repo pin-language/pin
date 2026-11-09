@@ -2884,14 +2884,31 @@ class FuncGen:
         vals = []
         if e.items:
             ih = elem_of(hint) if hint and is_list(hint) else None
+            taken = []          # owned items: temporaries until the list exists, so a later item's error frees them
             for i in e.items:
                 probe = self.static_type(i) if i.kind in ("var", "field", "index") else None
                 if i.kind == "null" and not ih:
                     vals.append((None, "null", False))      # typed below, from the other items: [1, null] is list<?int>
-                elif (probe and is_heap(probe)) or i.kind in ("listlit", "maplit", "new", "call", "mcall"):
-                    vals.append(self.owned_value(i, ih, e.line) + (True,))     # the list owns what it holds
+                    continue
+                if (probe and is_heap(probe)) or i.kind in ("listlit", "maplit", "new", "call", "mcall"):
+                    v, t = self.owned_value(i, ih, e.line)  # the list owns what it holds
+                    owned = True
                 else:
-                    vals.append(self.borrow(i, ih) + (False,))
+                    v, t, owned = self.expr(i, ih)          # an owned result (try f(), await, ?:) is taken as it is
+                    owned = owned and is_heap(t)
+                    if not owned and is_heap(t) and strip_opt(t) != "string":   # borrowed ($maybe ?? [7]): a copy
+                        bad = uncopyable(t)
+                        if bad:
+                            raise CompileError(f"this list item holds {bad}, which cannot be copied into a list",
+                                               e.line)
+                        v, owned = self.call("ptr", copy_fn(t), f"ptr {v}"), True
+                if owned and is_heap(t):
+                    entry = (v, t)
+                    self.temps.append(entry)
+                    taken.append(entry)
+                vals.append((v, t, owned))
+            for entry in taken:                         # every item is there: the list takes them over
+                self.temps.remove(entry)
             types = {t for _, t, _ in vals} - {"null"}
             nulls = any(t == "null" for _, t, _ in vals)
             if ih and is_opt(ih) and types <= {ih, ih[1:]} | ({"int"} if ih == "?float" else set()):
@@ -3066,11 +3083,11 @@ class FuncGen:
                     vt = t
                     if vt in ("void", "db", "rows"):
                         raise CompileError(f"a map cannot hold {vt} values", e.line)
+                if m is None:
                     mt = f"map<{kt},{vt}>"
                     m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {kind_of(vt)}")
-                elif m is None:
-                    mt = f"map<{kt},{vt}>"
-                    m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {kind_of(vt)}")
+                    building = (m, mt)              # a temporary until done: a later value's error frees it
+                    self.temps.append(building)
                 if t != vt and not (t == "int" and strip_opt(vt) == "float") and t != strip_opt(vt):
                     raise CompileError(
                         f"a map holds one value type: this literal is {mt} (from its first value), but a value "
@@ -3083,6 +3100,7 @@ class FuncGen:
                     old = self.load_slot(p, vt)
                     self.call("void", free_fn(vt), f"ptr {old}")
                 self.store_slot(p, v, vt)
+            self.temps.remove(building)
             return m, mt, True
         if not (hint and is_map(hint)):
             raise CompileError("an empty [] needs a type, e.g.  map<string,int> $m = [];", e.line)

@@ -1,0 +1,23 @@
+// list / map literals whose items come from try, ??, await: the literal takes owned items and copies borrowed
+// ones (a borrowed list pushed as it was freed it twice); a later item that fails frees the earlier ones
+function mk(int $i): list<int> throws { if ($i == 9) { throw error(1, "x"); } return [$i, $i]; }
+function boxes(): list<list<int>> throws { return [try mk(0), try mk(1)]; }
+$b = try boxes() catch ($e) { []; };
+echo json_encode($b), "\n";
+function pick(int $i): ?list<int> { return $i > 0 ? [1, 2] : null; }
+$m = pick(1);
+$xs = [$m ?? [7], [9]];
+echo json_encode($xs), " ", json_encode($m), "\n";
+function fails(): map<string,list<int>> throws { return ["a" => try mk(1), "b" => try mk(9)]; }
+$f = try fails() catch ($e) { []; };
+echo count($f), "\n";
+function ok2(): map<string,list<int>> throws { return ["a" => try mk(1), "b" => try mk(2)]; }
+echo json_encode(try ok2()), "\n";
+function f(int $i): string throws {
+    if ($i > 1) { throw error(400, "no"); }
+    return "item" . $i;
+}
+function build(int $n): list<string> throws {
+    return [try f(0), try f(1), try f($n)];
+}
+echo json_encode(try build(1)), " ", json_encode(try build(2) catch ($e) { ["failed"]; }), "\n";
