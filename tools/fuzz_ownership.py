@@ -152,4 +152,46 @@ print(f"{ok} clean, {comp} refused, {bad} BAD")
 for k, v in sorted(reasons.items(), key=lambda x: -x[1]): print(v, k)
 
 failed += bad
+
+# ---- ?T items (list<?string>, map<string,?string>, list<?Box>)
+PRE_OPT = PRE_OBJECTS + r'''
+function ps(int $i): ?string { return $i > 0 ? "p" . $i : null; }
+function tryps(int $i): ?string throws { if ($i == 99) { throw error(1, "x"); } return $i > 1 ? "t" . $i : null; }
+?string $vs = ps(1);
+list<?string> $los = ["a", null];
+map<string,?string> $mos = ["k" => null, "j" => "v"];
+list<?Box> $lob = [new Box(1), null];
+'''
+OPT_S = ["ps(1)", "ps(0)", "$vs", "try tryps(2)", "try tryps(0)", "$los[0]", "$mos[\"j\"]", "null", "\"lit\"",
+         "$vs ?? \"d\"", "copy($los)[1]"]
+OPT_B = ["pickb(1)", "pickb(0)", "$ob", "null", "new Box(2)", "copy($lob[0])", "$lob[0] === null ? null : new Box(3)"]
+SINKS_OPT = [("list<?string> $r = [{e}, null]; echo json_encode($r);", OPT_S),
+             ("$los[] = {e}; echo json_encode($los);", OPT_S),
+             ("$los[1] = {e}; echo json_encode($los);", OPT_S),
+             ("$mos[\"z\"] = {e}; echo json_encode($mos);", OPT_S),
+             ("map<string,?string> $r = [\"a\" => {e}]; echo json_encode($r);", OPT_S),
+             ("?string $v = {e}; echo $v ?? \"none\";", OPT_S),
+             ("list<?Box> $r = [{e}]; echo json_encode($r);", OPT_B),
+             ("$lob[] = {e}; echo json_encode($lob);", OPT_B),
+             ("$lob[0] = {e}; echo json_encode($lob);", OPT_B),
+             ("$o->inner = {e}; echo json_encode($o);", OPT_B),
+             ("?Box $w = {e}; echo json_encode($w);", OPT_B)]
+os.makedirs(WORK + "/opt", exist_ok=True)
+bad = comp = ok = 0
+for n, (sink, e) in enumerate((s_, e_) for s_, es in SINKS_OPT for e_ in es):
+    src = PRE_OPT + sink.format(e=e) + "\necho \"\\n\";\n"
+    f = f"{WORK}/opt/t{n}.pn"; open(f, "w").write(src)
+    r = subprocess.run([sys.executable, P + "/pinac.py", "--emit-ll", f], capture_output=True, text=True)
+    if r.returncode:
+        comp += 1; continue
+    o = f[:-3] + ".o"
+    subprocess.run(["clang", "-O1", "-c", "-Wno-override-module", f[:-3] + ".ll", "-o", o], check=True, capture_output=True)
+    subprocess.run(["clang", "-g", "-fsanitize=address,undefined", P + "/runtime.c", o, "-lm", "-pthread", "-o", f[:-3]], check=True, capture_output=True)
+    r = subprocess.run([f[:-3]], capture_output=True, text=True, timeout=20)
+    if r.returncode or "ERROR" in r.stderr or "runtime error" in r.stderr:
+        bad += 1; print("BAD", n, e, "|", sink, "|", r.stderr.strip().splitlines()[:3])
+    else:
+        ok += 1
+print(f"?T items: {ok} clean, {comp} refused, {bad} BAD")
+failed += bad
 sys.exit(1 if failed else 0)
