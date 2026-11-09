@@ -11,8 +11,10 @@ Fresh-agent test (Sonnet, README + AI guide only, 2026-11-08): a notes API with 
 OpenAPI and MCP — all worked, 2 `tack check` rounds; its gaps were fixed (fresh test database via
 `tack::database()`, `tack new` writes tack.json + migrations/, a Reference section).
 The generator is the `tack` command (Python, pinac's parser); compiler changes it needed: `[name]` import
-paths, `Error` in modules, `ord`/`chr`/`rawurlencode`, `request_deadline()`. Not yet: cookies, CSRF, rate
-limits, `db_all`/`db_one` into classes, PostgreSQL in `tack check` (Pin has it now). Design and decisions: docs `design/tack.md`.
+paths, `Error` in modules, `ord`/`chr`/`rawurlencode`, `request_deadline()`. PostgreSQL in Tack built 2026-11-09
+(`"database": {"env": "DATABASE_URL"}`: check prepares the SQL on the server in a rolled-back transaction,
+tests in a fresh schema, migrations under an advisory lock; sessions use Pin's new `time()`). Not yet: cookies,
+CSRF, rate limits, `db_all`/`db_one` into classes. Design and decisions: docs `design/tack.md`.
 
 | P | what | state |
 |---|---|---|

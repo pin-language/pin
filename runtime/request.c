@@ -336,6 +336,9 @@ Str *pn_env(Str *name) {
     return v ? str_from(v, (int64_t)strlen(v)) : str_alloc(0);
 }
 
+// time(): seconds since 1970-01-01 UTC, like PHP (the wall clock: it can jump when the system clock is set).
+int64_t pn_time(void) { return (int64_t)time(NULL); }
+
 // ord("A") = 65: the first byte (0 for ""), like PHP.  chr(65) = "A": one byte, n taken modulo 256 like PHP.
 int64_t pn_ord(Str *s) { return s->len ? (unsigned char)s->data[0] : 0; }
 

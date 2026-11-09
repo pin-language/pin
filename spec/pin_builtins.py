@@ -141,6 +141,13 @@ f("wrapping_mul", N, "wrapping_mul(int $a, int $b): int", "`$a * $b` with 64-bit
   r'''$h = 0;
 foreach ([104, 105] as $c) { $h = wrapping_mul(wrapping_add($h, $c), 1099511628211); }
 echo $h, "\n";''')
+f("time", N, "time(): int", "The current time as seconds since 1970-01-01 00:00 UTC (Unix time).",
+  r'''$expires = time() + 3600;               // one hour from now
+echo $expires > time() ? "valid\n" : "expired\n";''',
+  ["The system's wall clock: it moves when the clock is set, so use it for expiry times and timestamps, not to "
+   "measure how long something took.",
+   "Keep times as Unix seconds in the database (`INTEGER` / `BIGINT`): the same on SQLite and PostgreSQL."],
+  php="`time()`. No `date()` / `microtime()` yet.")
 f("PHP_INT_MAX", N, "PHP_INT_MAX: int", "The largest int, 9223372036854775807.",
   r'''echo PHP_INT_MAX, "\n";''', kind="constant")
 f("PHP_INT_MIN", N, "PHP_INT_MIN: int", "The smallest int, -9223372036854775808.",

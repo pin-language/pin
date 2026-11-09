@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`time()`**: Unix seconds, like PHP. Tack's sessions use it instead of SQLite's clock, so their SQL runs on
+  PostgreSQL too. `date()` / `microtime()` are still compile errors that point at it.
 - **`?int`, `?float`, `?bool`** (design/null.md step 5): the value and a "has a value" flag side by side in
   registers, two 8-byte slots in an object. Checks, `??`, `?? throw`, `?->`, `?:`, `&` parameters, defaults and
   JSON work as for `?string`. Programs without them compile to the same code as before (all 51 tests, examples

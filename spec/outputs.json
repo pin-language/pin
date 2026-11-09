@@ -28,6 +28,7 @@
  "wrapping_add": "wrapped\n",
  "wrapping_sub": "wrapped\n",
  "wrapping_mul": "99599260821814035\n",
+ "time": "valid\n",
  "PHP_INT_MAX": "9223372036854775807\n",
  "PHP_INT_MIN": "-9223372036854775808\n",
  "intval": "42 -7 0 3 9223372036854775807\n",

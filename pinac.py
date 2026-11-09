@@ -1015,8 +1015,7 @@ PHP_FUNCTION_HINTS = {
     "crypt": "password_hash($password) / password_verify($password, $hash)",
     "urlencode": "rawurlencode($s) (spaces as %20; for query values too)",
     "getenv": "env(\"NAME\") reads an environment variable (\"\" when it is not set)",
-    "time": "no clock yet",
-    "date": "no dates yet", "microtime": "no clock yet", "exit": "return from the top level instead",
+    "date": "no dates yet: time() gives Unix seconds", "microtime": "time() gives whole Unix seconds (no finer clock yet)", "exit": "return from the top level instead",
     "die": "return from the top level instead",
     "header": "response_header(\"Name\", \"value\") adds a response header; http_status() sets the status",
     "getallheaders": "request_header(\"Name\") reads one request header (\"\" if absent)",
@@ -1063,7 +1062,7 @@ BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_po
             "url_path", "query_param", "form_param", "query_has", "form_has", "floatval", "json_has",
             "db_open", "db_exec", "db_query", "db_json", "db_next", "db_int", "db_float", "db_string",
             "db_is_null", "db_last_id", "db_error", "db_pool", "hash", "hash_hmac", "hash_equals", "random_token",
-            "random_int", "password_hash", "password_verify", "env", "request_deadline", "ord", "chr", "rawurlencode", "json_decode", "__jd_doc", "__jd_object", "__jd_field",
+            "random_int", "password_hash", "password_verify", "env", "time", "request_deadline", "ord", "chr", "rawurlencode", "json_decode", "__jd_doc", "__jd_object", "__jd_field",
             "__jd_int", "__jd_float", "__jd_bool", "__jd_string", "__jd_first", "__jd_next", "__jd_mfirst",
             "__jd_key", "__jd_val", "__jd_mnext", "__jd_has", "__jd_null", "json_string", "json_int", "json_float",
             "json_bool"}
@@ -1102,6 +1101,7 @@ declare i64 @pn_jd_has(ptr, i64, ptr)
 declare i64 @pn_jd_null(ptr, i64)
 declare ptr @pn_hash_sha256(ptr)
 declare ptr @pn_env(ptr)
+declare i64 @pn_time()
 declare void @pn_request_deadline(i64)
 declare i64 @pn_ord(ptr)
 declare ptr @pn_chr(i64)
@@ -3739,6 +3739,9 @@ class FuncGen:
         if name == "env":
             self.argc(e, 1)
             return self.call("ptr", "@pn_env", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "time":
+            self.argc(e, 0)
+            return self.call("i64", "@pn_time"), "int", False
         if name == "hash_equals":
             self.argc(e, 2)
             return self.i64_to_bool(self.call("i64", "@pn_hash_equals", f"ptr {self.str_arg(e, 0)}",
