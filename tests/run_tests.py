@@ -527,6 +527,8 @@ if "--no-server" not in sys.argv:
             r = raw(8087, b"GET /echo-header HTTP/1.1\r\nX-Name:   Pin  \r\nConnection: close\r\n\r\n")
             check("request_header: case-insensitive, trimmed, \"\" when absent",
                   r.endswith('{"name":"Pin","has":"yes","missing":""}'), r)
+            r = raw(8087, b"GET /ip HTTP/1.1\r\nConnection: close\r\n\r\n")
+            check("request_ip(): the client's address", r.endswith('{"ip":"127.0.0.1"}'), r)
             r = raw(8087, b"GET /redirect HTTP/1.1\r\nConnection: close\r\n\r\n")
             check("response_header: Location and two Set-Cookie",
                   r.startswith("HTTP/1.1 302 Found\r\n") and "\r\nLocation: /target\r\n" in r

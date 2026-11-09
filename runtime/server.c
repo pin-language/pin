@@ -71,6 +71,20 @@ Str *pn_request_header(Str *name) {
     return v ? v : str_alloc(0);
 }
 
+// request_ip(): the address of the client's end of the connection ("203.0.113.7", "2001:db8::1"); "" outside a
+// request. Behind a proxy on the same machine this is the proxy (127.0.0.1): see tack::client_ip().
+Str *pn_request_ip(void) {
+    if (!cur_req || !cur_req->conn) return str_alloc(0);
+    struct sockaddr_storage sa;
+    socklen_t n = sizeof sa;
+    char buf[INET6_ADDRSTRLEN] = "";
+    if (getpeername(((Conn *)cur_req->conn)->fd, (struct sockaddr *)&sa, &n) != 0) return str_alloc(0);
+    if (sa.ss_family == AF_INET) inet_ntop(AF_INET, &((struct sockaddr_in *)&sa)->sin_addr, buf, sizeof buf);
+    else if (sa.ss_family == AF_INET6) inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&sa)->sin6_addr, buf, sizeof buf);
+    const char *ip = strncmp(buf, "::ffff:", 7) == 0 && strchr(buf + 7, '.') ? buf + 7 : buf;   // IPv4 in IPv6
+    return str_from(ip, (int64_t)strlen(ip));
+}
+
 int64_t pn_request_has_header(Str *name) {
     Str *v = find_header(name);
     if (!v) return 0;

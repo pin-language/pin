@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `request_ip()`: the client's address (like `$_SERVER['REMOTE_ADDR']`).
 - **Fixed a use-after-free:** a list literal whose items were lists or maps from `try f()` (or a borrowed
   `$maybe ?? [...]`) freed them while the new list still held them. List and map literals now take owned items,
   copy borrowed ones, and free what they hold when a later item fails (that used to leak).

@@ -349,6 +349,15 @@ f("request_has_header", H, "request_has_header(string $name): bool",
     return "{\"ok\":true}";
 }
 serve(8080, "handle");''', run=False)
+f("request_ip", H, "request_ip(): string", "The client's IP address (the other end of the connection).",
+  r'''function handle(string $method, string $path, string $body): string {
+    return json_encode(["you" => request_ip()]);        // {"you":"203.0.113.7"}
+}
+serve(8080, "handle");''',
+  ["IPv4 as `\"203.0.113.7\"`, IPv6 as `\"2001:db8::1\"`; `\"\"` outside a request.",
+   "Behind a proxy (Caddy for https, design/tls.md) this is the proxy's address, usually `127.0.0.1`; the client's is "
+   "then in `X-Forwarded-For`, which only a proxy you run may be trusted to set (Tack's `client_ip()` does that)."],
+  run=False, php="`$_SERVER['REMOTE_ADDR']`.")
 f("response_header", H, "response_header(string $name, string $value): void",
   "Add a header to the response (for example `Content-Type`, `Location`, `Cache-Control`, `Set-Cookie`).",
   r'''function handle(string $method, string $path, string $body): string {
