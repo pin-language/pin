@@ -3127,6 +3127,8 @@ class FuncGen:
             return self.expr_type_probe(e.e)
         if e.kind == "var" and e.name in self.vars:
             return self.vtype(e.name)
+        if e.kind in ("field", "index", "mcall") and self.static_type(e):     # $u->name, $ks[0], $u->key()
+            return strip_opt(self.static_type(e))
         if e.kind == "null":
             return "null"
         if e.kind == "call" and self.fkey(e, quiet=True):

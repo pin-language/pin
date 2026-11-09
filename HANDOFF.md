@@ -166,7 +166,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | # | problem | where | severity |
 |---|---|---|---|
 | B5 | ~~headers, timeouts, connection limit~~ done in 0.6.0. No TLS / HTTP/2 by design (design/tls.md: a proxy does it) | server | security |
-| B6 | `maplit` key type comes from a heuristic `expr_type_probe` | `pinac.py` | low |
+| B6 | `maplit` key type comes from a heuristic `expr_type_probe`; since 2026-11-09 properties, items and method results use their static type (`tests/map_keys.pn`); other expressions still default to int (a clear compile error, never wrong code) | `pinac.py` | low |
 | B8 | `.ll` files are written next to sources | `pinac.py main()` | cosmetic |
 | B9 | `+ - *` wrap silently (overflow panics removed for speed until check elision exists, int-overflow.md O3) | codegen | correctness |
 | B10 | ~~per-thread request blocks~~ done: `struct Req` per request, `cur_req` follows the running task | `runtime.c` | done |
