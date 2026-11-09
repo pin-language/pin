@@ -1,0 +1,2 @@
+<?php
+function adder(int $n): fn(int): int { return fn($x) => $x + $n; }

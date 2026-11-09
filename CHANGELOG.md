@@ -88,6 +88,11 @@ offset inside a character panics, a request whose path or body is not UTF-8 gets
 
 ### Language and built-ins
 
+- **Closures** (design/closures.md steps 1–2): `fn($x) => ...` and `function ($x) use ($a) { ... }` where they are
+  used — `array_map`, `array_filter`, `usort`, the new `array_reduce`, and your own `fn(T): R` parameters; parameter
+  types come from there. `by_price(...)` makes a function a value; `$f($x)` calls one. A closure borrows what it
+  reads (nothing copied or allocated; as fast as a named function). Returning or storing closures, and `use (&$x)`,
+  are steps 3–4 and give compile errors that say so.
 - **`filter_var()`** with `FILTER_VALIDATE_EMAIL`, `_URL`, `_IP` (`?string`), `_INT` (`?int`), `_FLOAT`, `_BOOL`:
   null where PHP gives false, same answers as PHP; `ctype_*`, `nl2br`, `json_validate`, `array_key_first` / `_last`.
 - `ksort` / `krsort` / `asort` / `arsort` (stable), `range`, `array_count_values`, `array_flip`, `array_combine`,

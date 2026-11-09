@@ -323,6 +323,19 @@ class Parser:
 
     def type_(self):
         t = self.cur
+        if t.kind == "IDENT" and t.val == "fn" and self.peek().val == "(":   # fn(int, string): bool (closures.md C1)
+            self.eat()
+            self.eat("(")
+            ps = []
+            while not self.at(")"):
+                ps.append(self.type_())
+                if not self.accept(","):
+                    break
+            self.eat(")")
+            self.eat(":")
+            r = self.type_()
+            throws = self.accept("throws")
+            return f"fn({','.join(ps)}):{r}" + (" throws" if throws else "")
         if t.val == "?":                            # ?T: may be null (null.md N1)
             self.eat()
             if self.cur.val == "?":
@@ -453,6 +466,7 @@ class Parser:
                 self.eat(";")
                 return Node(t.val, t.line)
             if ((t.val in TYPE_NAMES and self.peek().kind == "VAR") or (t.val in ("list", "map") and self.peek().val == "<")
+                    or (t.val == "fn" and self.peek().val == "(" and self.fn_type_ahead())
                     or (t.val not in NOT_IN_PIN and t.val not in ("new", "print", "try", "throw", "await", "go") and self.peek().kind == "VAR")
                     or (self.peek().val == "::" and self.peek(2).kind == "IDENT" and self.peek(3).kind == "VAR")):
                 vtype = self.type_()
@@ -659,8 +673,66 @@ class Parser:
                     e = Node("nsfield", t.line, obj=e, name=name)
             elif t.kind == "OP" and t.val == "::" and e.kind == "var":
                 raise CompileError("static members are not in Pin; use $obj->name", t.line)
+            elif t.kind == "OP" and t.val == "(" and e.kind in ("var", "field"):     # $f($x): calling an fn value
+                e = Node("callv", t.line, fn=e, args=self.args())
             else:
                 return e
+
+    def fn_type_ahead(self):
+        """At `fn (`: a type (fn(int): bool $f = ...) has no $variables inside the parentheses, a closure does."""
+        depth, k = 0, 1
+        while True:
+            tok = self.peek(k)
+            if tok.kind == "EOF":
+                return False
+            if tok.val == "(":
+                depth += 1
+            elif tok.val == ")":
+                depth -= 1
+                if depth == 0:
+                    return True
+            elif tok.kind == "VAR":
+                return False
+            k += 1
+
+    def closure(self):
+        """fn($x) => expr   /   fn(int $x): int => expr   /   function ($x) use ($a, &$b): T { ... }"""
+        t = self.eat()
+        arrow = t.val == "fn"
+        self.eat("(")
+        params = []
+        while not self.at(")"):
+            ptype = None
+            if self.cur.kind != "VAR":
+                ptype = self.type_()
+            if self.at("&"):
+                raise CompileError("a closure's parameters cannot be & (they are read-only, like every parameter "
+                                   "of an fn value)", self.cur.line)
+            params.append((ptype, self.eat(kind="VAR").val))
+            if not self.accept(","):
+                break
+        self.eat(")")
+        uses = []
+        if not arrow and self.at("use", "IDENT"):
+            self.eat()
+            self.eat("(")
+            while not self.at(")"):
+                ref = bool(self.accept("&"))
+                uses.append((self.eat(kind="VAR").val, ref))
+                if not self.accept(","):
+                    break
+            self.eat(")")
+        ret = None
+        if self.accept(":"):
+            ret = self.type_()
+        throws = bool(self.accept("throws"))
+        if arrow:
+            self.eat("=>")
+            line = self.cur.line
+            body = Node("block", line, body=[Node("return", line, val=self.expr())])
+        else:
+            body = self.block()
+        return Node("closure", t.line, params=params, uses=uses, ret=ret, throws=throws, body=body, arrow=arrow)
 
     def args(self):
         """( a, b, &$c )"""
@@ -739,6 +811,8 @@ class Parser:
                     self.eat()
                     cname = f"{cname}::{self.eat(kind='IDENT').val}"
                 return Node("new", t.line, cls=cname, args=self.args() if self.at("(") else [])
+            if t.val in ("fn", "function") and self.peek().val == "(":    # closures.md C3
+                return self.closure()
             if t.val in NOT_IN_PIN and not (t.val == "list" and self.peek().val == "<"):
                 raise CompileError(NOT_IN_PIN[t.val], t.line)
             self.eat()
@@ -753,6 +827,10 @@ class Parser:
                     raise CompileError(f"no {t.val} in Pin: password_hash($password) takes one argument (the "
                                        f"algorithm is always PBKDF2-SHA256)", t.line)
                 raise CompileError(f"unknown name '{t.val}' (variables start with $)", t.line)
+            if [self.peek(k).val for k in range(1, 5)] == [".", ".", ".", ")"]:   # by_price(...): the function as a value
+                for _ in range(5):
+                    self.eat()
+                return Node("fnref", t.line, name=t.val, module=module)
             return Node("call", t.line, name=t.val, args=self.args(), module=module)
         if t.kind == "OP" and t.val == "(":
             self.eat()
@@ -806,7 +884,46 @@ def is_opt_scalar(t):
     return t in OPT_SCALAR
 
 
+def is_fn(t):
+    return t.startswith("fn(")
+
+
+def fn_parts(t):
+    """fn(int,Item):string throws -> (["int", "Item"], "string", True)."""
+    depth, i = 0, 2
+    while True:
+        c = t[i]
+        depth += c in "(<"
+        depth -= c in ")>"
+        if depth == 0:
+            break
+        i += 1
+    inner, rest = t[3:i], t[i + 2:]
+    throws = rest.endswith(" throws")
+    ret = rest[:-7] if throws else rest
+    return (split_type_list(inner) if inner else []), ret, throws
+
+
+def split_type_list(inner):
+    out, depth, cur = [], 0, ""
+    for c in inner:
+        if c == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+            continue
+        depth += c in "(<"
+        depth -= c in ")>"
+        cur += c
+    return out + [cur]
+
+
+def fn_type(params, ret, throws=False):
+    return f"fn({','.join(params)}):{ret}" + (" throws" if throws else "")
+
+
 def llty(t):
+    if t.startswith("fn("):
+        return "{ ptr, ptr }"                   # the code, and the captured values (null for a named function)
     return OPT_SCALAR.get(t) or {"int": "i64", "float": "double", "bool": "i1", "void": "void"}.get(t, "ptr")
 
 
@@ -1081,7 +1198,7 @@ CONSTANTS = {"FILTER_VALIDATE_INT": ("int", 257), "FILTER_VALIDATE_BOOL": ("int"
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "filter_var", "nl2br", "json_validate", "array_key_first", "array_key_last", "ctype_digit", "ctype_alpha", "ctype_alnum", "ctype_space", "ctype_upper", "ctype_lower", "ctype_xdigit", "ksort", "krsort", "asort", "arsort", "range", "array_count_values", "array_flip", "array_combine", "mb_str_split", "fmod", "log", "log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pi", "pow", "is_nan", "is_finite", "is_infinite", "usort", "array_map", "array_filter", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "mb_str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "filter_var", "nl2br", "json_validate", "array_key_first", "array_key_last", "ctype_digit", "ctype_alpha", "ctype_alnum", "ctype_space", "ctype_upper", "ctype_lower", "ctype_xdigit", "ksort", "krsort", "asort", "arsort", "range", "array_count_values", "array_flip", "array_combine", "mb_str_split", "fmod", "log", "log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pi", "pow", "is_nan", "is_finite", "is_infinite", "usort", "array_reduce", "array_map", "array_filter", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "mb_str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1153,6 +1270,7 @@ declare ptr @pn_strrev(ptr)
 declare ptr @pn_json_pretty(ptr)
 declare void @pn_badshift(i32)
 declare void @pn_list_usort(ptr, ptr)
+declare void @pn_list_usort_ctx(ptr, ptr, ptr)
 declare void @pn_map_sort(ptr, i64, i64)
 declare i64 @pn_filter_email(ptr)
 declare i64 @pn_filter_ip(ptr)
@@ -1339,6 +1457,7 @@ class Module:
         self.handler = None
         self.inferring = False  # compiling methods only to find out which ones change $this (R6)
         self.go_funcs = []      # IR of the functions that run a `go` call inside its task
+        self.wrappers = set()   # fn-value wrappers and closure trampolines already written
         self.ngo = 0
         self.changed = False
 
@@ -1376,6 +1495,58 @@ class Module:
             L += [f"  %o{j}p = getelementptr inbounds i8, ptr %f, i64 {off}", f"  %o{j} = load ptr, ptr %o{j}p",
                   f"  call void {free_fn(t)}(ptr %o{j})"]
         L += ["  ret void", "}"]
+        self.go_funcs += L
+        return name
+
+    def fn_wrapper(self, key, ps, ret, throws):
+        """A named function as an fn value: (ptr env, args) -> the function's result, env unused."""
+        name = f'@"fnv.{key}"'
+        if self.inferring or name in self.wrappers:
+            return name
+        self.wrappers.add(name)
+        rt = fn_llret(ret, throws)
+        args = [f"{llty(t)} %a{i}" for i, t in enumerate(ps)]
+        call = f'call {rt} @"f.{key}"({", ".join(args)})'
+        self.go_funcs += [f"define internal {rt} {name}(ptr %env{''.join(', ' + a for a in args)}) {{", "entry:",
+                          f"  %r = {call}" if rt != "void" else f"  {call}", "  ret void" if rt == "void" else f"  ret {rt} %r", "}"]
+        return name
+
+    def closure_code(self, llname, cname, capts, ps, ret, throws, ir):
+        """The trampoline of a closure (ptr env, args): load the captured values, call the body's function."""
+        name = f'@"clo.{cname}"'
+        if self.inferring or name in self.wrappers:
+            return name
+        self.wrappers.add(name)
+        rt = fn_llret(ret, throws)
+        st = "{ " + ", ".join(llty(t) for t in capts) + " }"
+        L = [f"define internal {rt} {name}(ptr %env{''.join(f', {llty(t)} %a{i}' for i, t in enumerate(ps))}) {{", "entry:"]
+        cargs = []
+        for i, t in enumerate(capts):
+            L += [f"  %cp{i} = getelementptr inbounds {st}, ptr %env, i32 0, i32 {i}", f"  %c{i} = load {llty(t)}, ptr %cp{i}"]
+            cargs.append(f"{llty(t)} %c{i}")
+        cargs += [f"{llty(t)} %a{i}" for i, t in enumerate(ps)]
+        call = f"call {rt} {llname}({', '.join(cargs)})"
+        L += [f"  %r = {call}" if rt != "void" else f"  {call}", "  ret void" if rt == "void" else f"  ret {rt} %r", "}"]
+        self.go_funcs += ir + L
+        return name
+
+    def cmp_adapter(self, et):
+        """usort with an fn value: (ptr ctx, i64 a, i64 b) -> i64, ctx pointing at the { code, env } pair."""
+        name = f'@"cmpv.{et}"'
+        if self.inferring or name in self.wrappers:
+            return name
+        self.wrappers.add(name)
+        ty = llty(et)
+        L = [f"define internal i64 {name}(ptr %ctx, i64 %a, i64 %b) {{", "entry:", "  %fv = load { ptr, ptr }, ptr %ctx",
+             "  %code = extractvalue { ptr, ptr } %fv, 0", "  %env = extractvalue { ptr, ptr } %fv, 1"]
+        for x in ("a", "b"):
+            if ty == "i64":
+                L.append(f"  %{x}v = add i64 %{x}, 0")
+            elif ty == "double":
+                L.append(f"  %{x}v = bitcast i64 %{x} to double")
+            else:
+                L.append(f"  %{x}v = inttoptr i64 %{x} to ptr")
+        L += [f"  %r = call i64 %code(ptr %env, {ty} %av, {ty} %bv)", "  ret i64 %r", "}"]
         self.go_funcs += L
         return name
 
@@ -1726,6 +1897,43 @@ def lent_names(node):
     return out
 
 
+def free_vars(node):
+    """Every $variable read or written inside node (a closure body: what it may capture)."""
+    out = set()
+
+    def walk(x):
+        if isinstance(x, Node):
+            if x.kind == "var":
+                out.add(x.name)
+            for k, v in x.__dict__.items():
+                if k not in ("kind", "line"):
+                    walk(v)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+    walk(node)
+    return out
+
+
+def rename_var(node, old, new):
+    """A copy of node with the variable old named new (a closure's $this becomes one of its parameters)."""
+    import copy as _copy
+    node = _copy.deepcopy(node)
+
+    def walk(x):
+        if isinstance(x, Node):
+            if x.kind == "var" and x.name == old:
+                x.name = new
+            for k, v in x.__dict__.items():
+                if k not in ("kind", "line"):
+                    walk(v)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+    walk(node)
+    return node
+
+
 def changed_roots(node):
     """Variables whose objects code inside node may change: targets of assignments into paths, the objects of
     method calls (any method: kept simple), and what unset() / sort() / foreach with & work on. Checks on their
@@ -1838,6 +2046,9 @@ class FuncGen:
         self.borrowed = set()   # heap vars this function does not own (parameters, foreach variables)
         self.flow = Flow()      # assigned / moved state at the current point (see Flow)
         self.iterating = []     # vars a foreach is currently walking over
+        self.frozen = {}        # variable -> (closure variable, line): read by a closure kept in a variable (C4)
+        self.frozen_by = {}     # closure variable -> the variables it keeps read-only
+        self.closure_target = None
         self.loops = []         # Loop: labels + the flows that leave by break / continue
         self.temps = []         # owned temporaries (value, type) freed at the end of the statement
         self.pending = []       # temporaries that must live until a foreach ends
@@ -1973,6 +2184,7 @@ class FuncGen:
         """Every change goes through here: `root` is the variable the changed data hangs from, `props` the
         properties on the way ($o->items[] = ...: "$o", ("items",))."""
         at = self.at if at is None else at
+        self.check_frozen(root, line)
         self.drop_paths([root], props)
         if root == "$this" and self.method:
             if not self.method.changing:
@@ -2376,6 +2588,12 @@ class FuncGen:
             raise CompileError("null can only go where a ?T type is expected (a ?T variable, parameter, property or "
                                "return value)" + (f"; here a {hint} is expected" if hint else
                                                   ". For a new variable write its type: ?User $u = null;"), e.line)
+        if k == "fnref":
+            return self.fn_ref(e)
+        if k == "closure":
+            return self.closure_value(e, hint)
+        if k == "callv":
+            return self.call_value(e)
         if k == "val":                          # a value computed already (inside ?->)
             return e.v, e.t, False
         if k in ("nsfield", "nsmcall"):
@@ -2756,6 +2974,9 @@ class FuncGen:
             raise CompileError(f"unknown function {c.name}()", e.line)
         params, (_, ret), throws = self.mod.params[key], self.mod.funcs[key], self.mod.throws.get(key, False)
         c = self.with_defaults(c, params, self.mod.defaults.get(key), c.name)
+        if any(is_fn(pt) for pt, _, _ in params):
+            raise CompileError(f"go {c.name}(): a task cannot take a function yet (step 4 of closures.md): the closure "
+                               f"reads values of this function, which may be gone while the task runs", e.line)
         mark = len(self.temps)
         slots, roots, lent = [], set(), set()
         for i, (a, (pt, pn, ref)) in enumerate(zip(c.args, params)):
@@ -3011,6 +3232,8 @@ class FuncGen:
                                    f"(got {', '.join(sorted({t for _, t, _ in vals}))})", e.line)
             if et in ("void", "db", "rows"):
                 raise CompileError(f"a list cannot hold {et} values", e.line)
+            if is_fn(et):
+                raise CompileError("a list of functions is step 4 of closures.md (not built yet)", e.line)
             if nulls and not is_opt(et):
                 et = "?" + et
             vals = [("zeroinitializer" if is_opt_scalar(et) else "null", et, False) if t == "null" else (v, t, o)
@@ -3171,6 +3394,8 @@ class FuncGen:
                     vt = t
                     if vt in ("void", "db", "rows"):
                         raise CompileError(f"a map cannot hold {vt} values", e.line)
+                    if is_fn(vt):
+                        raise CompileError("a map of functions is step 4 of closures.md (not built yet)", e.line)
                 if m is None:
                     mt = f"map<{kt},{vt}>"
                     m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {kind_of(vt)}")
@@ -4581,8 +4806,18 @@ class FuncGen:
             if not is_list(lt):
                 raise CompileError(f"{name}() works on a list, not {lt}", e.line)
             et = elem_of(lt)
-            key = self.fkey(Node("call", e.line, name=fe.val, args=[]), quiet=True) if fe.kind == "str" else None
-            sig = self.mod.funcs.get(key) if key else None
+            fnv = None
+            if fe.kind != "str":                    # a closure or another fn value (closures.md)
+                fnv, ft = self.borrow(fe, fn_type([et], "bool" if name == "array_filter" else "?"))
+                if not is_fn(ft):
+                    raise CompileError(f"{name}() takes a function: a closure fn($x) => ..., a name like \"label\", or "
+                                       f"label(...); not {ft}", e.line)
+                fps, fret, fth = fn_parts(ft)
+                if fth:
+                    raise CompileError(f"the function given to {name}() cannot be throws", e.line)
+                key, sig = ("value", fnv), (fps, fret)
+            key = key if fnv is not None else (self.fkey(Node("call", e.line, name=fe.val, args=[]), quiet=True) if fe.kind == "str" else None)
+            sig = sig if fnv is not None else (self.mod.funcs.get(key) if key else None)
             if sig is None and fe.kind == "str" and fe.val in ONE_ARG_BUILTINS:     # array_map("strtoupper", $xs)
                 bt = ONE_ARG_BUILTINS[fe.val]
                 sig = ([et], bt(et) if callable(bt) else bt)
@@ -4591,6 +4826,8 @@ class FuncGen:
             shape = (f'array_map("name", $xs) needs a function of this file taking one {et}: function name({et} $x): T'
                      if name == "array_map" else
                      f'array_filter($xs, "name") needs a function of this file declared as function name({et} $x): bool')
+            if fnv is not None and (sig[0] != [et] or (want and sig[1] != want) or sig[1] == "void"):
+                raise CompileError(f"{name}() over a list<{et}> needs an fn({et}): {want or 'T'}, and this is {ft}", e.line)
             if not sig or sig[0] != [et] or (want and sig[1] != want) or sig[1] == "void" or \
                     (not isinstance(key, tuple) and self.mod.throws.get(key, False)):
                 raise CompileError(shape + " (it cannot throw)", e.line)
@@ -4611,7 +4848,12 @@ class FuncGen:
             self.emit(f"br i1 {c}, label %{body}, label %{done}")
             self.place_label(body)
             x = self.load_elem(self.list_elem_ptr(lv, et, i), et)
-            if isinstance(key, tuple):              # a built-in: its own code, on the item
+            if isinstance(key, tuple) and key[0] == "value":
+                code, env = self.tmp(), self.tmp()
+                self.emit(f"{code} = extractvalue {{ ptr, ptr }} {key[1]}, 0")
+                self.emit(f"{env} = extractvalue {{ ptr, ptr }} {key[1]}, 1")
+                r = self.call(llty(sig[1]), code, f"ptr {env}", f"{llty(et)} {x}")
+            elif isinstance(key, tuple):              # a built-in: its own code, on the item
                 mark = len(self.temps)
                 r, rtt, rowned = self.builtin(Node("call", e.line, name=key[1], args=[Node("val", e.line, v=x, t=et)]), None)
                 if rtt != sig[1]:
@@ -4643,6 +4885,56 @@ class FuncGen:
             self.body[phi_at] = f"  {i} = phi i64 [ 0, %{pre} ], [ {i2}, %{back} ]"
             self.place_label(done)
             return out, f"list<{rt}>", True
+        if name == "array_reduce":
+            self.argc(e, 3)
+            lv, lt = self.borrow(args[0])
+            if not is_list(lt):
+                raise CompileError(f"array_reduce() works on a list, not {lt}", e.line)
+            et = elem_of(lt)
+            cv, ct = self.owned_value(args[2], None, e.line)        # the carry starts as the initial value
+            want = fn_type([ct, et], ct)
+            if args[1].kind == "str":
+                key = self.fkey(Node("call", e.line, name=args[1].val, args=[]), quiet=True)
+                if key is None or self.mod.funcs[key] != ([ct, et], ct) or self.mod.throws.get(key, False):
+                    raise CompileError(f'array_reduce($xs, "name", $initial) needs a function declared as '
+                                       f'function name({ct} $carry, {et} $item): {ct}', e.line)
+                fv = self.fn_pair(self.mod.fn_wrapper(key, [ct, et], ct, False), "null")
+            else:
+                fv, ft = self.borrow(args[1], want)
+                if ft != want:
+                    raise CompileError(f"array_reduce() needs an {want} here, not {ft}", e.line)
+            slot = f"%v.__carry{self.n}"
+            self.n += 1
+            self.allocas.append(f"  {slot} = alloca {llty(ct)}")
+            self.emit(f"store {llty(ct)} {cv}, ptr {slot}")
+            code, env, n = self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{code} = extractvalue {{ ptr, ptr }} {fv}, 0")
+            self.emit(f"{env} = extractvalue {{ ptr, ptr }} {fv}, 1")
+            self.emit(f"{n} = load i64, ptr {lv}, !tbaa !1")
+            pre, head, body, done = self.label, self.newlabel("redh"), self.newlabel("redb"), self.newlabel("rede")
+            self.emit(f"br label %{head}")
+            self.place_label(head)
+            i, i2, c = self.tmp(), self.tmp(), self.tmp()
+            phi_at = len(self.body)
+            self.emit("")
+            self.emit(f"{c} = icmp slt i64 {i}, {n}")
+            self.emit(f"br i1 {c}, label %{body}, label %{done}")
+            self.place_label(body)
+            x = self.load_elem(self.list_elem_ptr(lv, et, i), et)
+            old = self.tmp()
+            self.emit(f"{old} = load {llty(ct)}, ptr {slot}")
+            r = self.call(llty(ct), code, f"ptr {env}", f"{llty(ct)} {old}", f"{llty(et)} {x}")
+            if is_heap(ct):                         # the function gave a new carry; the old one is done
+                self.call("void", free_fn(ct), f"ptr {old}")
+            self.emit(f"store {llty(ct)} {r}, ptr {slot}")
+            self.emit(f"{i2} = add i64 {i}, 1")
+            back = self.label
+            self.emit(f"br label %{head}")
+            self.body[phi_at] = f"  {i} = phi i64 [ 0, %{pre} ], [ {i2}, %{back} ]"
+            self.place_label(done)
+            res = self.tmp()
+            self.emit(f"{res} = load {llty(ct)}, ptr {slot}")
+            return res, ct, is_heap(ct)
         if name == "usort":
             self.argc(e, 2)
             a, h = args
@@ -4656,6 +4948,18 @@ class FuncGen:
             if esize(et) != 8 or is_task(et):
                 raise CompileError(f"usort() sorts lists of int, float, string, objects, lists or maps; not {t} "
                                    f"(for bools, sort() puts false first)", e.line)
+            if h.kind != "str":                     # a closure / fn value: through an adapter with the value as context
+                fv, ft = self.borrow(h, fn_type([et, et], "int"))
+                if ft != fn_type([et, et], "int"):
+                    raise CompileError(f"usort() needs an fn({et}, {et}): int, not {ft}", e.line)
+                self.mutating(root, props, e.line, at=e.order, what="sorted")
+                v, _ = self.base_value(a, e.line)
+                ctx = f"%v.__cmp{self.n}"
+                self.n += 1
+                self.allocas.append(f"  {ctx} = alloca {{ ptr, ptr }}")
+                self.emit(f"store {{ ptr, ptr }} {fv}, ptr {ctx}")
+                self.call("void", "@pn_list_usort_ctx", f"ptr {v}", f"ptr {self.mod.cmp_adapter(et)}", f"ptr {ctx}")
+                return None, "void", False
             key = self.fkey(Node("call", e.line, name=h.val, args=[]), quiet=True) if h.kind == "str" else None
             want = f"function {h.val if h.kind == 'str' else 'compare'}({et} $a, {et} $b): int"
             if key is None or self.mod.funcs[key] != ([et, et], "int") or self.mod.throws.get(key, False):
@@ -4967,6 +5271,8 @@ class FuncGen:
         if name == "json_encode":
             self.argc(e, 1)
             v, t = self.borrow(args[0])
+            if is_fn(t):
+                raise CompileError("json_encode() cannot write a function", e.line)
             if is_opt_scalar(t):
                 return self.json_opt_scalar(v, t), "string", True
             if is_opt(t):                       # null -> null (null.md N8)
@@ -5394,9 +5700,152 @@ class FuncGen:
         self.flow.maybe.discard(name)
         self.flow.assigned.add(name)
 
+    # --- closures (design/closures.md, steps 1-2)
+    def check_frozen(self, name, line):
+        if name in self.frozen:
+            f, at = self.frozen[name]
+            raise CompileError(f"{name} is read by the closure in {f} (line {at}), so it cannot change while {f} can "
+                               f"still be called. Change it before making the closure, or give the closure its own "
+                               f"value: $copy = {name}; then use $copy in the closure", line)
+
+    def fn_pair(self, code, env):
+        a, b = self.tmp(), self.tmp()
+        self.emit(f"{a} = insertvalue {{ ptr, ptr }} undef, ptr {code}, 0")
+        self.emit(f"{b} = insertvalue {{ ptr, ptr }} {a}, ptr {env}, 1")
+        return b
+
+    def fn_ref(self, e):
+        """by_price(...): a function of this program as an fn value (C2)."""
+        key = self.fkey(Node("call", e.line, name=e.name, args=[], module=e.module))
+        if key is None:
+            raise CompileError(f"{e.name}(...) needs a function of this program; built-ins are not values yet", e.line)
+        params = self.mod.params[key]
+        if any(r for _, _, r in params):
+            raise CompileError(f"{e.name}() has & parameters, so it cannot be an fn value", e.line)
+        ps, ret, th = [t for t, _, _ in params], self.mod.funcs[key][1], self.mod.throws.get(key, False)
+        return self.fn_pair(self.mod.fn_wrapper(key, ps, ret, th), "null"), fn_type(ps, ret, th), False
+
+    def closure_value(self, e, hint):
+        """fn($x) => ... / function ($x) use ($a) { ... }: a local closure (C3, C4). Its body becomes a function of
+        its captures and its parameters; the value is a trampoline plus a block on this function's stack holding
+        the captured values (loans: nothing is copied)."""
+        hp = fn_parts(hint) if hint and is_fn(hint) else None
+        if hp and len(hp[0]) != len(e.params):
+            raise CompileError(f"this closure takes {len(e.params)} parameter(s), but one taking {len(hp[0])} "
+                               f"({', '.join(hp[0])}) is expected here", e.line)
+        ptypes = []
+        for i, (pt, pn) in enumerate(e.params):
+            t = self.rt(pt, e.line) if pt else (hp[0][i] if hp else None)
+            if t is None:
+                raise CompileError(f"fn({pn}) => ... needs the type of {pn} here: write fn(int {pn}): int => ..., or "
+                                   f"pass it where an fn(int): int is expected", e.line)
+            if hp and pt and t != hp[0][i]:
+                raise CompileError(f"{pn} is {t} here, but the closure is expected to take {hp[0][i]}", e.line)
+            ptypes.append(t)
+        ret = self.rt(e.ret, e.line) if e.ret else (hp[1] if hp and hp[1] != "?" else None)
+        if hp and e.ret and hp[1] != "?" and ret != hp[1]:
+            raise CompileError(f"this closure returns {ret}, but {hp[1]} is expected here", e.line)
+        throws = e.throws or bool(hp and hp[2])
+        if ret is None and not e.arrow:
+            raise CompileError("function (...) { ... } needs its result type here: function ($x): int { ... }", e.line)
+        pnames = {pn for _, pn in e.params}
+        if e.arrow:
+            names = sorted(n for n in free_vars(e.body) - pnames if n in self.vars or n == "$this")
+        else:
+            for n, ref in e.uses:
+                if ref:
+                    raise CompileError(f"use (&{n}) is step 3 of closures.md (not built yet): return the new value "
+                                       f"from the closure instead", e.line)
+                if n not in self.vars:
+                    raise CompileError(f"use ({n}): there is no {n} here", e.line)
+            names = [n for n, _ in e.uses]
+            if "$this" in free_vars(e.body) and self.method:
+                names.append("$this")
+        caps = []
+        for n in names:
+            if n == "$this":
+                if not self.method:
+                    raise CompileError("$this is only inside methods", e.line)
+                caps.append(("$__this", self.cls.key, "$this"))
+            else:
+                self.require_assigned(n, e.line)
+                if n in self.moved:
+                    self.use_var(n, e.line)
+                t = self.vtype(n)
+                if is_task(t) or t in ("db", "rows", "sub", "stream"):
+                    raise CompileError(f"a closure cannot use {n} ({t})", e.line)
+                caps.append((n, t, n))
+        body = rename_var(e.body, "$this", "$__this") if any(c[0] == "$__this" for c in caps) else e.body
+        cname = f"__clo{e.order}_{self.key}".replace("::", "_").replace('"', "")
+        sub = FuncGen(self.mod, cname, [(t, n, False) for n, t, _ in caps] + list(zip(ptypes, [pn for _, pn in e.params],
+                      [False] * len(ptypes))), ret or "?infer", e.line, modid=self.modid, imports=self.imports, throws=throws)
+        sub.closure_of = self.name
+        sub.prepare(body)
+        sub.stmt(body)
+        ir = sub.finish()
+        ret = sub.ret
+        if ret == "?infer":
+            raise CompileError("this closure never returns a value", e.line)
+        if is_fn(ret):
+            raise CompileError("a closure that returns a function is step 4 of closures.md (not built yet)", e.line)
+        tramp = self.mod.closure_code(sub.llname, cname, [t for _, t, _ in caps], ptypes, ret, throws, ir)
+        env = "null"
+        if caps:
+            st = "{ " + ", ".join(llty(t) for _, t, _ in caps) + " }"
+            env = f"%v.__env{self.n}"
+            self.n += 1
+            self.allocas.append(f"  {env} = alloca {st}")
+            for i, (n, t, src) in enumerate(caps):
+                v = self.use_var(src, e.line, raw=True)[0] if src != "$this" else "%arg.this"
+                p = self.tmp()
+                self.emit(f"{p} = getelementptr inbounds {st}, ptr {env}, i32 0, i32 {i}")
+                self.emit(f"store {llty(t)} {v}, ptr {p}")
+        if self.closure_target:                 # $f = fn(...) => ...: what it reads stays read-only (C4)
+            f, line = self.closure_target
+            self.closure_target = None
+            keep = set()
+            for _, _, src in caps:
+                if src == "$this":
+                    continue
+                keep.add(src)
+                keep |= {r for r, _ in self.borrow_vars.get(src, ())}
+                if self.foreach_root.get(src):
+                    keep.add(self.foreach_root[src][0])
+            for n in keep:
+                self.frozen.setdefault(n, (f, line))
+            self.frozen_by[f] = keep
+        return self.fn_pair(tramp, env), fn_type(ptypes, ret, throws), False
+
+    def call_value(self, e):
+        """$f($x): call an fn value (code pointer + captured values)."""
+        fv, ft = self.borrow(e.fn)
+        if not is_fn(ft):
+            raise CompileError(f"{show(e.fn)} is {ft}, not a function", e.line)
+        ps, ret, th = fn_parts(ft)
+        if len(e.args) != len(ps):
+            raise CompileError(f"{show(e.fn)} takes {len(ps)} argument(s), not {len(e.args)}", e.line)
+        args = []
+        for a, pt in zip(e.args, ps):
+            if a.kind == "ref":
+                raise CompileError("an fn value's parameters are read-only: no &", e.line)
+            v, t = self.borrow(a, pt)
+            args.append(f"{llty(pt)} {self.coerce(v, t, pt, e.line, f'argument of {show(e.fn)}')}")
+        code, env = self.tmp(), self.tmp()
+        self.emit(f"{code} = extractvalue {{ ptr, ptr }} {fv}, 0")
+        self.emit(f"{env} = extractvalue {{ ptr, ptr }} {fv}, 1")
+        if th:
+            return self.failing_call(ret, code, [f"ptr {env}"] + args, e.line, f"{show(e.fn)}(...)"), ret, is_heap(ret)
+        if ret == "void":
+            self.call("void", code, f"ptr {env}", *args)
+            return None, "void", False
+        return self.call(llty(ret), code, f"ptr {env}", *args), ret, is_heap(ret)
+
     def assign_var(self, name, val_e, line, want=None):
         if name == "$this":
             raise CompileError("$this cannot be assigned", line)
+        self.check_frozen(name, line)
+        if val_e.kind == "closure" or (val_e.kind == "var" and val_e.name in self.frozen_by):
+            self.closure_target = (name, line)    # its captures stay read-only while it can be called (C4)
         if self.is_borrow(name, val_e):
             return self.assign_borrow(name, val_e, line, want)
         if val_e.kind == "go" or (val_e.kind == "var" and holds_task(self.vars.get(val_e.name, ""))):
@@ -5905,6 +6354,20 @@ class FuncGen:
             self.emit_ret()
             self.flow.live = False
             return
+        if self.ret == "?infer":                # fn($x) => ... with no declared result: the body says (closures.md C3)
+            v, t, owned = self.expr(s.val)
+            if t in ("void", "null"):
+                raise CompileError("this closure's result has no type here: write it, fn($x): ?string => ...", s.line)
+            if is_heap(t) and not owned:
+                v = self.dup_str(v) if t == "string" else self.call("ptr", copy_fn(t), f"ptr {v}")
+            self.ret = t
+            self.flush_temps()
+            self.free_stashed()
+            self.free_pending()
+            self.free_owned()
+            self.emit_ret(v)
+            self.flow.live = False
+            return
         if self.ret == "void":
             raise CompileError(f"{self.name}() is void and cannot return a value", s.line)
         if is_heap(self.ret):
@@ -6019,16 +6482,27 @@ def resolve_type(t, mid, imports, line, file=None):
         return "?" + inner
     if t.startswith("Task<"):
         return f"Task<{resolve_type(t[5:-1], mid, imports, line, file)}>"
+    if is_fn(t):
+        ps, r, th = fn_parts(t)
+        ps = [resolve_type(x, mid, imports, line, file) for x in ps]
+        if "void" in ps:
+            raise CompileError("an fn type's parameters cannot be void", line, file)
+        return fn_type(ps, resolve_type(r, mid, imports, line, file), th)
     if t.startswith("list<"):
         e = resolve_type(t[5:-1], mid, imports, line, file)
         if e in ("db", "rows", "sub", "stream"):
             raise CompileError(f"a list cannot hold {e} values", line, file)
+        if is_fn(e):
+            raise CompileError("a list of functions is step 4 of closures.md (not built yet): keep the functions in "
+                               "variables or parameters", line, file)
         return f"list<{e}>"
     if t.startswith("map<"):
         k, v = split_type_args(t[4:-1])
         v = resolve_type(v, mid, imports, line, file)
         if v in ("db", "rows", "sub", "stream") or holds_task(v):
             raise CompileError(f"a map cannot hold {v} values", line, file)
+        if is_fn(v):
+            raise CompileError("a map of functions is step 4 of closures.md (not built yet)", line, file)
         return f"map<{k},{v}>"
     if "::" in t:
         alias, name = t.split("::", 1)
@@ -6319,6 +6793,9 @@ def compile_file(path, src=None):
                 except CompileError as err:
                     err.file = ci.file
                     raise
+            if is_fn(ft):
+                raise CompileError(f"a property holding a function ({pr.name}) is step 4 of closures.md (not built "
+                                   f"yet): pass the function as a parameter where it is used", pr.line, ci.file)
             ci.fields[pr.name] = Field(pr.name, ft, pr.vis, pr.default, ci.slots, pr.line)
             ci.slots += nslots(ft)
         for m in ci.node.methods:
@@ -6360,6 +6837,11 @@ def compile_file(path, src=None):
             if any(holds_task(t) for t, _, _ in ps) or holds_task(resolve_type(f.ret, mid, table, f.line, file)):
                 raise CompileError("a task cannot be passed to or returned from a function: await it in the function "
                                    "that started it (concurrency.md C1)", f.line, file)
+            if is_fn(resolve_type(f.ret, mid, table, f.line, file)):
+                raise CompileError(f"{f.name}() returns a function: that is step 4 of closures.md (not built yet). "
+                                   f"Take the function as a parameter instead", f.line, file)
+            if any(r and is_fn(t) for t, _, r in ps):
+                raise CompileError("an fn parameter cannot be &", f.line, file)
             mod.params[key] = ps
             mod.defaults[key] = getattr(f, "defaults", None)
             mod.funcs[key] = ([t for t, _, _ in ps], resolve_type(f.ret, mid, table, f.line, file))

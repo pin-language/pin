@@ -226,19 +226,20 @@ f("implode", S, "implode(string $glue, list<string|int|float> $xs): string", "Jo
 f("PHP_EOL", S, "PHP_EOL: string", r'The string `"\n"`.', r'''echo "line", PHP_EOL;''', kind="constant")
 
 # ----------------------------------------------------------------------------------------- lists and maps
-f("array_map", L, "array_map(string $function, list<T> $xs): list<R>", "A new list: the function applied to each item.",
-  r'''function label(int $satang): string { return number_format($satang / 100, 2); }
-echo json_encode(array_map("label", [4500, 12000])), "\n";''',
-  ["`$function` is the name of a function in the same file taking one `T` and giving any `R`; it cannot be "
-   "`throws`. The compiler writes the loop: no callback at run time.",
+f("array_map", L, "array_map(fn(T): R $f, list<T> $xs): list<R>", "A new list: the function applied to each item.",
+  r'''echo json_encode(array_map(fn($satang) => number_format($satang / 100, 2), [4500, 12000])), "\n";
+function label(int $satang): string { return "฿" . number_format($satang / 100, 2); }
+echo json_encode(array_map(label(...), [4500])), json_encode(array_map("strtoupper", ["tea"])), "\n";''',
+  ["`$f` is a closure (`fn($x) => ...`, whose parameter type comes from the list), a function value "
+   "(`label(...)`), or a function's name as a string; it cannot be `throws`.",
    "One-argument built-ins work by name too: `array_map(\"strtoupper\", $names)`, `array_map(\"intval\", $parts)`, "
    "`array_filter($xs, \"ctype_digit\")`."],
-  php="`array_map('label', $xs)` with a function name (Pin has no closures yet); one list.")
-f("array_filter", L, "array_filter(list<T> $xs, string $keep): list<T>", "A new list of the items the function keeps.",
-  r'''function cheap(int $price): bool { return $price < 100; }
-echo json_encode(array_filter([45, 120, 30], "cheap")), "\n";''',
-  ["`$keep` names a function of the same file `(T $x): bool`. The kept items are copied, and the new list is "
-   "renumbered from 0 (PHP keeps the old keys)."],
+  php="Like PHP with one list; the closure reads the variables around it (no `use` needed for `fn`).")
+f("array_filter", L, "array_filter(list<T> $xs, fn(T): bool $keep): list<T>", "A new list of the items the function keeps.",
+  r'''$limit = 100;
+echo json_encode(array_filter([45, 120, 30], fn($price) => $price < $limit)), "\n";''',
+  ["`$keep` is a closure, a function value or a function name `(T $x): bool`. The kept items are copied, and the "
+   "new list is renumbered from 0 (PHP keeps the old keys)."],
   php="PHP keeps the original keys; Pin's result is a list numbered from 0.")
 f("array_key_first", L, 'array_key_first(map<K,V> $m): ?K', 'The first key of a map, or null when it is empty.',
   r'''echo array_key_first(["b" => 2, "a" => 1]) ?? "none", "\n";''')
@@ -275,17 +276,22 @@ f("array_flip", L, "array_flip(map<K,V> $m): map<V,K>", "Values become keys and 
 f("array_combine", L, "array_combine(list<K> $keys, list<V> $values): map<K,V>", "A map from a list of keys and a list of values.",
   r'''echo json_encode(array_combine(["id", "qty"], [7, 2])), "\n";''',
   ["Lists of different lengths panic (PHP throws)."])
-f("usort", L, "usort(list<T> $xs, string $compare): void", "Sort a list in place with your own comparison function.",
+f("array_reduce", L, "array_reduce(list<T> $xs, fn(C, T): C $f, C $initial): C", "Fold a list into one value.",
+  r'''echo array_reduce([45, 120, 30], fn($sum, $p) => $sum + $p, 0), " ", array_reduce(["a", "b"], fn($s, $x) => $s . $x . ";", ""), "\n";''',
+  ["The carry's type is the type of `$initial`; the function gets the carry and an item and gives the next carry."])
+f("usort", L, "usort(list<T> $xs, fn(T, T): int $compare): void", "Sort a list in place with your own comparison function.",
   r'''class Item { public function __construct(public string $name, public int $price) {} }
 function by_price(Item $a, Item $b): int { return $a->price - $b->price; }
 list<Item> $items = [new Item("cake", 120), new Item("tea", 45), new Item("rice", 30)];
 usort($items, "by_price");
 foreach ($items as $i) { echo $i->name, " "; }
+usort($items, fn($a, $b) => $b->price <=> $a->price);
+echo "| most expensive: ", $items[0]->name;
 echo "\n";''',
-  ["`$compare` is the name of a function in the same file, `(T $a, T $b): int`: negative puts `$a` first, "
-   "positive `$b`, 0 keeps their order (the sort is stable). It cannot be `throws`.",
+  ["`$compare` is a closure `fn($a, $b) => $a->x <=> $b->x`, a function value, or a function's name, `(T $a, T $b): "
+   "int`: negative puts `$a` first, positive `$b`, 0 keeps their order (the sort is stable). It cannot be `throws`.",
    "Lists of int, float, string, objects, lists or maps. A list of bools: `sort()`."],
-  php="`usort($xs, 'by_price')` with a function name; Pin has no closures yet.")
+  php="Same as PHP 8 (stable).")
 f("array_pop", L, "array_pop(list<T> $xs): ?T", "Take the last item out of the list, or null when it is empty.",
   r'''list<int> $stack = [1, 2, 3];
 $top = array_pop($stack);

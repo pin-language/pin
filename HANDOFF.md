@@ -18,7 +18,7 @@ literals; 189 built-ins now. Fuzzers: `tools/fuzz_ownership.py`, `fuzz_json.py`,
 had tested docs `next` against released Pin since 2026-10-25).
 Left (not started): ST2 `bytes`, SIMD UTF-8, loop-head cancellation (costs tight loops), transitive packages /
 semver, Linux arm64 SHA path untested (no runner). Owner decisions: release 0.9.0 when, make tack public,
-tack.md Q1–Q4, closures.md Q1–Q3 (closures designed 2026-11-09, not built).
+tack.md Q1–Q4, closures: owner took Q1–Q3 as proposed; steps 1–2 built 2026-11-09 (local closures, fn types, name(...)); steps 3–4 left.
 
 
 **Tack M1–M6 are built** (2026-10-26 / 2026-11-08): github.com/pin-language/tack, branch `next` (its default:

@@ -215,7 +215,7 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 
 ## Not there yet
 
-Inheritance and interfaces, `finally`, closures, a `bytes` type for binary data.
+Inheritance and interfaces, `finally`, closures that are returned or stored (local ones work), a `bytes` type for binary data.
 `null` (`?User`, `?int`, `list<?int>`, checked before use), `json_decode()` into a class, `go`/`await`, SQLite and
 PostgreSQL (with a connection pool, rows into classes with `db_all` / `db_one`), and Unicode text (always UTF-8,
 `mb_*`, `grapheme_*`, normalisation) are built.

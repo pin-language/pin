@@ -1,0 +1,5 @@
+<?php
+function apply1(fn(int): int $f): int { return $f(1); }
+$k = 1;
+$t = go apply1(fn($x) => $x + $k);
+echo await $t;

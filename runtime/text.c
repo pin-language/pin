@@ -844,3 +844,23 @@ Str *pn_mb_str_pad(Str *s, int64_t len, Str *pad, int64_t type) {
     }
     return d;
 }
+
+// usort($xs, fn($a, $b) => ...): the same merge sort, the comparison through a generated adapter that takes the
+// fn value (code + captured values) and two 64-bit items
+typedef int64_t (*CmpCtx)(void *, uint64_t, uint64_t);
+
+void pn_list_usort_ctx(List *l, CmpCtx cmp, void *ctx) {
+    int64_t n = l->len;
+    if (n < 2) return;
+    uint64_t *a = l->data, *tmp = xmalloc(checked_size(n, 8, 0));
+    for (int64_t w = 1; w < n; w *= 2) {
+        for (int64_t lo = 0; lo < n; lo += 2 * w) {
+            int64_t mid = lo + w < n ? lo + w : n, hi = lo + 2 * w < n ? lo + 2 * w : n, i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) tmp[k++] = cmp(ctx, a[j], a[i]) < 0 ? a[j++] : a[i++];
+            while (i < mid) tmp[k++] = a[i++];
+            while (j < hi) tmp[k++] = a[j++];
+        }
+        memcpy(a, tmp, (size_t)n * 8);
+    }
+    xfree(tmp);
+}

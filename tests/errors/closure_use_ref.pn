@@ -1,0 +1,3 @@
+<?php
+$count = 0;
+$xs = array_map(function (int $x) use (&$count): int { return $x; }, [1, 2]);

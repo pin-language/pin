@@ -1,0 +1,3 @@
+<?php
+$f = fn(int $x): int => $x;
+echo json_encode(array_map($f, ["a"]));

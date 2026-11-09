@@ -1,0 +1,6 @@
+<?php
+// a closure kept in a variable reads $limit: $limit cannot change while the closure can be called (closures.md C4)
+$limit = 5;
+$small = fn(int $x): bool => $x < $limit;
+$limit = 9;
+echo $small(7) ? "small" : "big";

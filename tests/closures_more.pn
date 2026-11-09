@@ -1,0 +1,47 @@
+// closures with array_map / array_filter / usort / array_reduce, $this, throws, nesting, loops
+class Item { public function __construct(public string $name, public int $price, public int $qty) {} }
+list<Item> $items = [new Item("tea", 45, 2), new Item("cake", 120, 1), new Item("rice", 30, 5)];
+$limit = 100;
+$cheap = array_filter($items, fn($i) => $i->price < $limit);
+$labels = array_map(fn($i) => $i->name . " " . number_format($i->price / 100, 2), $items);
+usort($items, fn($a, $b) => $b->price <=> $a->price);
+echo json_encode($labels), " ", count($cheap), " ", $items[0]->name, "\n";
+$sum = array_reduce($items, fn($c, $i) => $c + $i->price * $i->qty, 0);
+$names = array_reduce($items, fn($c, $i) => $c . $i->name . ",", "");
+echo $sum, " ", $names, "\n";
+list<string> $words = ["b", "a", "c"];
+usort($words, fn($x, $y) => $x <=> $y);
+echo json_encode($words), "\n";
+class Cart {
+    public list<int> $prices = [];
+    public int $discount = 10;
+    public function __construct() {}
+    public function discounted(): list<int> {
+        return array_map(fn($p) => $p - $this->discount, $this->prices);
+    }
+}
+function parse(string $s): int throws {
+    if (!ctype_digit($s)) { throw error(400, "not a number: " . $s); }
+    return intval($s);
+}
+function apply_all(list<string> $xs, fn(string): int throws $f): int throws {
+    $t = 0;
+    foreach ($xs as $x) { $t += try $f($x); }
+    return $t;
+}
+$c = new Cart();
+$c->prices = [100, 250];
+echo json_encode($c->discounted()), "\n";
+echo try apply_all(["1", "2"], fn($s) => try parse($s)), " ", try apply_all(["1", "x"], fn($s) => try parse($s)) catch ($e) { -1; }, "\n";
+$k = 3;
+$outer = fn(int $x): int => array_sum(array_map(fn($y) => $y * $k, [$x, $x]));
+echo $outer(5), "\n";
+list<string> $names2 = ["ann", "bob"];
+foreach ($names2 as $n) {
+    $greet = fn(string $p): string => $p . " " . $n;
+    echo $greet("hi"), "\n";
+}
+?int $maybe = 4;
+if ($maybe !== null) { echo json_encode(array_map(fn($v) => $v + $maybe, [1])), "\n"; }
+echo json_encode(array_map(by_two(...), [1, 2])), "\n";
+function by_two(int $x): int { return $x * 2; }
