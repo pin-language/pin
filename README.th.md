@@ -153,6 +153,9 @@ macOS ล็อก CPU core ไม่ได้ ส่วนต่างต่ำ
 
 inheritance/interface, `finally`, closure, type `bytes` สำหรับข้อมูล binary
 
+ฟังก์ชันแบบ PHP ที่มีแล้วกว่า 200 ตัว เช่น `sprintf`, `str_replace`, `number_format`, `round`, `date`, `in_array`, `usort($xs, "ชื่อฟังก์ชัน")`,
+`array_map`, `filter_var`, `ksort` และ operator `**`, `<=>`, `| & ^ << >>`
+
 ที่มีแล้ว: `null` (`?User`, `?int`, `list<?int>` ต้องเช็คก่อนใช้), ค่า default ของ parameter, `json_decode()` เข้า class,
 `go`/`await`, SQLite และ PostgreSQL (มี connection pool, อ่านแถวเข้า class ด้วย `db_all` / `db_one`) และข้อความ Unicode
 (`mb_*`, `grapheme_*`, `normalizer_normalize`) · การออกแบบอยู่ใน [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/)
