@@ -11,3 +11,4 @@ echo json_encode(array_reverse($oi)), json_encode(array_slice($oi, 1)), "\n";
 echo is_numeric("12") ? "y" : "n", is_numeric(" 1.5e3 ") ? "y" : "n", is_numeric("12abc") ? "y" : "n", is_numeric(".") ? "y" : "n", is_numeric("-.5") ? "y" : "n", "\n";
 echo "[", str_pad("7", 3, "0", STR_PAD_LEFT), "][", str_pad("ab", 6), "][", str_pad("ab", 7, "-=", STR_PAD_BOTH), "][", str_pad("x", 5, "ไ"), "]\n";
 echo ucwords("hello big world"), " ", strrev("abc"), " ", strrev("ที่นี่ไทย"), "\n";
+echo "[", mb_str_pad("ไทย", 6, "-"), "] [", mb_str_pad("ab", 5, "ไ", STR_PAD_LEFT), "] [", mb_str_pad("x", 4, "ab", STR_PAD_BOTH), "] [", mb_str_pad("long", 2), "]\n";

@@ -1081,7 +1081,7 @@ CONSTANTS = {"FILTER_VALIDATE_INT": ("int", 257), "FILTER_VALIDATE_BOOL": ("int"
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "filter_var", "nl2br", "json_validate", "array_key_first", "array_key_last", "ctype_digit", "ctype_alpha", "ctype_alnum", "ctype_space", "ctype_upper", "ctype_lower", "ctype_xdigit", "ksort", "krsort", "asort", "arsort", "range", "array_count_values", "array_flip", "array_combine", "mb_str_split", "fmod", "log", "log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pi", "pow", "is_nan", "is_finite", "is_infinite", "usort", "array_map", "array_filter", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "filter_var", "nl2br", "json_validate", "array_key_first", "array_key_last", "ctype_digit", "ctype_alpha", "ctype_alnum", "ctype_space", "ctype_upper", "ctype_lower", "ctype_xdigit", "ksort", "krsort", "asort", "arsort", "range", "array_count_values", "array_flip", "array_combine", "mb_str_split", "fmod", "log", "log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pi", "pow", "is_nan", "is_finite", "is_infinite", "usort", "array_map", "array_filter", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "mb_str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1147,6 +1147,7 @@ declare i64 @pn_list_index(ptr, i64, i64)
 declare ptr @pn_list_unique(ptr, i64)
 declare i64 @pn_is_numeric(ptr)
 declare ptr @pn_str_pad(ptr, i64, ptr, i64)
+declare ptr @pn_mb_str_pad(ptr, i64, ptr, i64)
 declare ptr @pn_ucwords(ptr)
 declare ptr @pn_strrev(ptr)
 declare ptr @pn_json_pretty(ptr)
@@ -4740,12 +4741,12 @@ class FuncGen:
         if name == "is_numeric":
             self.argc(e, 1)
             return self.i64_to_bool(self.call("i64", "@pn_is_numeric", f"ptr {self.str_arg(e, 0)}")), "bool", False
-        if name == "str_pad":
+        if name in ("str_pad", "mb_str_pad"):
             self.argc(e, 2, 4)
             sv, n = self.str_arg(e, 0), self.int_arg(e, 1)
             pad = self.str_arg(e, 2) if len(args) > 2 else self.mod.lit(" ")
             ty = self.int_arg(e, 3) if len(args) > 3 else "1"
-            return self.call("ptr", "@pn_str_pad", f"ptr {sv}", f"i64 {n}", f"ptr {pad}", f"i64 {ty}"), "string", True
+            return self.call("ptr", f"@pn_{name}", f"ptr {sv}", f"i64 {n}", f"ptr {pad}", f"i64 {ty}"), "string", True
         if name in ("ucwords", "strrev"):
             self.argc(e, 1)
             return self.call("ptr", f"@pn_{name}", f"ptr {self.str_arg(e, 0)}"), "string", True

@@ -105,7 +105,7 @@ offset inside a character panics, a request whose path or body is not UTF-8 gets
 - **`sprintf` / `printf`** with a literal format (each value's type is checked against it at compile time: `%d`
   with a float does not build), and **`date($format, $ts)`** with PHP's letters, in UTC. Both match PHP's output.
 - `array_slice`, `array_merge`, `array_reverse` (items copied, any copyable type), `array_search` (-1 when not found),
-  `array_unique`, `is_numeric`, `str_pad` (+ `STR_PAD_*`), `ucwords`, and `strrev` by grapheme (PHP's breaks UTF-8).
+  `array_unique`, `is_numeric`, `str_pad` (+ `STR_PAD_*`), `mb_str_pad`, `ucwords`, and `strrev` by grapheme (PHP's breaks UTF-8).
 - **21 PHP helpers:** `str_replace`, `ltrim`, `rtrim`, `ucfirst`, `lcfirst`, `htmlspecialchars`, `base64_encode`,
   `base64_decode` (throws for non-base64 or non-UTF-8), `rawurldecode`, `urldecode`, `number_format`, `round` (PHP's
   half-away-from-zero, `round(1.955, 2)` is 1.96), `floor`, `ceil`, `abs`, `max` / `min` (two numbers or a list),

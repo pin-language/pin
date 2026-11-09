@@ -824,3 +824,23 @@ int64_t pn_map_end_pos(Map *m, int64_t last) {
     for (int64_t i = 0; i < m->used; i++) if (m->e[i].alive) return i;
     return -1;
 }
+
+// mb_str_pad (PHP 8.3): like str_pad, counting characters (code points) instead of bytes
+Str *pn_mb_str_pad(Str *s, int64_t len, Str *pad, int64_t type) {
+    if (len > ((int64_t)1 << 28)) panic_msg("mb_str_pad(): length too large");
+    int64_t have = pn_mb_strlen(s), need = len - have, plen = pn_mb_strlen(pad);
+    if (need <= 0 || plen == 0) return str_from(s->data, s->len);
+    int64_t left = type == 0 ? need : type == 2 ? need / 2 : 0, right = need - left;
+    Str *d = str_alloc(s->len + need * 4);
+    for (int side = 0; side < 2; side++) {
+        int64_t want = side ? right : left, i = 0;
+        for (int64_t c = 0; c < want; c++) {
+            int k;
+            utf8_at(pad->data, i, &k);
+            d = str_add_bytes(d, pad->data + i, k);
+            i = i + k >= pad->len ? 0 : i + k;
+        }
+        if (!side) d = str_add_bytes(d, s->data, s->len);
+    }
+    return d;
+}

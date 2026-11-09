@@ -160,6 +160,11 @@ f("str_pad", S, "str_pad(string $s, int $length, string $pad = \" \", int $type 
   r'''echo "[", str_pad("7", 3, "0", STR_PAD_LEFT), "] [", str_pad("ab", 6), "] [", str_pad("ab", 6, "-", STR_PAD_BOTH), "]\n";''',
   ["`STR_PAD_RIGHT` (default), `STR_PAD_LEFT`, `STR_PAD_BOTH`. Lengths are bytes, as in PHP; only whole characters "
    "of `$pad` are added, so the result can be a little shorter with a Thai `$pad`."])
+f("mb_str_pad", S, "mb_str_pad(string $s, int $length, string $pad = \" \", int $type = STR_PAD_RIGHT): string",
+  "Pad a string to `$length` characters (code points).",
+  r'''echo "[", mb_str_pad("ไทย", 6, "-"), "] [", mb_str_pad("ab", 5, "ไ", STR_PAD_LEFT), "]\n";''',
+  ["For Thai with vowels and tone marks, a reader sees fewer characters than there are code points: pad with "
+   "`grapheme_strlen()` when the column must line up."], php="PHP 8.3's mb_str_pad().")
 f("STR_PAD_LEFT", S, "STR_PAD_LEFT: int", "For `str_pad()`: pad on the left.", r'''echo STR_PAD_LEFT, "\n";''', kind="constant")
 f("STR_PAD_RIGHT", S, "STR_PAD_RIGHT: int", "For `str_pad()`: pad on the right (the default).", r'''echo STR_PAD_RIGHT, "\n";''', kind="constant")
 f("STR_PAD_BOTH", S, "STR_PAD_BOTH: int", "For `str_pad()`: pad both sides.", r'''echo STR_PAD_BOTH, "\n";''', kind="constant")
