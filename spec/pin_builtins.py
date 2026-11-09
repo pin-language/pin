@@ -118,6 +118,44 @@ f("strtoupper", S, "strtoupper(string $s): string", "Upper-case copy; only a–z
 f("trim", S, "trim(string $s): string", "Copy without leading and trailing whitespace.",
   r'''echo "[", trim("  padded \n"), "]\n";''',
   [r"Removes spaces, tabs, `\n`, `\r` and `\v`. There is no second argument yet."])
+f("str_replace", S, "str_replace(string $search, string $replace, string $subject): string",
+  "Replace every `$search` in `$subject`.",
+  r'''echo str_replace("cat", "dog", "cat and catalog"), " ", str_replace("-", "", "08-1234-5678"), "\n";''',
+  ["Left to right, matches do not overlap; an empty `$search` changes nothing."],
+  php="`str_replace()` with three strings (no arrays, no count argument).")
+f("ltrim", S, "ltrim(string $s): string", "Copy without leading whitespace (as `trim()`).",
+  r'''echo "[", ltrim("  x  "), "]\n";''')
+f("rtrim", S, "rtrim(string $s): string", "Copy without trailing whitespace (as `trim()`).",
+  r'''echo "[", rtrim("  x  \n"), "]\n";''')
+f("ucfirst", S, "ucfirst(string $s): string", "Copy with the first letter in upper case (ASCII a–z).",
+  r'''echo ucfirst("hello world"), "\n";''', php="Like PHP 8.2+: only a-z.")
+f("lcfirst", S, "lcfirst(string $s): string", "Copy with the first letter in lower case (ASCII A–Z).",
+  r'''echo lcfirst("HelloWorld"), "\n";''')
+f("htmlspecialchars", S, "htmlspecialchars(string $s): string",
+  "Escape `& < > \" '` for HTML, so text from users cannot become markup.",
+  r'''echo htmlspecialchars("<b>Tom & 'Jerry'</b>"), "\n";''',
+  ["Use it on every value you put into HTML (`response_header(\"Content-Type\", \"text/html; charset=utf-8\")`)."],
+  php="`htmlspecialchars($s)` with PHP 8.1's defaults (`ENT_QUOTES`).")
+f("base64_encode", S, "base64_encode(string $s): string", "Standard base64 (RFC 4648) of the bytes of a string.",
+  r'''echo base64_encode("user:secret"), "\n";''')
+f("base64_decode", S, "base64_decode(string $s): string throws", "The text a base64 string holds.",
+  r'''$auth = "Basic dXNlcjpzZWNyZXQ=";
+echo try base64_decode(substr($auth, 6)), "\n";
+echo try base64_decode("%%%") catch ($e) { "error " . $e->code; }, "\n";''',
+  ["Reads the standard and the URL-safe alphabet (`-` `_`), with or without `=` padding; whitespace is skipped.",
+   "Fails with 400 for other characters, and when the decoded bytes are not UTF-8 text (Pin has no binary "
+   "strings yet)."],
+  php="PHP returns `false` (or the bytes) instead of failing.")
+f("rawurldecode", S, "rawurldecode(string $s): string", "Decode `%XX` (the opposite of `rawurlencode`).",
+  r'''echo rawurldecode("tea%20%26%20cake%2F%E0%B9%84"), "\n";''',
+  ["Bytes that are not UTF-8 after decoding become U+FFFD. `query_param()` already decodes query values."])
+f("urldecode", S, "urldecode(string $s): string", "Like `rawurldecode`, and `+` becomes a space (form encoding).",
+  r'''echo urldecode("tea+%26+cake"), "\n";''')
+f("number_format", S, "number_format(float $x, int $decimals = 0, string $point = \".\", string $thousands = \",\"): string",
+  "A number with grouped thousands, rounded to `$decimals` places.",
+  r'''echo number_format(1234567.891), " ", number_format(1234567.891, 2), " ", number_format(4500 / 100, 2, ".", ""), "\n";''',
+  ["For money keep integer satang/cents and format at the end: `number_format($satang / 100, 2)`."],
+  php="Same as PHP's.")
 f("explode", S, "explode(string $separator, string $s): list<string>", "Split a string into a list of strings.",
   r'''echo json_encode(explode(",", "a,b,,c")), " ", count(explode(",", "")), "\n";''',
   ["Empty pieces are kept. Splitting an empty string gives one empty piece.",
@@ -130,6 +168,15 @@ f("implode", S, "implode(string $glue, list<string|int|float> $xs): string", "Jo
 f("PHP_EOL", S, "PHP_EOL: string", r'The string `"\n"`.', r'''echo "line", PHP_EOL;''', kind="constant")
 
 # ----------------------------------------------------------------------------------------- lists and maps
+f("in_array", L, "in_array(T $value, list<T> $xs): bool", "Whether the list holds the value (lists of int, float, bool, string).",
+  r'''echo in_array("tea", ["coffee", "tea"]) ? "yes" : "no", " ", in_array(4, [1, 2, 3]) ? "yes" : "no", "\n";''',
+  ["Compares strictly, like `in_array($v, $xs, true)`. For many lookups use a `map<string,bool>` and `isset()`."])
+f("array_keys", L, "array_keys(map<K,V> $m): list<K>", "The keys of a map, in insertion order.",
+  r'''echo json_encode(array_keys(["a" => 1, "b" => 2])), "\n";''')
+f("array_values", L, "array_values(map<K,V> $m): list<V>", "The values of a map, in insertion order (copied).",
+  r'''echo json_encode(array_values(["a" => 1, "b" => 2])), "\n";''', ["Not for maps of `?int` / `?float` / `?bool` yet."])
+f("array_sum", L, "array_sum(list<int> $xs): int  /  array_sum(list<float> $xs): float", "The sum of a list of numbers.",
+  r'''echo array_sum([1, 2, 3]), " ", array_sum([0.5, 0.25]), "\n";''', ["Ints wrap around like `+`."])
 f("count", L, "count(list|map $xs): int", "Number of items in a list or entries in a map.",
   r'''echo count([1, 2, 3]), " ", count(["a" => 1]), "\n";''')
 f("fill", L, "fill(int $n, int|float|bool|string $value): list", "A new list with `$n` copies of `$value`.",
@@ -189,6 +236,21 @@ f("intdiv", N, "intdiv(int $a, int $b): int", "Integer division, rounding toward
   r'''echo intdiv(7, 2), " ", intdiv(-7, 2), "\n";''',
   ["`/` always gives a float, like PHP; use `intdiv()` for list indexes and counts.",
    "Division by zero panics; `intdiv(PHP_INT_MIN, -1)` panics (there is no int answer)."])
+f("round", N, "round(float $x, int $digits = 0): float", "Round half away from zero, like PHP.",
+  r'''echo round(2.5), " ", round(-2.5), " ", round(1.955, 2), " ", round(1234.5, -2), "\n";''',
+  ["`round(1.955, 2)` is 1.96 as in PHP, though the stored double is a little below 1.955.",
+   "The result is a float; `(int)round($x)` for an int."])
+f("floor", N, "floor(float $x): float", "The largest whole number not above `$x`.",
+  r'''echo floor(2.7), " ", floor(-2.1), "\n";''')
+f("ceil", N, "ceil(float $x): float", "The smallest whole number not below `$x`.",
+  r'''echo ceil(2.1), " ", ceil(-2.7), "\n";''')
+f("abs", N, "abs(int|float $x): int|float", "The value without its sign (the same type).",
+  r'''echo abs(-7), " ", abs(-2.5), "\n";''', ["`abs(PHP_INT_MIN)` wraps to itself, like `-`."])
+f("max", N, "max(int|float $a, int|float $b): int|float  /  max(list<int|float> $xs)", "The larger of two numbers, or the largest item of a list.",
+  r'''echo max(3, 9), " ", max(2, 2.5), " ", max([4, 11, 7]), "\n";''',
+  ["An int and a float give a float. `max([])` panics (PHP throws)."], php="Numbers only (no strings, no more than two values).")
+f("min", N, "min(int|float $a, int|float $b): int|float  /  min(list<int|float> $xs)", "The smaller of two numbers, or the smallest item of a list.",
+  r'''echo min(3, 9), " ", min([4.5, -1.0]), "\n";''', ["`min([])` panics (PHP throws)."])
 f("sqrt", N, "sqrt(int|float $x): float", "Square root.",
   r'''echo sqrt(16), " ", sqrt(2.0), "\n";''',
   ["`sqrt` of a negative number gives NAN."])

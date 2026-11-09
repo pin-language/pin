@@ -88,6 +88,10 @@ offset inside a character panics, a request whose path or body is not UTF-8 gets
 
 ### Language and built-ins
 
+- **21 PHP helpers:** `str_replace`, `ltrim`, `rtrim`, `ucfirst`, `lcfirst`, `htmlspecialchars`, `base64_encode`,
+  `base64_decode` (throws for non-base64 or non-UTF-8), `rawurldecode`, `urldecode`, `number_format`, `round` (PHP's
+  half-away-from-zero, `round(1.955, 2)` is 1.96), `floor`, `ceil`, `abs`, `max` / `min` (two numbers or a list),
+  `in_array` (strict), `array_keys`, `array_values`, `array_sum`.
 - **Parameter defaults** (P3, first half): `function page(string $q, int $limit = 20)`; literals only, last in the
   list, not on `&` parameters; works for functions, methods, constructors and `go`. In `json_decode()` a
   constructor parameter with a default is an optional field.

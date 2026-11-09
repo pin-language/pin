@@ -1006,18 +1006,10 @@ PHP_FUNCTION_HINTS = {
     "array_map": "no array_map() yet: use a for/foreach loop into a new list",
     "array_filter": "no array_filter() yet: use a foreach loop into a new list",
     "array_reduce": "no array_reduce() yet: use a foreach loop",
-    "array_sum": "no array_sum() yet: $t = 0; foreach ($xs as $x) { $t += $x; }",
-    "in_array": "no in_array() yet: loop and compare, or keep a map<int,bool> and use isset()",
     "array_search": "no array_search() yet: loop and return the index, -1 if not found",
-    "array_keys": "no array_keys() yet: foreach ($m as $k => $v)", "array_values": "no array_values() yet",
     "array_push": "write $xs[] = $value;", "array_pop": "no array_pop() yet",
     "array_merge": "no array_merge() yet: copy() one list and append the other in a loop",
     "array_slice": "no array_slice() yet: copy the range in a loop", "count_chars": "not in Pin",
-    "max": "no max() yet: $a > $b ? $a : $b", "min": "no min() yet: $a < $b ? $a : $b",
-    "abs": "no abs() yet: $x < 0 ? -$x : $x",
-    "round": "no round() yet: (int)($x + 0.5) for positive numbers, or keep money in integer satang/cents",
-    "floor": "no floor() yet: (int)$x truncates toward zero", "ceil": "no ceil() yet",
-    "number_format": "no number_format() yet: keep money as integer satang/cents and format with intdiv() and %",
     "sprintf": "no sprintf() yet: build the string with . and \"$var\" interpolation",
     "printf": "no printf() yet: use echo with . or \"$var\" interpolation",
     "print_r": "no print_r(): echo json_encode($value)", "var_dump": "no var_dump(): echo json_encode($value)",
@@ -1025,8 +1017,6 @@ PHP_FUNCTION_HINTS = {
     "fgets": "try read_line() reads one line of standard input", "readline": "try read_line()",
     "stream_get_line": "try read_line()",
     "is_numeric": "no is_numeric() yet: check the characters with substr() in a loop",
-    "str_replace": "no str_replace() yet: rebuild the string with strpos()/substr()",
-    "ucfirst": "no ucfirst() yet: strtoupper(substr($s, 0, 1)) . substr($s, 1)",
     "strrev": "no strrev() yet: loop from the end with substr($s, $i, 1)",
     "usleep": "sleep_ms($milliseconds) waits without blocking other tasks",
     "sleep": "sleep_ms($milliseconds): Pin counts milliseconds (sleep_ms(1000) is one second) and does not block "
@@ -1081,7 +1071,7 @@ CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int",
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1138,6 +1128,24 @@ declare i64 @pn_mb_strpos(ptr, ptr)
 declare ptr @pn_mb_chr(i64)
 declare i64 @pn_mb_ord(ptr)
 declare ptr @pn_mb_case(ptr, i64)
+declare ptr @pn_str_replace(ptr, ptr, ptr)
+declare ptr @pn_str_trim_side(ptr, i64)
+declare ptr @pn_ucfirst(ptr, i64)
+declare ptr @pn_htmlspecialchars(ptr)
+declare ptr @pn_base64_encode(ptr)
+declare { ptr, ptr } @pn_base64_decode(ptr)
+declare ptr @pn_urldecode(ptr, i64)
+declare ptr @pn_number_format(double, i64, ptr, ptr)
+declare double @pn_round(double, i64)
+declare double @llvm.floor.f64(double)
+declare double @llvm.ceil.f64(double)
+declare double @llvm.fabs.f64(double)
+declare i64 @pn_list_contains(ptr, i64, i64)
+declare ptr @pn_map_keys(ptr)
+declare ptr @pn_map_values(ptr, ptr)
+declare i64 @pn_list_sum_int(ptr)
+declare double @pn_list_sum_float(ptr)
+declare i64 @pn_list_extreme(ptr, i64, i64)
 declare ptr @pn_normalize(ptr, i64)
 declare i64 @pn_time()
 declare void @pn_request_deadline(i64)
@@ -3772,6 +3780,12 @@ class FuncGen:
             return self.call("ptr", "@pn_db_error", f"ptr {d}"), "string", True
         raise CompileError(f"unknown function {name}()", e.line)
 
+    def num_arg(self, e, i, what):
+        v, t = self.borrow(e.args[i])
+        if t not in ("int", "float"):
+            raise CompileError(f"{what} needs a number, not {t}", e.line)
+        return self.coerce(v, t, "float", e.line, what)
+
     def int_arg(self, e, i):
         v, t = self.borrow(e.args[i])
         if t != "int":
@@ -4211,6 +4225,111 @@ class FuncGen:
             s = self.str_arg(e, 0)
             form = self.int_arg(e, 1) if len(args) == 2 else "16"      # Normalizer::FORM_C, as in PHP
             return self.call("ptr", "@pn_normalize", f"ptr {s}", f"i64 {form}"), "string", True
+        if name == "str_replace":
+            self.argc(e, 3)
+            a, b, c = self.str_arg(e, 0), self.str_arg(e, 1), self.str_arg(e, 2)
+            return self.call("ptr", "@pn_str_replace", f"ptr {a}", f"ptr {b}", f"ptr {c}"), "string", True
+        if name in ("ltrim", "rtrim"):
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_str_trim_side", f"ptr {self.str_arg(e, 0)}", f"i64 {1 if name == 'ltrim' else 2}"), \
+                "string", True
+        if name in ("ucfirst", "lcfirst"):
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_ucfirst", f"ptr {self.str_arg(e, 0)}", f"i64 {int(name == 'ucfirst')}"), "string", True
+        if name in ("htmlspecialchars", "base64_encode"):
+            self.argc(e, 1)
+            return self.call("ptr", f"@pn_{name}", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "base64_decode":
+            self.argc(e, 1)
+            return self.failing_call("string", "@pn_base64_decode", [f"ptr {self.str_arg(e, 0)}"], e.line,
+                                     "base64_decode(...)"), "string", True
+        if name in ("rawurldecode", "urldecode"):
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_urldecode", f"ptr {self.str_arg(e, 0)}", f"i64 {int(name == 'urldecode')}"), \
+                "string", True
+        if name == "number_format":
+            self.argc(e, 1, 4)
+            x = self.num_arg(e, 0, "number_format()")
+            d = self.int_arg(e, 1) if len(args) > 1 else "0"
+            pt = self.str_arg(e, 2) if len(args) > 2 else self.mod.lit(".")
+            sp = self.str_arg(e, 3) if len(args) > 3 else self.mod.lit(",")
+            return self.call("ptr", "@pn_number_format", f"double {x}", f"i64 {d}", f"ptr {pt}", f"ptr {sp}"), "string", True
+        if name == "round":
+            self.argc(e, 1, 2)
+            x = self.num_arg(e, 0, "round()")
+            d = self.int_arg(e, 1) if len(args) > 1 else "0"
+            return self.call("double", "@pn_round", f"double {x}", f"i64 {d}"), "float", False
+        if name in ("floor", "ceil"):
+            self.argc(e, 1)
+            return self.call("double", f"@llvm.{name}.f64", f"double {self.num_arg(e, 0, name + '()')}"), "float", False
+        if name == "abs":
+            self.argc(e, 1)
+            v, t = self.borrow(args[0])
+            if t == "int":
+                n, c, r = self.tmp(), self.tmp(), self.tmp()
+                self.emit(f"{n} = sub i64 0, {v}")
+                self.emit(f"{c} = icmp slt i64 {v}, 0")
+                self.emit(f"{r} = select i1 {c}, i64 {n}, i64 {v}")
+                return r, "int", False
+            if t != "float":
+                raise CompileError(f"abs() needs an int or a float, not {t}", e.line)
+            return self.call("double", "@llvm.fabs.f64", f"double {v}"), "float", False
+        if name in ("max", "min"):
+            self.argc(e, 1, 2)
+            if len(args) == 1:                  # max($list)
+                v, t = self.borrow(args[0])
+                if not (is_list(t) and elem_of(t) in ("int", "float")):
+                    raise CompileError(f"{name}() of one value needs a list<int> or list<float>, not {t}", e.line)
+                r = self.call("i64", "@pn_list_extreme", f"ptr {v}", f"i64 {KIND[elem_of(t)]}", f"i64 {int(name == 'max')}")
+                if elem_of(t) == "float":
+                    f = self.tmp()
+                    self.emit(f"{f} = bitcast i64 {r} to double")
+                    return f, "float", False
+                return r, "int", False
+            a, ta = self.borrow(args[0])
+            b, tb = self.borrow(args[1])
+            if ta not in ("int", "float") or tb not in ("int", "float"):
+                raise CompileError(f"{name}() compares numbers (int or float), not {ta} and {tb}", e.line)
+            tt = "float" if "float" in (ta, tb) else "int"
+            a, b = self.coerce(a, ta, tt, e.line, name), self.coerce(b, tb, tt, e.line, name)
+            c, r = self.tmp(), self.tmp()
+            cmp = ("fcmp ogt" if name == "max" else "fcmp olt") if tt == "float" else ("icmp sgt" if name == "max" else "icmp slt")
+            self.emit(f"{c} = {cmp} {llty(tt)} {a}, {b}")
+            self.emit(f"{r} = select i1 {c}, {llty(tt)} {a}, {llty(tt)} {b}")
+            return r, tt, False
+        if name == "in_array":
+            self.argc(e, 2)
+            lv, lt = self.borrow(args[1])
+            if not (is_list(lt) and elem_of(lt) in KIND):
+                raise CompileError(f"in_array() looks in a list of int, float, bool or string, not {lt}", e.line)
+            et = elem_of(lt)
+            v, t = self.borrow(args[0], et)
+            v = self.coerce(v, t, et, e.line, "in_array()")
+            bits = self.to_bits(v, et)
+            return self.i64_to_bool(self.call("i64", "@pn_list_contains", f"ptr {lv}", f"i64 {bits}", f"i64 {KIND[et]}")), \
+                "bool", False
+        if name in ("array_keys", "array_values"):
+            self.argc(e, 1)
+            mv, mt = self.borrow(args[0])
+            if not is_map(mt):
+                raise CompileError(f"{name}() needs a map, not {mt}", e.line)
+            kt, vt = map_kv(mt)
+            if name == "array_keys":
+                return self.call("ptr", "@pn_map_keys", f"ptr {mv}"), f"list<{kt}>", True
+            if is_opt_scalar(vt):
+                raise CompileError(f"array_values() of a map of {vt} is not in Pin yet: loop with foreach", e.line)
+            if not (vt in KIND or per_item(vt)):
+                raise CompileError(f"array_values() cannot copy {vt} values", e.line)
+            cp = item_fn("copy", vt) if per_item(vt) else "null"
+            return self.call("ptr", "@pn_map_values", f"ptr {mv}", f"ptr {cp}"), f"list<{vt}>", True
+        if name == "array_sum":
+            self.argc(e, 1)
+            v, t = self.borrow(args[0])
+            if t == "list<int>":
+                return self.call("i64", "@pn_list_sum_int", f"ptr {v}"), "int", False
+            if t == "list<float>":
+                return self.call("double", "@pn_list_sum_float", f"ptr {v}"), "float", False
+            raise CompileError(f"array_sum() adds a list<int> or list<float>, not {t}", e.line)
         if name == "mb_chr":
             self.argc(e, 1)
             return self.call("ptr", "@pn_mb_chr", f"i64 {self.int_arg(e, 0)}"), "string", True
