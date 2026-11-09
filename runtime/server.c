@@ -59,7 +59,7 @@ static Str *find_header(Str *name) {
             const char *v = colon + 1, *ve = e;
             while (v < ve && (*v == ' ' || *v == '\t')) v++;
             while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t')) ve--;
-            return str_from(v, ve - v);
+            return str_from_lossy(v, ve - v);       // headers may carry other bytes: U+FFFD for them
         }
         p = e + 2;
     }
@@ -380,6 +380,9 @@ static int handle_input(Conn *c) {
         if (bad) { refuse(c, bad); c->parsing = 0; return 0; }
         size_t hlen = (size_t)(hend - buf) + 4;
         if (avail < hlen + (size_t)clen) break;      // body not complete yet
+        if (!utf8_valid(buf, sp2 - buf) || !utf8_valid(hend + 4, clen)) {   // strings are UTF-8 (strings.md ST1)
+            refuse(c, 400); c->parsing = 0; return 0;
+        }
         start_request(c, buf, sp1, sp2, line_end + 2, hend, hend + 4, clen, keep);
         off += hlen + (size_t)clen;
     }

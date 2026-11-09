@@ -124,6 +124,7 @@ all documentation lives in [pin-language/docs](https://github.com/pin-language/d
 | memory | reference counting + GC at run time | ownership checked at compile time, no GC |
 | int overflow | becomes a float | wraps around (64-bit) |
 | `json_encode` of Thai text | `ไ...` | UTF-8 as is (like `JSON_UNESCAPED_UNICODE`) |
+| strings | any bytes | always valid UTF-8: `substr()` inside a character panics, `chr()` > 127 panics (`mb_chr()`); `mb_*` and `grapheme_*` built in |
 
 ## Ownership in one minute
 

@@ -1067,7 +1067,7 @@ CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int",
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1114,6 +1114,13 @@ declare i64 @pn_jd_null(ptr, i64)
 declare ptr @pn_hash_sha256(ptr)
 declare ptr @pn_env(ptr)
 declare ptr @pn_list_push_slot(ptr, i64)
+declare i64 @pn_mb_strlen(ptr)
+declare i64 @pn_grapheme_strlen(ptr)
+declare ptr @pn_mb_substr(ptr, i64, i64, i64)
+declare ptr @pn_grapheme_substr(ptr, i64, i64, i64)
+declare i64 @pn_mb_strpos(ptr, ptr)
+declare ptr @pn_mb_chr(i64)
+declare i64 @pn_mb_ord(ptr)
 declare i64 @pn_time()
 declare void @pn_request_deadline(i64)
 declare i64 @pn_ord(ptr)
@@ -2963,7 +2970,7 @@ class FuncGen:
             return "null"
         if e.kind == "call" and self.fkey(e, quiet=True):
             return self.mod.funcs[self.fkey(e, quiet=True)][1]
-        if e.kind == "call" and e.name in ("strval", "substr", "trim", "strtolower", "strtoupper", "json_encode",
+        if e.kind == "call" and e.name in ("strval", "substr", "mb_substr", "grapheme_substr", "mb_chr", "trim", "strtolower", "strtoupper", "json_encode",
                                            "implode", "url_path", "query_param", "form_param", "json_string",
                                            "db_json", "db_string", "db_error"):
             return "string"
@@ -3936,6 +3943,26 @@ class FuncGen:
             ln = self.int_arg(e, 2) if len(args) == 3 else "0"
             r = self.call("ptr", "@pn_substr", f"ptr {s}", f"i64 {start}", f"i64 {ln}", f"i64 {int(len(args) == 3)}")
             return r, "string", True
+        if name in ("mb_strlen", "grapheme_strlen"):
+            self.argc(e, 1)
+            return self.call("i64", f"@pn_{name}", f"ptr {self.str_arg(e, 0)}"), "int", False
+        if name in ("mb_substr", "grapheme_substr"):
+            self.argc(e, 2, 3)
+            s = self.str_arg(e, 0)
+            start = self.int_arg(e, 1)
+            ln = self.int_arg(e, 2) if len(args) == 3 else "0"
+            return self.call("ptr", f"@pn_{name}", f"ptr {s}", f"i64 {start}", f"i64 {ln}",
+                             f"i64 {int(len(args) == 3)}"), "string", True
+        if name == "mb_strpos":
+            self.argc(e, 2)
+            h, n = self.str_arg(e, 0), self.str_arg(e, 1)
+            return self.call("i64", "@pn_mb_strpos", f"ptr {h}", f"ptr {n}"), "int", False
+        if name == "mb_chr":
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_mb_chr", f"i64 {self.int_arg(e, 0)}"), "string", True
+        if name == "mb_ord":
+            self.argc(e, 1)
+            return self.call("i64", "@pn_mb_ord", f"ptr {self.str_arg(e, 0)}"), "int", False
         if name == "strpos":
             self.argc(e, 2)
             h, n = self.str_arg(e, 0), self.str_arg(e, 1)

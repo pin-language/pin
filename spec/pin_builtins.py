@@ -22,7 +22,10 @@ f("ord", S, "ord(string $s): int", "The first byte of a string as a number (0 to
   r'''echo ord("A"), " ", ord("a"), " ", ord(""), " ", ord("ไ"), "\n";''',
   ["A byte, not a character: Thai and other non-ASCII characters are several bytes."])
 f("chr", S, "chr(int $n): string", "A one-byte string with the byte `$n` (taken modulo 256, like PHP).",
-  r'''echo chr(72), chr(105), chr(33 + 256), "\n";''')
+  r'''echo chr(72), chr(105), chr(33 + 256), "\n";''',
+  ["A byte above 127 panics: alone it is not UTF-8, and every Pin string is valid UTF-8. `mb_chr($n)` gives the "
+   "character with that code point."],
+  php="`chr(200)` gives one byte in PHP; in Pin it panics (use `mb_chr(200)` for \"È\").")
 f("rawurlencode", S, "rawurlencode(string $s): string",
   "Percent-encode everything but `A-Z a-z 0-9 - _ . ~`, for a value inside a URL path or query.",
   r'''echo "/search?q=" . rawurlencode("tea & cake/ไทย"), "\n";''',
@@ -34,8 +37,46 @@ f("strlen", S, "strlen(string $s): int", "Length of a string in bytes.",
 f("substr", S, "substr(string $s, int $start, int $length = rest): string", "Part of a string, by byte offsets.",
   r'''echo substr("hello world", 6), "|", substr("hello", -3), "|", substr("hello", 1, 3), "|", substr("hello", 1, -1), "|", substr("hi", 10), "|\n";''',
   ["A negative `$start` counts from the end; a negative `$length` stops that many bytes before the end.",
-   "Out-of-range offsets give a shorter or empty string, never a panic.",
-   "Offsets are bytes: cutting inside a Thai character gives broken text."])
+   "Out-of-range offsets give a shorter or empty string.",
+   "Offsets are bytes. One that falls inside a character (each Thai character is 3 bytes) **panics** instead of "
+   "giving broken text; positions from `strpos()` never do. To count characters use `mb_substr()`, to shorten "
+   "text for display `grapheme_substr()`."],
+  php="The same, except that cutting a character in half panics instead of giving invalid UTF-8.")
+f("mb_strlen", S, "mb_strlen(string $s): int", "Length in characters (Unicode code points).",
+  r'''echo mb_strlen("hello"), " ", mb_strlen("ไทย"), " ", mb_strlen("ที่"), "\n";''',
+  ["A Thai tone mark or vowel above or below a letter is a code point of its own: `\"ที่\"` is 3. To count what a "
+   "reader sees, use `grapheme_strlen()`."],
+  php="`mb_strlen($s)` with UTF-8; there is no encoding argument.")
+f("mb_substr", S, "mb_substr(string $s, int $start, int $length = rest): string", "Part of a string, counted in characters (code points).",
+  r'''echo mb_substr("สวัสดีครับ", 0, 4), "|", mb_substr("สวัสดีครับ", -4), "|", mb_substr("abc", 5), "|\n";''',
+  ["The same rules as `substr()` for negative and out-of-range values, in code points.",
+   "It can separate a tone mark from its letter (`mb_substr(\"ที่\", 0, 2)` is `\"ที\"`); for text people read, "
+   "use `grapheme_substr()`."],
+  php="`mb_substr()` with UTF-8.")
+f("mb_strpos", S, "mb_strpos(string $haystack, string $needle): int", "Position of the first match in characters, or -1.",
+  r'''echo mb_strpos("ภาษาไทย", "ไทย"), " ", strpos("ภาษาไทย", "ไทย"), " ", mb_strpos("abc", "z"), "\n";''',
+  ["Use it with `mb_substr()`; `strpos()` gives bytes, for `substr()`."],
+  php="PHP returns `false` when not found; Pin returns `-1`.")
+f("mb_chr", S, "mb_chr(int $codepoint): string", "The character with this Unicode code point.",
+  r'''echo mb_chr(3652), mb_chr(3607), mb_chr(3618), " ", mb_chr(128077), "\n";''',
+  ["A value that is not a character (negative, above 0x10FFFF, or a surrogate 0xD800–0xDFFF) panics."],
+  php="PHP returns `false` for those.")
+f("mb_ord", S, "mb_ord(string $s): int", "The Unicode code point of the first character.",
+  r'''echo mb_ord("ไ"), " ", mb_ord("A"), " ", mb_ord("👍"), "\n";''',
+  ["`mb_ord(\"\")` panics (PHP throws a ValueError)."])
+f("grapheme_strlen", S, "grapheme_strlen(string $s): int", "Length in what people see as characters (grapheme clusters).",
+  r'''echo grapheme_strlen("ที่นี่"), " ", mb_strlen("ที่นี่"), " ", grapheme_strlen("👨‍👩‍👧🇹🇭"), "\n";''',
+  ["Unicode's extended grapheme clusters (UAX #29, Unicode 17): a Thai letter with its vowel and tone marks, an "
+   "emoji with its skin tone or family members, a flag, are one each.",
+   "ASCII is as fast as `mb_strlen()`; other text looks each code point up in a table (O(n))."],
+  php="`grapheme_strlen()` (PHP's intl extension).")
+f("grapheme_substr", S, "grapheme_substr(string $s, int $start, int $length = rest): string",
+  "Part of a string, counted in what people see as characters. **Use this to shorten text for display.**",
+  r'''$title = "ที่นี่มีน้ำใจ";
+echo grapheme_substr($title, 0, 4), "…|", mb_substr($title, 0, 4), "…|", grapheme_substr($title, -2), "\n";''',
+  ["The same rules as `substr()` for negative and out-of-range values, in grapheme clusters.",
+   "Never separates a tone mark or vowel from its letter, or an emoji from its modifier."],
+  php="`grapheme_substr()`; PHP returns `false` when `$start` is past the end, Pin returns `\"\"`.")
 f("strpos", S, "strpos(string $haystack, string $needle): int", "Byte position of the first match, or -1.",
   r'''echo strpos("hello", "ll"), " ", strpos("hello", "z"), " ", strpos("abc", ""), "\n";''',
   ["An empty needle matches at 0."],

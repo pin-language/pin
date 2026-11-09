@@ -543,6 +543,14 @@ if "--no-server" not in sys.argv:
             check("two different Content-Length values: 400", r.startswith("HTTP/1.1 400"), r)
             r = raw(8087, b"POST /x HTTP/1.1\r\nContent-Length: 5x\r\n\r\nhello")
             check("a Content-Length that is not digits: 400", r.startswith("HTTP/1.1 400"), r)
+            r = raw(8087, b"POST /x HTTP/1.1\r\nContent-Length: 3\r\nConnection: close\r\n\r\na\xc8b")
+            check("a body that is not UTF-8: 400 before the handler (strings.md ST1)", r.startswith("HTTP/1.1 400"), r)
+            r = raw(8087, b"GET /x\xff HTTP/1.1\r\nConnection: close\r\n\r\n")
+            check("a path that is not UTF-8: 400", r.startswith("HTTP/1.1 400"), r)
+            r = raw(8087, "POST /x?q=ไทย HTTP/1.1\r\nContent-Length: 9\r\nConnection: close\r\n\r\nไทย".encode())
+            check("UTF-8 in the path and body is accepted", r.startswith("HTTP/1.1 200"), r)
+            r = raw(8087, b"GET /echo-header HTTP/1.1\r\nX-Name: a\xc8b\r\nConnection: close\r\n\r\n")
+            check("a header value that is not UTF-8 reads with U+FFFD", '"name":"a\xef\xbf\xbdb"' in r, r)   # raw() reads Latin-1
             r = raw(8087, b"GET / HTTP/1.1\r\n" + b"X-Big: " + b"a" * 70000 + b"\r\n\r\n")
             check("more than 64 KB of headers: 431", r.startswith("HTTP/1.1 431"), r)
 

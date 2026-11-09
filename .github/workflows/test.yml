@@ -47,7 +47,7 @@ jobs:
         run: python3 tests/run_tests.py
       - name: Sanitizers (ASAN + UBSAN; leaks too on Linux)
         run: >
-          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn tests/db_pool.pn tests/crypto.pn tests/json_decode.pn tests/bytes.pn tests/classes.pn tests/nested.pn tests/errors_ok.pn tests/tasks.pn tests/hub.pn tests/json_nested.pn tests/run_client_errors.pn tests/null_basics.pn tests/null_more.pn tests/null_linked.pn tests/null_json.pn tests/null_narrow.pn tests/null_ownership.pn tests/null_scalars.pn tests/null_scalar_class.pn tests/null_scalar_flow.pn tests/null_items.pn tests/null_items_class.pn tests/null_items_more.pn
+          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn tests/db_pool.pn tests/crypto.pn tests/json_decode.pn tests/bytes.pn tests/classes.pn tests/nested.pn tests/errors_ok.pn tests/tasks.pn tests/hub.pn tests/json_nested.pn tests/run_client_errors.pn tests/null_basics.pn tests/null_more.pn tests/null_linked.pn tests/null_json.pn tests/null_narrow.pn tests/null_ownership.pn tests/null_scalars.pn tests/null_scalar_class.pn tests/null_scalar_flow.pn tests/null_items.pn tests/null_items_class.pn tests/null_items_more.pn tests/strings_utf8.pn
           examples/wordcount.pn examples/ownership.pn tests/bench/listsum.pn
       - name: HTTP servers under ASAN + UBSAN (sanitize.sh cannot run programs that never exit)
         run: python3 tests/run_tests.py --sanitize

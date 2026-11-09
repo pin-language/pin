@@ -40,7 +40,7 @@ gcc -g -fsanitize=address,undefined runtime.c X.o -lm -pthread -o X_asan && ./X_
 | path | what |
 |---|---|
 | `pinac.py` | whole compiler, one file (~1850 lines). `Parser` → AST `Node`s; `FuncGen` does type checking, ownership checking and IR emission in one pass |
-| `runtime.c` + `runtime/*.c` | one translation unit: `runtime.c` only `#include`s `runtime/core.c` (allocator, per-request tracking, panics), `tasks.c` (green threads, scheduler), `values.c` (lists, strings, maps, JSON, objects), `request.c`, `hub.c`, `server.c` (HTTP/1.1, epoll/kqueue, SSE), `client.c` (http client, run), `sqlite.c`. Build stays `clang ... runtime.c` |
+| `runtime.c` + `runtime/*.c` | one translation unit: `runtime.c` only `#include`s `runtime/core.c` (allocator, per-request tracking, panics), `tasks.c` (green threads, scheduler), `values.c` (lists, strings, maps, JSON, objects, UTF-8 checks), `request.c`, `unicode.c` (`mb_*`, `grapheme_*`; table generated into `unicode_data.h`), `hub.c`, `server.c` (HTTP/1.1, epoll/kqueue, SSE), `client.c` (http client, run), `sqlite.c`. Build stays `clang ... runtime.c` |
 | `tests/` | `*.pn` + `expected/*.out`; `errors/*.pn` must fail to compile; `panics/*.pn` must exit 1; `server/panics.pn` = handler panics give 500 |
 | `tests/bench/`, `tests/server/api.pn` | the benchmark programs and the JSON API, kept as tests |
 | — | comparisons with Rust/Go/PHP/Python and the HTTP load test: github.com/pin-language/benchmarks (local clone ../pin-benchmarks); docs: github.com/pin-language/docs (../pin-docs) |

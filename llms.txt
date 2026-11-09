@@ -20,6 +20,8 @@ that do not compile, most common first:
 - empty containers need a type: list<int> $xs = []; map<string,int> $m = [];
 - functions that can fail are declared `: T throws`; every call needs `try f()` or `try f() catch ($e) { ...; value; }`
 - lists, maps and objects MOVE on `=` (copy() for two); parameters are read-only (`T &$x` and `f(&$x)` to change)
+- strings are always UTF-8; substr() counts bytes and panics inside a character: shorten text for display with
+  grapheme_substr($s, 0, $n); mb_strlen/mb_substr count code points; chr() > 127 panics (mb_chr)
 - request input: query_param($path, "k"), form_param($body, "k"), json_string/json_int($body, "k"); nested JSON:
   json_raw($json, "k"), json_len($arr), json_at($arr, $i)
 - no closures, array_map, sprintf, switch: write the loop, join strings with . or "$var", use if/elseif

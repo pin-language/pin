@@ -111,6 +111,82 @@ static Str *str_from(const char *p, int64_t n) {
 
 Str *pn_str_new(int64_t cap) { return str_alloc(cap); }
 
+static Str *str_add_bytes(Str *d, const char *p, int64_t n);
+void pn_str_free(Str *s);
+
+// ---- UTF-8 (design/strings.md ST1): every string is valid UTF-8. Operations on valid strings keep it valid;
+// text that comes in from outside is checked where it comes in: the request path and body are refused (400),
+// other text (a header, a database column, another server's answer) has bad bytes replaced by U+FFFD.
+
+// Length of the UTF-8 sequence at p (1-4), or 0 when it is not valid: overlong forms, surrogates
+// (U+D800-DFFF), values above U+10FFFF, stray continuation bytes and cut sequences are not.
+static int utf8_seq(const unsigned char *p, int64_t n) {
+    unsigned c = p[0];
+    if (c < 0x80) return 1;
+    if (c < 0xC2 || c > 0xF4) return 0;
+    int need = c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+    if (n < need) return 0;
+    unsigned lo = c == 0xE0 ? 0xA0 : c == 0xF0 ? 0x90 : 0x80, hi = c == 0xED ? 0x9F : c == 0xF4 ? 0x8F : 0xBF;
+    if (p[1] < lo || p[1] > hi) return 0;
+    for (int i = 2; i < need; i++) if ((p[i] & 0xC0) != 0x80) return 0;
+    return need;
+}
+
+// Offset of the first byte that does not start a valid sequence, or n when p[0..n) is all valid UTF-8.
+static int64_t utf8_check(const char *s, int64_t n) {
+    const unsigned char *p = (const unsigned char *)s;
+    int64_t i = 0;
+    while (i < n) {
+        if (i + 8 <= n) {                       // 8 ASCII bytes at a time
+            uint64_t w;
+            memcpy(&w, p + i, 8);
+            if (!(w & 0x8080808080808080ULL)) { i += 8; continue; }
+        }
+        if (p[i] < 0x80) { i++; continue; }
+        int k = utf8_seq(p + i, n - i);
+        if (!k) return i;
+        i += k;
+    }
+    return n;
+}
+
+static int utf8_valid(const char *p, int64_t n) { return utf8_check(p, n) == n; }
+
+// Bytes to skip for one U+FFFD: the longest start of a valid sequence (WHATWG's "maximal subpart"), at least 1.
+static int64_t utf8_bad_len(const unsigned char *p, int64_t n) {
+    unsigned c = p[0];
+    if (c < 0xC2 || c > 0xF4) return 1;
+    int need = c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+    unsigned lo = c == 0xE0 ? 0xA0 : c == 0xF0 ? 0x90 : 0x80, hi = c == 0xED ? 0x9F : c == 0xF4 ? 0x8F : 0xBF;
+    if (n < 2 || p[1] < lo || p[1] > hi) return 1;
+    int64_t i = 2;
+    while (i < need && i < n && (p[i] & 0xC0) == 0x80) i++;
+    return i;
+}
+
+// A string of p[0..n), with every invalid sequence replaced by U+FFFD (as browsers decode text).
+static Str *str_from_lossy(const char *p, int64_t n) {
+    int64_t i = utf8_check(p, n);
+    if (i == n) return str_from(p, n);
+    Str *d = str_alloc(n + 16);
+    int64_t start = 0;
+    while (i < n) {
+        d = str_add_bytes(d, p + start, i - start);
+        d = str_add_bytes(d, "\xEF\xBF\xBD", 3);
+        start = i + utf8_bad_len((const unsigned char *)p + i, n - i);
+        i = start + utf8_check(p + start, n - start);
+    }
+    return str_add_bytes(d, p + start, n - start);
+}
+
+// The same for a string the runtime built from outside bytes (an answer read in pieces): kept when valid.
+static Str *str_make_valid(Str *s) {
+    if (!s || utf8_valid(s->data, s->len)) return s;
+    Str *r = str_from_lossy(s->data, s->len);
+    pn_str_free(s);
+    return r;
+}
+
 void pn_str_free(Str *s) { if (s && s->cap >= 0) xfree(s); }
 
 // Copy a string. Literals are immutable and live forever, so their "copy" is the literal itself.
@@ -226,6 +302,22 @@ double pn_str_to_float(Str *s) {
     return strtod(buf, NULL);              // stops at the first character that does not fit
 }
 
+// ST3: positions count bytes, as in PHP, but a substr() that would cut a character in half panics: the byte at
+// the position must not be a continuation byte (10xxxxxx).
+static int substr_cuts(Str *s, int64_t at) { return at > 0 && at < s->len && (s->data[at] & 0xC0) == 0x80; }
+
+__attribute__((noreturn)) static void substr_panic(Str *s, int64_t at) {
+    fflush(stdout);
+    int64_t a = at;
+    while (a > 0 && (s->data[a] & 0xC0) == 0x80) a--;
+    int64_t b = a + 1;
+    while (b < s->len && (s->data[b] & 0xC0) == 0x80) b++;
+    fprintf(stderr, "panic: substr() would cut a character in half at byte %lld (the character \"%.*s\" is bytes "
+            "%lld-%lld). Use mb_substr() to count characters\n", (long long)at, (int)(b - a), s->data + a,
+            (long long)a, (long long)(b - 1));
+    die();
+}
+
 // PHP substr semantics, including negative start / length
 Str *pn_substr(Str *s, int64_t start, int64_t len, int64_t has_len) {
     int64_t n = s->len;
@@ -236,6 +328,7 @@ Str *pn_substr(Str *s, int64_t start, int64_t len, int64_t has_len) {
         if (len < 0) { end = n + len; if (end < start) return str_alloc(0); }
         else if (len < n - start) end = start + len;
     }
+    if (substr_cuts(s, start) || substr_cuts(s, end)) substr_panic(s, substr_cuts(s, start) ? start : end);
     return str_from(s->data + start, end - start);
 }
 
@@ -508,6 +601,24 @@ Str *pn_json_add_map(Str *d, Map *m) {
 Str *pn_json_map(Map *m) { return pn_json_add_map(str_alloc(16 + m->count * 16), m); }
 
 Str *pn_json_str(Str *s) { return json_string(NULL, s->data, s->len); }
+
+// Bytes from a database as a JSON string, or as JSON text as it is: U+FFFD where they are not UTF-8 (a SQLite
+// TEXT column can hold any bytes; so can a PostgreSQL database in the SQL_ASCII encoding).
+static Str *json_text(Str *d, const char *p, int64_t n) {
+    if (utf8_valid(p, n)) return json_string(d, p, n);
+    Str *t = str_from_lossy(p, n);
+    d = json_string(d, t->data, t->len);
+    pn_str_free(t);
+    return d;
+}
+
+static Str *add_text(Str *d, const char *p, int64_t n) {
+    if (utf8_valid(p, n)) return str_add_bytes(d, p, n);
+    Str *t = str_from_lossy(p, n);
+    d = str_add_bytes(d, t->data, t->len);
+    pn_str_free(t);
+    return d;
+}
 Str *pn_json_float(double v) { return json_float(NULL, v); }
 Str *pn_json_add_str(Str *d, Str *s) { return json_string(d, s->data, s->len); }
 Str *pn_json_add_float(Str *d, double v) { return json_float(d, v); }

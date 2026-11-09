@@ -1,0 +1,21 @@
+// strings.md: every string is valid UTF-8. Bytes (strlen, substr, strpos), code points (mb_*), what people
+// see (grapheme_*), and text from outside cleaned on the way in
+$t = "ที่นี่ไทย";
+echo strlen($t), " ", mb_strlen($t), " ", grapheme_strlen($t), "\n";
+echo substr($t, strpos($t, "ไทย")), " ", mb_substr($t, mb_strpos($t, "ไทย")), "\n";
+echo grapheme_substr($t, 0, 2), "|", mb_substr($t, 0, 2), "|", grapheme_substr($t, -2), "|", grapheme_substr($t, 9), "|\n";
+echo grapheme_substr("น้ำใจ", 0, 1), " ", grapheme_strlen("กำแพง"), "\n";       // ำ joins the letter before it
+$e = "👍🏽👨‍👩‍👧🇹🇭🇯🇵é";
+echo strlen($e), " ", mb_strlen($e), " ", grapheme_strlen($e), " ", grapheme_substr($e, 1, 1), "\n";
+echo mb_chr(3652), mb_chr(128512), " ", mb_ord("ไ"), " ", mb_ord("😀"), " ", mb_ord("A"), "\n";
+echo mb_substr("abcdef", -3, 2), " ", mb_substr("abc", 1, -1), " [", mb_substr("abc", 7), "]\n";
+// text from outside: bytes that are not UTF-8 become U+FFFD, valid text is kept as it is
+echo query_param("?q=%E0%B9%84%E0%B8%97%E0%B8%A2", "q"), " ", query_param("?q=a%C8b%E0%B9", "q"), "\n";
+echo strlen(query_param("?q=%ED%A0%80", "q")), " ", query_param("?q=%F0%9F%91%8D", "q"), "\n";   // a surrogate: 3 x U+FFFD
+echo json_string("{\"s\":\"\\ud83d\\ude00 \\ud800\"}", "s"), "\n";
+$db = db_open(":memory:");
+db_exec($db, "CREATE TABLE t (s TEXT)", []);
+db_exec($db, "INSERT INTO t VALUES (CAST(X'61C862' AS TEXT)), ('ไทย')", []);
+echo db_json($db, "SELECT s FROM t", []), "\n";
+$r = db_query($db, "SELECT s FROM t", []);
+while (db_next($r)) { echo db_string($r, "s"), " ", mb_strlen(db_string($r, "s")), "\n"; }

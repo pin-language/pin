@@ -47,7 +47,7 @@ static Str *form_lookup(const char *p, const char *e, Str *key) {
                 v->data[v->len++] = ch;
             }
             v->data[v->len] = 0;
-            return v;
+            return str_make_valid(v);           // %C8 alone decodes to a byte that is not UTF-8: U+FFFD
         }
         p = amp ? amp + 1 : e;
     }
@@ -165,7 +165,8 @@ static int hex4(const char *p, const char *e, uint32_t *out) {
     return 1;
 }
 
-// decode the JSON string starting at p (opening quote) up to q (just after the closing quote)
+// decode the JSON string starting at p (opening quote) up to q (just after the closing quote); the text is
+// UTF-8 already and \u escapes are written as UTF-8 (lone surrogates as U+FFFD), so the result is too
 static Str *jstr_decode(const char *p, const char *q) {
     Str *d = str_alloc(q - p);
     const char *e = q - 1;                  // closing quote
@@ -333,7 +334,7 @@ void pn_print_float(double v) {
 // env("NAME"): an environment variable, "" when unset — for secrets like DATABASE_URL that must not be in source.
 Str *pn_env(Str *name) {
     const char *v = memchr(name->data, 0, (size_t)name->len) ? NULL : getenv(name->data);
-    return v ? str_from(v, (int64_t)strlen(v)) : str_alloc(0);
+    return v ? str_from_lossy(v, (int64_t)strlen(v)) : str_alloc(0);
 }
 
 // time(): seconds since 1970-01-01 UTC, like PHP (the wall clock: it can jump when the system clock is set).
@@ -344,6 +345,12 @@ int64_t pn_ord(Str *s) { return s->len ? (unsigned char)s->data[0] : 0; }
 
 Str *pn_chr(int64_t n) {
     char c = (char)(((n % 256) + 256) % 256);
+    if ((unsigned char)c >= 0x80) {             // one byte above 127 is not UTF-8 on its own (strings.md ST1)
+        fflush(stdout);
+        fprintf(stderr, "panic: chr(%lld) would make a byte that is not UTF-8 text on its own. Use mb_chr(%lld) for "
+                "the character U+%04llX\n", (long long)n, (long long)n, (unsigned long long)(n % 256 + 256) % 256);
+        die();
+    }
     return str_from(&c, 1);
 }
 

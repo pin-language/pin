@@ -229,7 +229,7 @@ static StrOrError http_call(const char *method, Str *url, Map *headers, Str *bod
         r.err = make_error(status, m);
         return r;
     }
-    r.value = out;
+    r.value = str_make_valid(out);              // another program's bytes: U+FFFD where they are not UTF-8
     return r;
 }
 
@@ -310,7 +310,7 @@ StrOrError pn_stream_next(HStream *st, int64_t ms) {
             size_t used = (size_t)(end - p->data) + sep;
             memmove(p->data, p->data + used, (size_t)p->len - used);
             p->len -= (int64_t)used;
-            if (data) { r.value = data; return r; }   // only comments: look for the next one
+            if (data) { r.value = str_make_valid(data); return r; }   // only comments: look for the next one
             continue;
         }
         char chunk[8192];
@@ -340,7 +340,7 @@ StrOrError pn_read_line(void) {
             size_t n = nl ? (size_t)(nl - stdin_buf) : stdin_len;
             size_t take = nl ? n + 1 : n;
             if (n && stdin_buf[n - 1] == '\r') n--;
-            r.value = str_from(stdin_buf, (int64_t)n);
+            r.value = str_from_lossy(stdin_buf, (int64_t)n);
             memmove(stdin_buf, stdin_buf + take, stdin_len - take);
             stdin_len -= take;
             pthread_mutex_unlock(&stdin_mu);
@@ -442,6 +442,6 @@ StrOrError pn_run(Str *cmd, List *args, int64_t ms) {
         return r;
     }
     pn_str_free(err);
-    r.value = out;
+    r.value = str_make_valid(out);              // another program's bytes: U+FFFD where they are not UTF-8
     return r;
 }

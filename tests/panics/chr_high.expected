@@ -1,0 +1,1 @@
+panic: chr(200) would make a byte that is not UTF-8 text on its own. Use mb_chr(200)

@@ -1,0 +1,1 @@
+panic: substr() would cut a character in half at byte 4

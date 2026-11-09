@@ -297,11 +297,11 @@ int64_t pn_db_is_null(Rows *r, Str *col) {
 Str *pn_db_string(Rows *r, Str *col) {
     if (r->pg) {
         int i = pg_col(r, col, "db_string()");
-        return str_from(pq.getvalue(r->pg, r->row, i), pq.getlength(r->pg, r->row, i));
+        return str_from_lossy(pq.getvalue(r->pg, r->row, i), pq.getlength(r->pg, r->row, i));
     }
     int i = db_col(r, col, "db_string()");
     const unsigned char *p = sqlite3_column_text(r->st, i);
-    return p ? str_from((const char *)p, sqlite3_column_bytes(r->st, i)) : str_alloc(0);
+    return p ? str_from_lossy((const char *)p, sqlite3_column_bytes(r->st, i)) : str_alloc(0);   // any bytes: ST1
 }
 
 int64_t pn_db_last_id(Db *d) {
@@ -309,7 +309,7 @@ int64_t pn_db_last_id(Db *d) {
                         "with db_query(), e.g. db_query($db, \"INSERT INTO t (name) VALUES (?) RETURNING id\", [$name])");
     return d->h ? sqlite3_last_insert_rowid(d->h) : 0;
 }
-Str *pn_db_error(Db *d) { return str_from(d->err, (int64_t)strlen(d->err)); }
+Str *pn_db_error(Db *d) { return str_from_lossy(d->err, (int64_t)strlen(d->err)); }
 
 // the whole result as a JSON array of objects, with JSON types from SQLite's (NULL -> null)
 Str *pn_db_json(Db *d, Str *sql, List *params, int64_t kind) {
@@ -324,7 +324,7 @@ Str *pn_db_json(Db *d, Str *sql, List *params, int64_t kind) {
         for (int i = 0; i < n; i++) {
             if (i) out = str_add_bytes(out, ",", 1);
             const char *name = sqlite3_column_name(st, i);
-            out = json_string(out, name, (int64_t)strlen(name));
+            out = json_text(out, name, (int64_t)strlen(name));
             out = str_add_bytes(out, ":", 1);
             switch (sqlite3_column_type(st, i)) {
             case SQLITE_INTEGER: out = pn_str_add_int(out, sqlite3_column_int64(st, i)); break;
@@ -332,7 +332,7 @@ Str *pn_db_json(Db *d, Str *sql, List *params, int64_t kind) {
             case SQLITE_NULL: out = str_add_bytes(out, "null", 4); break;
             default: {
                 const char *p = (const char *)sqlite3_column_text(st, i);
-                out = json_string(out, p ? p : "", sqlite3_column_bytes(st, i));
+                out = json_text(out, p ? p : "", sqlite3_column_bytes(st, i));
             }
             }
         }

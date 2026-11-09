@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Strings are always valid UTF-8** (design/strings.md ST1, ST3, ST4). A request whose path or body is not UTF-8
+  gets 400; other text from outside (headers, `%XX` values, database columns, other servers' answers, `run()`,
+  `read_line()`, `env()`) has bad bytes replaced by U+FFFD. `substr()` panics instead of cutting a character in
+  half. **Breaking:** `chr()` above 127 panics; use the new `mb_chr()`. New: `mb_strlen`, `mb_substr`,
+  `mb_strpos`, `mb_chr`, `mb_ord`, `grapheme_strlen`, `grapheme_substr` (UAX #29, Unicode 17, checked against
+  Python's `unicodedata.iter_graphemes()` on 100,000 strings). HTTP throughput unchanged (`ab`, 215k–218k req/s
+  new vs 202k–219k old).
 - **`list<?T>` and `map<K,?T>`** (design/null.md step 6): items that may be null, e.g. `[1, null, 3]` or
   `map<string,?string>`. An item is `?T` (check it, or `$xs[$i] ?? 0`, which also covers a null item);
   `isset()` is false for a null item as in PHP; `fill($n, null)`; JSON both ways. Existing programs compile to the

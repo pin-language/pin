@@ -160,7 +160,7 @@ typedef struct { int64_t code; Str *message; } PinError;
 static PinError *make_error(int64_t code, const char *msg) {
     PinError *e = xmalloc(sizeof *e);
     e->code = code;
-    e->message = str_from(msg, (int64_t)strlen(msg));
+    e->message = str_from_lossy(msg, (int64_t)strlen(msg));   // may quote another server's bytes, cut anywhere
     return e;
 }
 

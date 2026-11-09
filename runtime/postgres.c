@@ -548,7 +548,7 @@ static Str *pg_json(Db *d, Str *sql, List *params, int64_t kind) {
         for (int i = 0; i < n; i++) {
             if (i) out = str_add_bytes(out, ",", 1);
             const char *name = pq.fname(res, i);
-            out = json_string(out, name, (int64_t)strlen(name));
+            out = json_text(out, name, (int64_t)strlen(name));
             out = str_add_bytes(out, ":", 1);
             if (pq.getisnull(res, row, i)) { out = str_add_bytes(out, "null", 4); continue; }
             const char *v = pq.getvalue(res, row, i);
@@ -556,10 +556,10 @@ static Str *pg_json(Db *d, Str *sql, List *params, int64_t kind) {
             switch (pq.ftype(res, i)) {
             case OID_BOOL: out = v[0] == 't' ? str_add_bytes(out, "true", 4) : str_add_bytes(out, "false", 5); break;
             case OID_INT2: case OID_INT4: case OID_INT8: case OID_OID: case OID_FLOAT4: case OID_FLOAT8: case OID_NUMERIC:
-                out = json_number_text(v) ? str_add_bytes(out, v, len) : json_string(out, v, len);
+                out = json_number_text(v) ? str_add_bytes(out, v, len) : json_text(out, v, len);
                 break;
-            case OID_JSON: case OID_JSONB: out = str_add_bytes(out, v, len); break;
-            default: out = json_string(out, v, len);
+            case OID_JSON: case OID_JSONB: out = add_text(out, v, len); break;
+            default: out = json_text(out, v, len);
             }
         }
         out = str_add_bytes(out, "}", 1);
