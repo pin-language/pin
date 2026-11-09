@@ -529,3 +529,23 @@ void pn_list_drop_first(List *l, int64_t esize) {
     memmove(l->data, (char *)l->data + esize, (size_t)((l->len - 1) * esize));
     l->len--;
 }
+
+// usort($xs, "cmp"): a stable merge sort of 8-byte items with the program's comparison function (through a
+// generated wrapper that takes and gives 64-bit words); a panic inside it leaves through the request as usual
+typedef int64_t (*CmpFn)(uint64_t, uint64_t);
+
+void pn_list_usort(List *l, CmpFn cmp) {
+    int64_t n = l->len;
+    if (n < 2) return;
+    uint64_t *a = l->data, *tmp = xmalloc(checked_size(n, 8, 0));
+    for (int64_t w = 1; w < n; w *= 2) {
+        for (int64_t lo = 0; lo < n; lo += 2 * w) {
+            int64_t mid = lo + w < n ? lo + w : n, hi = lo + 2 * w < n ? lo + 2 * w : n, i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) tmp[k++] = cmp(a[j], a[i]) < 0 ? a[j++] : a[i++];   // ties keep order
+            while (i < mid) tmp[k++] = a[i++];
+            while (j < hi) tmp[k++] = a[j++];
+        }
+        memcpy(a, tmp, (size_t)n * 8);
+    }
+    xfree(tmp);
+}

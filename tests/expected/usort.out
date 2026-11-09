@@ -1,0 +1,4 @@
+rice tea milk cake 
+[{"name":"tea","price":45},{"name":"rice","price":30},{"name":"milk","price":45},{"name":"cake","price":120}]
+["a","bb","dd","ccc"]
+[3.25,1.5,-2.0]

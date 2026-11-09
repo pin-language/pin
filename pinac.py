@@ -1000,8 +1000,7 @@ def flatten_concat(e):
 # PHP functions an agent will try; what to do in Pin instead
 PHP_FUNCTION_HINTS = {
     "str_split": "no str_split() yet: use mb_substr($s, $i, 1) in a loop (grapheme_substr for what a reader sees)",
-    "usort": "no usort() yet: sort($xs) / rsort($xs) sort lists of int, float, bool or string",
-    "ksort": "no ksort() yet: maps keep insertion order; collect the keys in a list and sort() it",
+        "ksort": "no ksort() yet: maps keep insertion order; collect the keys in a list and sort() it",
     "asort": "no asort() yet: write the loop", "arsort": "no arsort() yet: write the loop",
     "array_map": "no array_map() yet: use a for/foreach loop into a new list",
     "array_filter": "no array_filter() yet: use a foreach loop into a new list",
@@ -1065,7 +1064,7 @@ CONSTANTS = {"JSON_PRETTY_PRINT": ("int", 128), "JSON_UNESCAPED_SLASHES": ("int"
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "usort", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1135,6 +1134,7 @@ declare ptr @pn_ucwords(ptr)
 declare ptr @pn_strrev(ptr)
 declare ptr @pn_json_pretty(ptr)
 declare void @pn_badshift(i32)
+declare void @pn_list_usort(ptr, ptr)
 declare void @pn_list_drop_first(ptr, i64)
 declare ptr @pn_date(ptr, i64)
 declare ptr @pn_str_trim_side(ptr, i64)
@@ -1329,6 +1329,25 @@ class Module:
             L += [f"  %o{j}p = getelementptr inbounds i8, ptr %f, i64 {off}", f"  %o{j} = load ptr, ptr %o{j}p",
                   f"  call void {free_fn(t)}(ptr %o{j})"]
         L += ["  ret void", "}"]
+        self.go_funcs += L
+        return name
+
+    def cmp_trampoline(self, key, et):
+        """usort's comparison: (i64, i64) -> i64 around the program's function (T $a, T $b): int."""
+        self.ngo += 1
+        name = f'@"cmp.{self.ngo}"'
+        if self.inferring:
+            return name
+        ty = llty(et)
+        L = [f"define internal i64 {name}(i64 %a, i64 %b) {{", "entry:"]
+        for x in ("a", "b"):
+            if ty == "i64":
+                L.append(f"  %{x}v = add i64 %{x}, 0")
+            elif ty == "double":
+                L.append(f"  %{x}v = bitcast i64 %{x} to double")
+            else:
+                L.append(f"  %{x}v = inttoptr i64 %{x} to ptr")
+        L += [f"  %r = call i64 @\"f.{key}\"({ty} %av, {ty} %bv)", "  ret i64 %r", "}"]
         self.go_funcs += L
         return name
 
@@ -4325,6 +4344,29 @@ class FuncGen:
             self.emit(f"{n} = load i64, ptr {r}")
             self.call("void", "@pn_str_free", f"ptr {r}")
             return n, "int", False
+        if name == "usort":
+            self.argc(e, 2)
+            a, h = args
+            root, props = path_root(a)
+            if root is None or a.kind not in ("var", "field", "index"):
+                raise CompileError('usort() sorts a list variable in place: usort($xs, "compare");', e.line)
+            t = self.static_type(a) or self.use_var(root, e.line)[1]
+            if not is_list(t):
+                raise CompileError(f"usort() needs a list but {show(a)} is {t}", e.line)
+            et = elem_of(t)
+            if esize(et) != 8 or is_task(et):
+                raise CompileError(f"usort() sorts lists of int, float, string, objects, lists or maps; not {t} "
+                                   f"(for bools, sort() puts false first)", e.line)
+            key = self.fkey(Node("call", e.line, name=h.val, args=[]), quiet=True) if h.kind == "str" else None
+            want = f"function {h.val if h.kind == 'str' else 'compare'}({et} $a, {et} $b): int"
+            if key is None or self.mod.funcs[key] != ([et, et], "int") or self.mod.throws.get(key, False):
+                raise CompileError(f'usort($xs, "name") needs the name of a function in this file declared as {want} '
+                                   f"(negative: $a first, 0: keep their order, positive: $b first; it cannot throw)",
+                                   e.line)
+            self.mutating(root, props, e.line, at=e.order, what="sorted")
+            v, _ = self.base_value(a, e.line)
+            self.call("void", "@pn_list_usort", f"ptr {v}", f"ptr {self.mod.cmp_trampoline(key, et)}")
+            return None, "void", False
         if name in ("array_pop", "array_shift"):
             self.argc(e, 1)
             a = args[0]

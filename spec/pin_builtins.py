@@ -201,6 +201,17 @@ f("implode", S, "implode(string $glue, list<string|int|float> $xs): string", "Jo
 f("PHP_EOL", S, "PHP_EOL: string", r'The string `"\n"`.', r'''echo "line", PHP_EOL;''', kind="constant")
 
 # ----------------------------------------------------------------------------------------- lists and maps
+f("usort", L, "usort(list<T> $xs, string $compare): void", "Sort a list in place with your own comparison function.",
+  r'''class Item { public function __construct(public string $name, public int $price) {} }
+function by_price(Item $a, Item $b): int { return $a->price - $b->price; }
+list<Item> $items = [new Item("cake", 120), new Item("tea", 45), new Item("rice", 30)];
+usort($items, "by_price");
+foreach ($items as $i) { echo $i->name, " "; }
+echo "\n";''',
+  ["`$compare` is the name of a function in the same file, `(T $a, T $b): int`: negative puts `$a` first, "
+   "positive `$b`, 0 keeps their order (the sort is stable). It cannot be `throws`.",
+   "Lists of int, float, string, objects, lists or maps. A list of bools: `sort()`."],
+  php="`usort($xs, 'by_price')` with a function name; Pin has no closures yet.")
 f("array_pop", L, "array_pop(list<T> $xs): ?T", "Take the last item out of the list, or null when it is empty.",
   r'''list<int> $stack = [1, 2, 3];
 $top = array_pop($stack);

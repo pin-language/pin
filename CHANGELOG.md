@@ -88,6 +88,8 @@ offset inside a character panics, a request whose path or body is not UTF-8 gets
 
 ### Language and built-ins
 
+- **`usort($xs, "by_price")`**: sort lists of objects (or ints, floats, strings, lists, maps) with a function of
+  the same file named as a string, `(T $a, T $b): int` checked at compile time; stable, as PHP 8.
 - **Bit operators** `| & ^ ~ << >>` and `|= &= ^= <<= >>=` on ints (PHP 8 precedence; a shift of 64+ is 0, a
   negative shift panics), and `0xFF` / `0b1010` / `0o17` / `1_000_000` literals. `array_pop` / `array_shift` (give
   `?T`), `json_encode($v, JSON_PRETTY_PRINT)`; the other `JSON_` flags are accepted and change nothing.

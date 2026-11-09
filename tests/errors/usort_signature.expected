@@ -1,0 +1,1 @@
+usort($xs, "name") needs the name of a function in this file declared as function cmp(int $a, int $b): int
