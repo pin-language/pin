@@ -999,7 +999,7 @@ def flatten_concat(e):
 
 # PHP functions an agent will try; what to do in Pin instead
 PHP_FUNCTION_HINTS = {
-    "str_split": "no str_split() yet: use substr($s, $i, 1) in a loop",
+    "str_split": "no str_split() yet: use mb_substr($s, $i, 1) in a loop (grapheme_substr for what a reader sees)",
     "usort": "no usort() yet: sort($xs) / rsort($xs) sort lists of int, float, bool or string",
     "ksort": "no ksort() yet: maps keep insertion order; collect the keys in a list and sort() it",
     "asort": "no asort() yet: write the loop", "arsort": "no arsort() yet: write the loop",
