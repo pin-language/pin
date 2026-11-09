@@ -661,3 +661,166 @@ int64_t pn_ipow(int64_t b, int64_t e, int32_t line) {
     while (e) { if (e & 1) r *= x; x *= x; e >>= 1; }
     return (int64_t)r;
 }
+
+// ---- filter_var: the validations of PHP's filter extension that APIs use; the compiler picks the function
+// from the FILTER_ constant and gives null where PHP gives false
+static int is_alnum_c(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'); }
+
+// FILTER_VALIDATE_EMAIL: ASCII dot-atoms before the @, a domain of letter / digit / hyphen labels with a dot
+int64_t pn_filter_email(Str *s) {
+    const char *p = s->data, *e = s->data + s->len, *at = memchr(p, '@', (size_t)s->len);
+    if (!at || at == p || at - p > 64 || e - at - 1 < 3 || s->len > 320) return 0;
+    if (memchr(at + 1, '@', (size_t)(e - at - 1))) return 0;
+    const char *ok = "!#$%&'*+/=?^_`{|}~-";
+    for (const char *q = p; q < at; q++) {
+        if (*q == '.') { if (q == p || q + 1 == at || q[1] == '.') return 0; continue; }
+        if (!is_alnum_c(*q) && !strchr(ok, *q)) return 0;
+    }
+    int dots = 0;
+    const char *label = at + 1;
+    for (const char *q = at + 1; q <= e; q++) {
+        if (q == e || *q == '.') {
+            int64_t n = q - label;
+            if (n < 1 || n > 63 || label[0] == '-' || label[n - 1] == '-') return 0;
+            if (q < e) dots++;
+            label = q + 1;
+            continue;
+        }
+        if (!is_alnum_c(*q) && *q != '-') return 0;
+    }
+    return dots >= 1;
+}
+
+// FILTER_VALIDATE_IP: dotted IPv4 (0-255, no leading zeros) or IPv6
+int64_t pn_filter_ip(Str *s) {
+    char buf[64];
+    if (s->len == 0 || s->len >= (int64_t)sizeof buf || memchr(s->data, 0, (size_t)s->len)) return 0;
+    memcpy(buf, s->data, (size_t)s->len);
+    buf[s->len] = 0;
+    unsigned char out[16];
+    if (strchr(buf, ':')) return inet_pton(AF_INET6, buf, out) == 1;
+    int parts = 0;
+    for (const char *q = buf; *q;) {
+        if (*q < '0' || *q > '9') return 0;
+        int v = 0, n = 0;
+        if (q[0] == '0' && q[1] >= '0' && q[1] <= '9') return 0;   // 01.2.3.4
+        while (*q >= '0' && *q <= '9') { v = v * 10 + (*q - '0'); q++; if (++n > 3) return 0; }
+        if (v > 255) return 0;
+        parts++;
+        if (*q == '.') { q++; if (!*q) return 0; } else if (*q) return 0;
+    }
+    return parts == 4;
+}
+
+// FILTER_VALIDATE_URL: scheme://host... with a letter-led scheme and a non-empty host, no spaces
+int64_t pn_filter_url(Str *s) {
+    const char *p = s->data, *e = s->data + s->len;
+    if (p == e || !((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z'))) return 0;
+    const char *q = p;
+    while (q < e && (is_alnum_c(*q) || *q == '+' || *q == '-' || *q == '.')) q++;
+    if (e - q < 4 || q[0] != ':' || q[1] != '/' || q[2] != '/') return 0;
+    const char *host = q + 3, *h = host;
+    for (const char *c = p; c < e; c++) if ((unsigned char)*c <= ' ' || *c == '"' || *c == '<' || *c == '>' || *c == '\\') return 0;
+    while (h < e && *h != '/' && *h != '?' && *h != '#') h++;
+    const char *at = memchr(host, '@', (size_t)(h - host));
+    if (at) host = at + 1;
+    return h > host && host[0] != ':';
+}
+
+// FILTER_VALIDATE_INT: optional spaces around, a sign, digits without a leading zero, within 64 bits
+int64_t pn_filter_int(Str *s, int64_t *ok) {
+    const char *p = s->data, *e = s->data + s->len;
+    *ok = 0;
+    while (p < e && is_space(*p)) p++;
+    while (e > p && is_space(e[-1])) e--;
+    int neg = 0;
+    if (p < e && (*p == '+' || *p == '-')) neg = *p++ == '-';
+    if (p == e || (*p == '0' && e - p > 1)) return 0;
+    uint64_t v = 0;
+    for (; p < e; p++) {
+        if (*p < '0' || *p > '9') return 0;
+        if (v > (UINT64_MAX - 9) / 10) return 0;
+        v = v * 10 + (uint64_t)(*p - '0');
+    }
+    if (v > (uint64_t)INT64_MAX + (uint64_t)neg) return 0;
+    *ok = 1;
+    return neg ? (int64_t)(0 - v) : (int64_t)v;
+}
+
+// FILTER_VALIDATE_FLOAT: a whole number text (spaces around allowed), like is_numeric
+double pn_filter_float(Str *s, int64_t *ok) {
+    *ok = pn_is_numeric(s);
+    if (!*ok) return 0;
+    char buf[400];
+    int64_t n = s->len < (int64_t)sizeof buf - 1 ? s->len : (int64_t)sizeof buf - 1;
+    memcpy(buf, s->data, (size_t)n);
+    buf[n] = 0;
+    return strtod(buf, NULL);
+}
+
+// FILTER_VALIDATE_BOOL: 1 for "1" "true" "on" "yes", 0 for "0" "false" "off" "no" "", 2 (null) otherwise
+int64_t pn_filter_bool(Str *s) {
+    char b[8];
+    int64_t a = 0, z = s->len;
+    while (a < z && is_space(s->data[a])) a++;
+    while (z > a && is_space(s->data[z - 1])) z--;
+    if (z - a >= (int64_t)sizeof b) return 2;
+    for (int64_t i = a; i < z; i++) { char c = s->data[i]; b[i - a] = c >= 'A' && c <= 'Z' ? (char)(c + 32) : c; }
+    b[z - a] = 0;
+    if (!strcmp(b, "1") || !strcmp(b, "true") || !strcmp(b, "on") || !strcmp(b, "yes")) return 1;
+    if (!strcmp(b, "0") || !strcmp(b, "false") || !strcmp(b, "off") || !strcmp(b, "no") || !b[0]) return 0;
+    return 2;
+}
+
+// ctype_digit / alpha / alnum / space / upper / lower / xdigit: every byte in the ASCII class; "" is false (PHP 8)
+int64_t pn_ctype(Str *s, int64_t cls) {
+    if (!s->len) return 0;
+    for (int64_t i = 0; i < s->len; i++) {
+        unsigned char c = (unsigned char)s->data[i];
+        int ok;
+        switch (cls) {
+        case 0: ok = c >= '0' && c <= '9'; break;
+        case 1: ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); break;
+        case 2: ok = is_alnum_c((char)c); break;
+        case 3: ok = c == ' ' || (c >= '\t' && c <= '\r'); break;
+        case 4: ok = c >= 'A' && c <= 'Z'; break;
+        case 5: ok = c >= 'a' && c <= 'z'; break;
+        default: ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        }
+        if (!ok) return 0;
+    }
+    return 1;
+}
+
+// nl2br: "<br />" before every newline (\r\n, \n\r, \n, \r), as PHP
+Str *pn_nl2br(Str *s) {
+    Str *d = str_alloc(s->len + 16);
+    for (int64_t i = 0; i < s->len; i++) {
+        char c = s->data[i];
+        if (c == '\n' || c == '\r') {
+            d = str_add_bytes(d, "<br />", 6);
+            d = str_add_bytes(d, &c, 1);
+            if (i + 1 < s->len && (s->data[i + 1] == '\n' || s->data[i + 1] == '\r') && s->data[i + 1] != c) {
+                d = str_add_bytes(d, s->data + i + 1, 1);
+                i++;
+            }
+            continue;
+        }
+        d = str_add_bytes(d, &c, 1);
+    }
+    return d;
+}
+
+// json_validate($s): whether the text is valid JSON (RFC 8259, the same check json_decode does first)
+int64_t pn_json_validate(Str *s) {
+    IntOrError r = pn_jd_doc(s);
+    if (r.err) { pn_str_free(r.err->message); xfree(r.err); return 0; }
+    return 1;
+}
+
+// array_key_first / array_key_last: the position of the first / last live entry, or -1
+int64_t pn_map_end_pos(Map *m, int64_t last) {
+    if (last) { for (int64_t i = m->used - 1; i >= 0; i--) if (m->e[i].alive) return i; return -1; }
+    for (int64_t i = 0; i < m->used; i++) if (m->e[i].alive) return i;
+    return -1;
+}

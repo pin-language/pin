@@ -88,6 +88,8 @@ offset inside a character panics, a request whose path or body is not UTF-8 gets
 
 ### Language and built-ins
 
+- **`filter_var()`** with `FILTER_VALIDATE_EMAIL`, `_URL`, `_IP` (`?string`), `_INT` (`?int`), `_FLOAT`, `_BOOL`:
+  null where PHP gives false, same answers as PHP; `ctype_*`, `nl2br`, `json_validate`, `array_key_first` / `_last`.
 - `ksort` / `krsort` / `asort` / `arsort` (stable), `range`, `array_count_values`, `array_flip`, `array_combine`,
   `mb_str_split`, the `**` operator and `pow`, `fmod`, `log`, `log10`, `exp`, trig functions, `pi`, `is_nan` /
   `is_finite` / `is_infinite`, and `M_PI`, `M_E`, `NAN`, `INF`, `PHP_FLOAT_*`.

@@ -42,6 +42,23 @@ f("substr", S, "substr(string $s, int $start, int $length = rest): string", "Par
    "giving broken text; positions from `strpos()` never do. To count characters use `mb_substr()`, to shorten "
    "text for display `grapheme_substr()`."],
   php="The same, except that cutting a character in half panics instead of giving invalid UTF-8.")
+f("ctype_digit", S, 'ctype_digit(string $s): bool', 'Whether every byte is a digit 0-9 (ASCII); false for "".',
+  r'''echo ctype_digit("2024") ? "yes" : "no", " ", ctype_digit("20.5") ? "yes" : "no", "\n";''')
+f("ctype_alpha", S, 'ctype_alpha(string $s): bool', 'Whether every byte is a letter a-z / A-Z (ASCII); false for "".',
+  r'''echo ctype_alpha("Pin") ? "yes" : "no", " ", ctype_alpha("Pin8") ? "yes" : "no", "\n";''')
+f("ctype_alnum", S, 'ctype_alnum(string $s): bool', 'Whether every byte is a letter or digit (ASCII); false for "".',
+  r'''echo ctype_alnum("abc123") ? "yes" : "no", " ", ctype_alnum("abc-123") ? "yes" : "no", "\n";''')
+f("ctype_space", S, 'ctype_space(string $s): bool', 'Whether every byte is whitespace (space, tab, newlines) (ASCII); false for "".',
+  r'''echo ctype_space("  ") ? "yes" : "no", " ", ctype_space("a b") ? "yes" : "no", "\n";''')
+f("ctype_upper", S, 'ctype_upper(string $s): bool', 'Whether every byte is an upper-case letter A-Z (ASCII); false for "".',
+  r'''echo ctype_upper("ABC") ? "yes" : "no", " ", ctype_upper("AbC") ? "yes" : "no", "\n";''')
+f("ctype_lower", S, 'ctype_lower(string $s): bool', 'Whether every byte is a lower-case letter a-z (ASCII); false for "".',
+  r'''echo ctype_lower("abc") ? "yes" : "no", " ", ctype_lower("aBc") ? "yes" : "no", "\n";''')
+f("ctype_xdigit", S, 'ctype_xdigit(string $s): bool', 'Whether every byte is a hex digit 0-9 a-f A-F (ASCII); false for "".',
+  r'''echo ctype_xdigit("ff00") ? "yes" : "no", " ", ctype_xdigit("fg") ? "yes" : "no", "\n";''')
+f("nl2br", S, 'nl2br(string $s): string', 'Insert `<br />` before each newline, for showing text in HTML.',
+  r'''echo nl2br("line 1\nline 2"), "\n";''',
+  ['Escape first: `nl2br(htmlspecialchars($text))`.'])
 f("mb_str_split", S, "mb_str_split(string $s, int $length = 1): list<string>", "Split into pieces of `$length` characters (code points).",
   r'''echo json_encode(mb_str_split("ไทย")), json_encode(mb_str_split("abcde", 2)), "\n";''',
   ["PHP's `str_split()` splits bytes and breaks Thai text; this is the one to use."])
@@ -216,6 +233,10 @@ echo json_encode(array_filter([45, 120, 30], "cheap")), "\n";''',
   ["`$keep` names a function of the same file `(T $x): bool`. The kept items are copied, and the new list is "
    "renumbered from 0 (PHP keeps the old keys)."],
   php="PHP keeps the original keys; Pin's result is a list numbered from 0.")
+f("array_key_first", L, 'array_key_first(map<K,V> $m): ?K', 'The first key of a map, or null when it is empty.',
+  r'''echo array_key_first(["b" => 2, "a" => 1]) ?? "none", "\n";''')
+f("array_key_last", L, 'array_key_last(map<K,V> $m): ?K', 'The last key of a map, or null when it is empty.',
+  r'''echo array_key_last([3 => "c", 7 => "g"]) ?? -1, "\n";''')
 f("ksort", L, "ksort(map<K,V> $m): void", "Sort a map by its keys, in place.",
   r'''map<string,int> $m = ["b" => 2, "a" => 1];
 ksort($m);
@@ -455,6 +476,8 @@ f("(string)", V, "(string) $x", "Cast to string: the same as `strval()`.",
   notes=["There is no `(bool)` cast: compare instead, e.g. `$n != 0`."])
 
 # ----------------------------------------------------------------------------------------- json
+f("json_validate", J, 'json_validate(string $json): bool', 'Whether the text is valid JSON.',
+  r'''echo json_validate("{\"a\":[1,2]}") ? "valid" : "invalid", " ", json_validate("{a:1}") ? "valid" : "invalid", "\n";''', php="PHP 8.3's json_validate().")
 f("JSON_PRETTY_PRINT", J, "JSON_PRETTY_PRINT: int", "For `json_encode($v, JSON_PRETTY_PRINT)`: indented output, as PHP.",
   r'''echo json_encode(["a" => [1, 2]], JSON_PRETTY_PRINT), "\n";''', kind="constant")
 f("JSON_UNESCAPED_SLASHES", J, "JSON_UNESCAPED_SLASHES: int", "Accepted for PHP code; Pin never escapes `/`.", r'''echo JSON_UNESCAPED_SLASHES, "\n";''', kind="constant")
@@ -977,6 +1000,25 @@ f("env", SEC, "env(string $name): string", "An environment variable, or `\"\"` w
    "up in git and in the binary.",
    "Read once per request is fine (it is cheap); a name containing a zero byte gives `\"\"`."],
   php="`getenv('NAME')`, but `\"\"` instead of `false` when unset.")
+f("filter_var", SEC, 'filter_var(string $value, int $filter): ?T', 'Check a value from a client: the value when it is valid, null when not.',
+  r'''echo filter_var("ann@example.com", FILTER_VALIDATE_EMAIL) ?? "bad", " ", filter_var("ann@", FILTER_VALIDATE_EMAIL) ?? "bad", "\n";
+$age = filter_var(" 42 ", FILTER_VALIDATE_INT);
+echo $age === null ? "not a number" : strval($age + 1), "\n";''',
+  ['`FILTER_VALIDATE_EMAIL`, `_URL`, `_IP` give `?string`; `_INT` `?int` (no leading zeros, within 64 bits, spaces around allowed); `_FLOAT` `?float`; `_BOOL` `?bool` (`yes on true 1` / `no off false 0 ""`).', 'The filter must be one of these constants written in the call (the result type depends on it).', "Email: ASCII addresses with a dotted domain, as PHP's default (no Unicode addresses)."], php='PHP returns `false` where Pin gives null; no options or flags argument.')
+f("FILTER_VALIDATE_EMAIL", SEC, 'FILTER_VALIDATE_EMAIL: int', 'For `filter_var()`: an email address (?string).',
+  r'''echo FILTER_VALIDATE_EMAIL > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_URL", SEC, 'FILTER_VALIDATE_URL: int', 'For `filter_var()`: a URL with a scheme and host (?string).',
+  r'''echo FILTER_VALIDATE_URL > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_IP", SEC, 'FILTER_VALIDATE_IP: int', 'For `filter_var()`: an IPv4 or IPv6 address (?string).',
+  r'''echo FILTER_VALIDATE_IP > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_INT", SEC, 'FILTER_VALIDATE_INT: int', 'For `filter_var()`: an int (?int).',
+  r'''echo FILTER_VALIDATE_INT > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_FLOAT", SEC, 'FILTER_VALIDATE_FLOAT: int', 'For `filter_var()`: a number (?float).',
+  r'''echo FILTER_VALIDATE_FLOAT > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_BOOL", SEC, 'FILTER_VALIDATE_BOOL: int', 'For `filter_var()`: yes/no, on/off, true/false, 1/0 (?bool).',
+  r'''echo FILTER_VALIDATE_BOOL > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_BOOLEAN", SEC, 'FILTER_VALIDATE_BOOLEAN: int', 'For `filter_var()`: the same as FILTER_VALIDATE_BOOL.',
+  r'''echo FILTER_VALIDATE_BOOLEAN > 0 ? "a filter" : "", "\n";''', kind="constant")
 f("hash", SEC, 'hash(string $algo, string $data): string', "SHA-256 of a string, as 64 lowercase hex characters.",
   r'''echo hash("sha256", "abc"), "\n";''',
   ['`$algo` must be the literal `"sha256"`: MD5 and SHA-1 are broken, so they do not compile.',

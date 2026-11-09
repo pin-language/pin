@@ -1059,7 +1059,9 @@ NOT_IN_PIN = {
     "yield": "generators are not in Pin",
 }
 NORMALIZER_FORMS = {"FORM_D": 4, "NFD": 4, "FORM_KD": 8, "NFKD": 8, "FORM_C": 16, "NFC": 16, "FORM_KC": 32, "NFKC": 32}
-CONSTANTS = {"M_PI": ("float", 3.141592653589793), "M_E": ("float", 2.718281828459045), "NAN": ("float", float("nan")),
+CONSTANTS = {"FILTER_VALIDATE_INT": ("int", 257), "FILTER_VALIDATE_BOOL": ("int", 258), "FILTER_VALIDATE_BOOLEAN": ("int", 258),
+             "FILTER_VALIDATE_FLOAT": ("int", 259), "FILTER_VALIDATE_URL": ("int", 273), "FILTER_VALIDATE_EMAIL": ("int", 274),
+             "FILTER_VALIDATE_IP": ("int", 275), "M_PI": ("float", 3.141592653589793), "M_E": ("float", 2.718281828459045), "NAN": ("float", float("nan")),
              "INF": ("float", float("inf")), "PHP_FLOAT_EPSILON": ("float", 2.220446049250313e-16),
              "PHP_FLOAT_MAX": ("float", 1.7976931348623157e308), "PHP_FLOAT_MIN": ("float", 2.2250738585072014e-308),
              "JSON_PRETTY_PRINT": ("int", 128), "JSON_UNESCAPED_SLASHES": ("int", 64), "JSON_UNESCAPED_UNICODE": ("int", 256),
@@ -1067,7 +1069,7 @@ CONSTANTS = {"M_PI": ("float", 3.141592653589793), "M_E": ("float", 2.7182818284
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "ksort", "krsort", "asort", "arsort", "range", "array_count_values", "array_flip", "array_combine", "mb_str_split", "fmod", "log", "log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pi", "pow", "is_nan", "is_finite", "is_infinite", "usort", "array_map", "array_filter", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "filter_var", "nl2br", "json_validate", "array_key_first", "array_key_last", "ctype_digit", "ctype_alpha", "ctype_alnum", "ctype_space", "ctype_upper", "ctype_lower", "ctype_xdigit", "ksort", "krsort", "asort", "arsort", "range", "array_count_values", "array_flip", "array_combine", "mb_str_split", "fmod", "log", "log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pi", "pow", "is_nan", "is_finite", "is_infinite", "usort", "array_map", "array_filter", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1139,6 +1141,16 @@ declare ptr @pn_json_pretty(ptr)
 declare void @pn_badshift(i32)
 declare void @pn_list_usort(ptr, ptr)
 declare void @pn_map_sort(ptr, i64, i64)
+declare i64 @pn_filter_email(ptr)
+declare i64 @pn_filter_ip(ptr)
+declare i64 @pn_filter_url(ptr)
+declare i64 @pn_filter_int(ptr, ptr)
+declare double @pn_filter_float(ptr, ptr)
+declare i64 @pn_filter_bool(ptr)
+declare i64 @pn_ctype(ptr, i64)
+declare ptr @pn_nl2br(ptr)
+declare i64 @pn_json_validate(ptr)
+declare i64 @pn_map_end_pos(ptr, i64)
 declare ptr @pn_range(i64, i64, i64)
 declare ptr @pn_count_values(ptr, i64)
 declare ptr @pn_map_flip(ptr)
@@ -4373,6 +4385,80 @@ class FuncGen:
             self.emit(f"{n} = load i64, ptr {r}")
             self.call("void", "@pn_str_free", f"ptr {r}")
             return n, "int", False
+        if name == "filter_var":
+            self.argc(e, 2)
+            if args[1].kind != "int":
+                raise CompileError("filter_var($value, FILTER_VALIDATE_...) needs the filter written as a constant: "
+                                   "FILTER_VALIDATE_EMAIL, _URL, _IP, _INT, _FLOAT or _BOOL", e.line)
+            f = args[1].val
+            sv = self.str_arg(e, 0)
+            if f in (273, 274, 275):            # the string itself, or null
+                ok = self.call("i64", {274: "@pn_filter_email", 273: "@pn_filter_url", 275: "@pn_filter_ip"}[f], f"ptr {sv}")
+                c = self.i64_to_bool(ok)
+                start, yes, end = self.label, self.newlabel("valid"), self.newlabel("filtered")
+                self.emit(f"br i1 {c}, label %{yes}, label %{end}")
+                self.place_label(yes)
+                d = self.dup_str(sv)
+                got = self.label
+                self.emit(f"br label %{end}")
+                self.place_label(end)
+                r = self.tmp()
+                self.emit(f"{r} = phi ptr [ null, %{start} ], [ {d}, %{got} ]")
+                return r, "?string", True
+            if f in (257, 259):
+                okp = f"%v.__ok{self.n}"
+                self.n += 1
+                self.allocas.append(f"  {okp} = alloca i64")
+                t = "int" if f == 257 else "float"
+                v = self.call(llty(t), "@pn_filter_int" if f == 257 else "@pn_filter_float", f"ptr {sv}", f"ptr {okp}")
+                ok = self.tmp()
+                self.emit(f"{ok} = load i64, ptr {okp}")
+                return self.wrap_opt(v, "?" + t, self.i64_to_bool(ok)), "?" + t, False
+            if f == 258:
+                b = self.call("i64", "@pn_filter_bool", f"ptr {sv}")
+                v, has = self.tmp(), self.tmp()
+                self.emit(f"{v} = icmp eq i64 {b}, 1")
+                self.emit(f"{has} = icmp ne i64 {b}, 2")
+                return self.wrap_opt(v, "?bool", has), "?bool", False
+            raise CompileError("filter_var() knows FILTER_VALIDATE_EMAIL, _URL, _IP, _INT, _FLOAT and _BOOL", e.line)
+        if name.startswith("ctype_"):
+            self.argc(e, 1)
+            cls = ["ctype_digit", "ctype_alpha", "ctype_alnum", "ctype_space", "ctype_upper", "ctype_lower",
+                   "ctype_xdigit"].index(name)
+            return self.i64_to_bool(self.call("i64", "@pn_ctype", f"ptr {self.str_arg(e, 0)}", f"i64 {cls}")), "bool", False
+        if name in ("nl2br",):
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_nl2br", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "json_validate":
+            self.argc(e, 1)
+            return self.i64_to_bool(self.call("i64", "@pn_json_validate", f"ptr {self.str_arg(e, 0)}")), "bool", False
+        if name in ("array_key_first", "array_key_last"):
+            self.argc(e, 1)
+            mv, mt = self.borrow(args[0])
+            if not is_map(mt):
+                raise CompileError(f"{name}() needs a map, not {mt}" + (" (a list's keys are 0 to count - 1)" if is_list(mt) else ""), e.line)
+            kt = map_kv(mt)[0]
+            pos = self.call("i64", "@pn_map_end_pos", f"ptr {mv}", f"i64 {int(name == 'array_key_last')}")
+            c = self.tmp()
+            self.emit(f"{c} = icmp sge i64 {pos}, 0")
+            start, yes, end = self.label, self.newlabel("key"), self.newlabel("keyed")
+            self.emit(f"br i1 {c}, label %{yes}, label %{end}")
+            self.place_label(yes)
+            ent = self.call("ptr", "@pn_map_entry", f"ptr {mv}", f"i64 {pos}")
+            kp = self.tmp()
+            self.emit(f"{kp} = getelementptr inbounds i8, ptr {ent}, i64 8")
+            k = self.load_slot(kp, kt)
+            if kt == "string":
+                k = self.dup_str(k)
+            else:
+                k = self.wrap_opt(k, "?int")
+            got = self.label
+            self.emit(f"br label %{end}")
+            self.place_label(end)
+            r = self.tmp()
+            ot = "?" + kt
+            self.emit(f"{r} = phi {llty(ot)} [ {'null' if kt == 'string' else 'zeroinitializer'}, %{start} ], [ {k}, %{got} ]")
+            return r, ot, kt == "string"
         if name in ("ksort", "krsort", "asort", "arsort"):
             self.argc(e, 1)
             a = args[0]

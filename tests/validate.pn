@@ -1,0 +1,18 @@
+// filter_var (email, int, float, url, ip, bool), ctype_*, nl2br, json_validate, array_key_first/last
+foreach (["a@b.co", "a@b", "ก@b.co", "a.b@c.d.e", "a..b@c.de", "x@-a.com"] as $e) { echo filter_var($e, FILTER_VALIDATE_EMAIL) ?? "-", " "; }
+echo "\n";
+foreach ([" 42 ", "042", "+7", "-9223372036854775808", "9223372036854775808", "4x"] as $i) { $v = filter_var($i, FILTER_VALIDATE_INT); echo $v === null ? "null" : strval($v), " "; }
+echo "\n";
+echo filter_var("4.5e1", FILTER_VALIDATE_FLOAT) ?? -1.0, " ", filter_var("abc", FILTER_VALIDATE_FLOAT) ?? -1.0, "\n";
+foreach (["http://x.y/p?q=1", "example.com", "ftp://user@host/x", "http:///nohost", "https://a b.c"] as $u) { echo filter_var($u, FILTER_VALIDATE_URL) === null ? "n" : "y"; }
+echo "\n";
+foreach (["::1", "1.2.3.4", "1.2.3.256", "01.2.3.4", "2001:db8::1", "1.2.3"] as $ip) { echo filter_var($ip, FILTER_VALIDATE_IP) === null ? "n" : "y"; }
+echo "\n";
+foreach (["yes", "Off", "", "maybe"] as $b) { $bv = filter_var($b, FILTER_VALIDATE_BOOL); echo $bv === null ? "null" : ($bv ? "true" : "false"), " "; }
+echo "\n";
+echo ctype_digit("123") ? "y" : "n", ctype_digit("") ? "y" : "n", ctype_alpha("abC") ? "y" : "n", ctype_alnum("a1!") ? "y" : "n", ctype_xdigit("fF0") ? "y" : "n", ctype_space(" \n") ? "y" : "n", "\n";
+echo nl2br("a\nb\r\nc"), " ", json_validate("{\"a\":1}") ? "valid" : "invalid", " ", json_validate("{a:1}") ? "valid" : "invalid", "\n";
+map<string,int> $m = ["x" => 1, "y" => 2];
+echo array_key_first($m) ?? "-", array_key_last($m) ?? "-", " ", array_key_first([5 => "a", 9 => "b"]) ?? -1, "\n";
+map<string,int> $empty = [];
+echo array_key_first($empty) ?? "none", "\n";
