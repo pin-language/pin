@@ -201,6 +201,15 @@ f("implode", S, "implode(string $glue, list<string|int|float> $xs): string", "Jo
 f("PHP_EOL", S, "PHP_EOL: string", r'The string `"\n"`.', r'''echo "line", PHP_EOL;''', kind="constant")
 
 # ----------------------------------------------------------------------------------------- lists and maps
+f("array_pop", L, "array_pop(list<T> $xs): ?T", "Take the last item out of the list, or null when it is empty.",
+  r'''list<int> $stack = [1, 2, 3];
+$top = array_pop($stack);
+echo $top ?? -1, " ", count($stack), "\n";''',
+  ["The item moves out to the result (no copy); `array_pop($xs) ?? $default` when the list may be empty."],
+  php="Same, null when empty (Pin's result type is `?T`).")
+f("array_shift", L, "array_shift(list<T> $xs): ?T", "Take the first item out of the list, or null when it is empty.",
+  r'''list<string> $queue = ["a", "b"];
+echo array_shift($queue) ?? "none", " ", json_encode($queue), "\n";''', ["Moves every other item down: O(n)."])
 f("array_slice", L, "array_slice(list<T> $xs, int $offset, int $length = rest): list<T>", "A copy of part of a list.",
   r'''echo json_encode(array_slice([1, 2, 3, 4, 5], 1, 2)), json_encode(array_slice([1, 2, 3, 4, 5], -2)), "\n";''',
   ["`substr()`'s rules for negative values, counted in items. The items are copied."])
@@ -342,7 +351,12 @@ f("(string)", V, "(string) $x", "Cast to string: the same as `strval()`.",
   notes=["There is no `(bool)` cast: compare instead, e.g. `$n != 0`."])
 
 # ----------------------------------------------------------------------------------------- json
-f("json_encode", J, "json_encode(int|float|bool|string|list|map|object|?T $x): string", "JSON text for a value.",
+f("JSON_PRETTY_PRINT", J, "JSON_PRETTY_PRINT: int", "For `json_encode($v, JSON_PRETTY_PRINT)`: indented output, as PHP.",
+  r'''echo json_encode(["a" => [1, 2]], JSON_PRETTY_PRINT), "\n";''', kind="constant")
+f("JSON_UNESCAPED_SLASHES", J, "JSON_UNESCAPED_SLASHES: int", "Accepted for PHP code; Pin never escapes `/`.", r'''echo JSON_UNESCAPED_SLASHES, "\n";''', kind="constant")
+f("JSON_UNESCAPED_UNICODE", J, "JSON_UNESCAPED_UNICODE: int", "Accepted for PHP code; Pin writes UTF-8 as it is.", r'''echo JSON_UNESCAPED_UNICODE, "\n";''', kind="constant")
+f("JSON_THROW_ON_ERROR", J, "JSON_THROW_ON_ERROR: int", "Accepted for PHP code; `json_encode` cannot fail in Pin.", r'''echo JSON_THROW_ON_ERROR, "\n";''', kind="constant")
+f("json_encode", J, "json_encode(int|float|bool|string|list|map|object|?T $x, int $flags = 0): string", "JSON text for a value (`JSON_PRETTY_PRINT` to indent).",
   r'''class Line {
     public function __construct(public string $item, public int $qty, private int $cost) {}
 }

@@ -1,0 +1,13 @@
+// bitwise operators | & ^ ~ << >> and their compound forms, hex / binary / octal / 1_000 literals (PHP 8 precedence)
+echo 6 | 3, " ", 6 & 3, " ", 6 ^ 3, " ", ~5, " ", 1 << 4, " ", -16 >> 2, " ", 1 << 64, " ", -1 >> 70, " ", 0xFF, " ", 0b1010, " ", 0o17, " ", 1_000_000, "\n";
+$f = 0;
+$f |= 4;
+$f |= 1;
+$f &= ~1;
+$f ^= 8;
+$f <<= 1;
+$f >>= 1;
+echo $f, " ", 1 + 2 << 1, " ", (5 & 3) == 1 ? "t" : "f", "\n";
+echo json_encode([1], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), "\n";
+list<list<int>> $ll = [[1]];
+echo count($ll), "\n";

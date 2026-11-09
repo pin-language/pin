@@ -61,6 +61,12 @@ __attribute__((noreturn)) void pn_oob(int64_t i, int64_t len) {
     die();
 }
 
+__attribute__((noreturn)) void pn_badshift(int32_t line) {
+    fflush(stdout);
+    fprintf(stderr, "panic: shift by a negative number on line %d\n", line);
+    die();
+}
+
 __attribute__((noreturn)) void pn_divzero(int32_t line) {
     fflush(stdout);
     fprintf(stderr, "panic: division by zero on line %d\n", line);

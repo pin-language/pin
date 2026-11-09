@@ -44,11 +44,11 @@ TOKEN_RE = re.compile(r"""
  |(?P<COMMENT>//[^\n]*|\#[^\n]*|/\*(?:.|\n)*?\*/)
  |(?P<OPEN><\?(?:php|pin)?(?![A-Za-z_])|\?>\s*\Z)
  |(?P<FLOAT>\d+\.\d+(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)
- |(?P<INT>\d+)
+ |(?P<INT>0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*|0[bB][01](?:_?[01])*|0[oO][0-7](?:_?[0-7])*|\d(?:_?\d)*)
  |(?P<STRING>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')
  |(?P<VAR>\$[A-Za-z_]\w*)
  |(?P<IDENT>[A-Za-z_]\w*)
- |(?P<OP>::|\+\+|--|->|\+=|-=|\*=|/=|%=|\.=|===|!==|==|!=|<=|>=|=>|&&|\|\||\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?&])
+ |(?P<OP>::|\+\+|--|->|\+=|-=|\*=|/=|%=|\.=|<<=|>>=|\|=|&=|\^=|===|!==|==|!=|<=|>=|=>|&&|\|\||<<|>>|\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?&|^~])
 """, re.VERBOSE)
 
 
@@ -495,7 +495,7 @@ class Parser:
         t = self.cur
         e = self.expr()
         op = self.cur.val
-        if self.cur.kind == "OP" and op in ("=", "+=", "-=", "*=", "/=", "%=", ".="):
+        if self.cur.kind == "OP" and op in ("=", "+=", "-=", "*=", "/=", "%=", ".=", "|=", "&=", "^=", "<<=", ">>="):
             if e.kind not in ("var", "index", "append", "field"):
                 raise CompileError("left side of an assignment must be a variable, a list item, a map entry or a "
                                    "property", t.line)
@@ -520,8 +520,8 @@ class Parser:
         return Node("exprstmt", t.line, expr=e)
 
     # lowest precedence first. PHP 8: '.' binds looser than + - but tighter than comparisons
-    BINARY = [("??",), ("||",), ("&&",), ("==", "!=", "===", "!=="), ("<", "<=", ">", ">="),
-              (".",), ("+", "-"), ("*", "/", "%")]
+    BINARY = [("??",), ("||",), ("&&",), ("|",), ("^",), ("&",), ("==", "!=", "===", "!=="), ("<", "<=", ">", ">="),
+              (".",), ("<<", ">>"), ("+", "-"), ("*", "/", "%")]
 
     def expr(self, level=None):
         if level is None:                          # ternary: lowest precedence
@@ -547,7 +547,7 @@ class Parser:
             right = self.expr(level + 1)
             op = {"===": "==", "!==": "!="}.get(t.val, t.val)
             left = Node("bin", t.line, op=op, l=left, r=right)
-            if level in (3, 4) and self.cur.kind == "OP" and self.cur.val in self.BINARY[level]:
+            if level in (6, 7) and self.cur.kind == "OP" and self.cur.val in self.BINARY[level]:
                 raise CompileError("chained comparisons need parentheses", self.cur.line)
         return left
 
@@ -609,7 +609,7 @@ class Parser:
                 var, body, val = self.catch_clause(value=True)
                 return Node("try", t.line, e=e, var=var, cbody=body, cval=val, catch=True)
             return Node("try", t.line, e=e, catch=False)
-        if t.kind == "OP" and t.val in ("!", "-"):
+        if t.kind == "OP" and t.val in ("!", "-", "~"):
             self.eat()
             return Node("unary", t.line, op=t.val, e=self.unary())
         if (t.val == "(" and self.peek().kind == "IDENT" and self.peek().val in ("int", "float", "string")
@@ -677,7 +677,7 @@ class Parser:
         t = self.cur
         if t.kind == "INT":
             self.eat()
-            v = int(t.val)
+            v = int(t.val.replace("_", ""), 0 if t.val[:2].lower() in ("0x", "0b", "0o") else 10)
             if v >= 2 ** 63:
                 raise CompileError(f"integer {t.val} is too large", t.line)
             return Node("int", t.line, val=v)
@@ -1006,8 +1006,7 @@ PHP_FUNCTION_HINTS = {
     "array_map": "no array_map() yet: use a for/foreach loop into a new list",
     "array_filter": "no array_filter() yet: use a foreach loop into a new list",
     "array_reduce": "no array_reduce() yet: use a foreach loop",
-        "array_push": "write $xs[] = $value;", "array_pop": "no array_pop() yet",
-        "count_chars": "not in Pin",
+        "array_push": "write $xs[] = $value;",         "count_chars": "not in Pin",
     "print_r": "no print_r(): echo json_encode($value)", "var_dump": "no var_dump(): echo json_encode($value)",
     "print": "use echo",
     "fgets": "try read_line() reads one line of standard input", "readline": "try read_line()",
@@ -1061,11 +1060,12 @@ NOT_IN_PIN = {
     "yield": "generators are not in Pin",
 }
 NORMALIZER_FORMS = {"FORM_D": 4, "NFD": 4, "FORM_KD": 8, "NFKD": 8, "FORM_C": 16, "NFC": 16, "FORM_KC": 32, "NFKC": 32}
-CONSTANTS = {"STR_PAD_LEFT": ("int", 0), "STR_PAD_RIGHT": ("int", 1), "STR_PAD_BOTH": ("int", 2), "PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
+CONSTANTS = {"JSON_PRETTY_PRINT": ("int", 128), "JSON_UNESCAPED_SLASHES": ("int", 64), "JSON_UNESCAPED_UNICODE": ("int", 256),
+             "JSON_THROW_ON_ERROR": ("int", 4194304), "STR_PAD_LEFT": ("int", 0), "STR_PAD_RIGHT": ("int", 1), "STR_PAD_BOTH": ("int", 2), "PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1133,6 +1133,9 @@ declare i64 @pn_is_numeric(ptr)
 declare ptr @pn_str_pad(ptr, i64, ptr, i64)
 declare ptr @pn_ucwords(ptr)
 declare ptr @pn_strrev(ptr)
+declare ptr @pn_json_pretty(ptr)
+declare void @pn_badshift(i32)
+declare void @pn_list_drop_first(ptr, i64)
 declare ptr @pn_date(ptr, i64)
 declare ptr @pn_str_trim_side(ptr, i64)
 declare ptr @pn_ucfirst(ptr, i64)
@@ -2330,6 +2333,11 @@ class FuncGen:
                     raise CompileError(f"'!' needs a bool but got {t}", e.line)
                 self.emit(f"{r} = xor i1 {v}, true")
                 return r, "bool", False
+            if e.op == "~":
+                if t != "int":
+                    raise CompileError(f"'~' works on ints, not {t}", e.line)
+                self.emit(f"{r} = xor i64 {v}, -1")
+                return r, "int", False
             if t == "int":
                 self.emit(f"{r} = sub i64 0, {v}")
             elif t == "float":
@@ -3547,6 +3555,24 @@ class FuncGen:
             r = self.tmp()
             self.emit(f"{r} = icmp {'eq' if op == '==' else 'ne'} i1 {lv}, {rv}")
             return r, "bool", False
+        if op in ("|", "&", "^", "<<", ">>"):          # bitwise: ints only (PHP 8)
+            if (lt, rt) != ("int", "int"):
+                raise CompileError(f"'{op}' works on ints, not {lt} and {rt}", e.line)
+            r = self.tmp()
+            if op in ("|", "&", "^"):
+                self.emit(f"{r} = {dict(zip('|&^', ('or', 'and', 'xor')))[op]} i64 {lv}, {rv}")
+                return r, "int", False
+            neg, big, amt, raw = self.tmp(), self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{neg} = icmp slt i64 {rv}, 0")
+            self.panic_if(neg, "@pn_badshift", e.line)          # PHP throws ArithmeticError
+            self.emit(f"{big} = icmp sge i64 {rv}, 64")         # 64 or more: 0 (or the sign for >>), as PHP
+            self.emit(f"{amt} = select i1 {big}, i64 63, i64 {rv}")
+            if op == "<<":
+                self.emit(f"{raw} = shl i64 {lv}, {amt}")
+                self.emit(f"{r} = select i1 {big}, i64 0, i64 {raw}")
+            else:
+                self.emit(f"{r} = ashr i64 {lv}, {amt}")      # by 63 when 64 or more: all sign bits
+            return r, "int", False
         if lt not in ("int", "float") or rt not in ("int", "float"):
             raise CompileError(f"'{op}' cannot combine {lt} and {rt}", e.line)
         if op == "%div" and (lt, rt) != ("int", "int"):
@@ -4299,6 +4325,45 @@ class FuncGen:
             self.emit(f"{n} = load i64, ptr {r}")
             self.call("void", "@pn_str_free", f"ptr {r}")
             return n, "int", False
+        if name in ("array_pop", "array_shift"):
+            self.argc(e, 1)
+            a = args[0]
+            root, props = path_root(a)
+            if root is None or a.kind not in ("var", "field", "index"):
+                raise CompileError(f"{name}() takes the item out of a list variable, e.g. $x = {name}($xs);", e.line)
+            t = self.static_type(a) or self.use_var(root, e.line)[1]
+            if not is_list(t):
+                raise CompileError(f"{name}() needs a list but {show(a)} is {t}", e.line)
+            et = elem_of(t)
+            if is_task(et) or et in ("db", "rows", "sub", "stream"):
+                raise CompileError(f"{name}() cannot take a {et} out of a list", e.line)
+            ot = et if is_opt(et) else "?" + et        # null when the list is empty, as in PHP
+            self.mutating(root, props, e.line, at=e.order, what="changed")
+            lst, _ = self.base_value(a, e.line)
+            ln, c = self.tmp(), self.tmp()
+            self.emit(f"{ln} = load i64, ptr {lst}, !tbaa !1")
+            self.emit(f"{c} = icmp eq i64 {ln}, 0")
+            start, take, end = self.label, self.newlabel("take"), self.newlabel("taken")
+            self.emit(f"br i1 {c}, label %{end}, label %{take}")
+            self.place_label(take)
+            idx = "0"
+            if name == "array_pop":
+                idx = self.tmp()
+                self.emit(f"{idx} = sub i64 {ln}, 1")
+            v = self.load_elem(self.list_elem_ptr(lst, et, idx), et)   # moved out: the list no longer has it
+            if name == "array_pop":
+                self.emit(f"store i64 {idx}, ptr {lst}, !tbaa !1")
+            else:
+                self.call("void", "@pn_list_drop_first", f"ptr {lst}", f"i64 {esize(et)}")
+            if is_opt_scalar(ot) and not is_opt(et):
+                v = self.wrap_opt(v, ot)
+            got = self.label
+            self.emit(f"br label %{end}")
+            self.place_label(end)
+            r = self.tmp()
+            none = "zeroinitializer" if is_opt_scalar(ot) else "null"
+            self.emit(f"{r} = phi {llty(ot)} [ {none}, %{start} ], [ {v}, %{got} ]")
+            return r, ot, is_heap(ot)
         if name in ("array_slice", "array_merge", "array_reverse"):
             self.argc(e, *{"array_slice": (2, 3), "array_merge": (2, 2), "array_reverse": (1, 1)}[name])
             v, t = self.borrow(args[0])
@@ -4539,6 +4604,25 @@ class FuncGen:
             return self.db_rows_into(e, hint)
         if name.startswith("db_"):
             return self.db_builtin(e)
+        if name == "json_encode" and len(args) == 2:          # json_encode($v, JSON_PRETTY_PRINT | ...)
+            fl, ft = self.borrow(args[1])
+            if ft != "int":
+                raise CompileError("json_encode()'s second argument is flags: JSON_PRETTY_PRINT (the other JSON_ "
+                                   "flags change nothing: Pin never escapes / or Unicode)", e.line)
+            j, _, _ = self.builtin(Node("call", e.line, name="json_encode", args=[args[0]]), None)
+            b, c = self.tmp(), self.tmp()
+            self.emit(f"{b} = and i64 {fl}, 128")
+            self.emit(f"{c} = icmp ne i64 {b}, 0")
+            start, pretty, end = self.label, self.newlabel("pretty"), self.newlabel("json")
+            self.emit(f"br i1 {c}, label %{pretty}, label %{end}")
+            self.place_label(pretty)
+            p = self.call("ptr", "@pn_json_pretty", f"ptr {j}")
+            self.call("void", "@pn_str_free", f"ptr {j}")
+            self.emit(f"br label %{end}")
+            self.place_label(end)
+            r = self.tmp()
+            self.emit(f"{r} = phi ptr [ {j}, %{start} ], [ {p}, %{pretty} ]")
+            return r, "string", True
         if name == "json_encode":
             self.argc(e, 1)
             v, t = self.borrow(args[0])
@@ -5052,7 +5136,7 @@ class FuncGen:
                 return
             if is_heap(vt):
                 raise CompileError(f"'{op}' does not work on {vt}", s.line)
-            bin_e = Node("bin", s.line, op=op[0], l=tg, r=s.val)
+            bin_e = Node("bin", s.line, op=op[:-1], l=tg, r=s.val)
             v, t = self.borrow(bin_e)
             v = self.coerce(v, t, vt, s.line, f"assigning to {name}")
             self.emit(f"store {llty(vt)} {v}, ptr {self.slot(name)}")
@@ -5254,6 +5338,9 @@ class FuncGen:
     def arith(self, a, at, b, bt, op, line):
         if at not in ("int", "float") or bt not in ("int", "float"):
             raise CompileError(f"'{op}' needs numbers", line)
+        if op[:-1] in ("|", "&", "^", "<<", ">>"):
+            raise CompileError(f"'{op}' works on int variables; for a list item or property write "
+                               f"$x[$i] = $x[$i] {op[:-1]} ...", line)
         if op[0] in "/%":
             raise CompileError(f"'{op}' on list/map items is not supported yet", line)
         tt = "float" if "float" in (at, bt) else "int"

@@ -1,0 +1,3 @@
+// a shift by a negative number panics (PHP throws ArithmeticError)
+$n = -1;
+echo 1 << $n;

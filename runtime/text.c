@@ -485,3 +485,47 @@ Str *pn_strrev(Str *s) {
     }
     return d;
 }
+
+// json_encode($v, JSON_PRETTY_PRINT): PHP's layout (4 spaces, ": ", empty [] and {} kept on one line) from the
+// compact text, which is valid JSON already
+Str *pn_json_pretty(Str *j) {
+    Str *d = str_alloc(j->len * 2 + 16);
+    int depth = 0;
+    for (int64_t i = 0; i < j->len; i++) {
+        char c = j->data[i];
+        if (c == '"') {                                // copy a string as it is, escapes included
+            int64_t k = i + 1;
+            while (k < j->len && j->data[k] != '"') k += j->data[k] == '\\' ? 2 : 1;
+            d = str_add_bytes(d, j->data + i, k - i + 1);
+            i = k;
+            continue;
+        }
+        if ((c == '[' || c == '{') && i + 1 < j->len && (j->data[i + 1] == ']' || j->data[i + 1] == '}')) {
+            d = str_add_bytes(d, j->data + i, 2);
+            i++;
+            continue;
+        }
+        if (c == '[' || c == '{' || c == ',') {
+            d = str_add_bytes(d, &c, 1);
+            if (c != ',') depth++;
+            d = str_add_bytes(d, "\n", 1);
+            for (int k = 0; k < depth; k++) d = str_add_bytes(d, "    ", 4);
+        } else if (c == ']' || c == '}') {
+            depth--;
+            d = str_add_bytes(d, "\n", 1);
+            for (int k = 0; k < depth; k++) d = str_add_bytes(d, "    ", 4);
+            d = str_add_bytes(d, &c, 1);
+        } else if (c == ':') {
+            d = str_add_bytes(d, ": ", 2);
+        } else {
+            d = str_add_bytes(d, &c, 1);
+        }
+    }
+    return d;
+}
+
+// array_shift: drop the first item (the compiler has read it already); the rest moves down
+void pn_list_drop_first(List *l, int64_t esize) {
+    memmove(l->data, (char *)l->data + esize, (size_t)((l->len - 1) * esize));
+    l->len--;
+}
