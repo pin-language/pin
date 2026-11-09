@@ -742,6 +742,8 @@ class Parser:
             if self.at("::"):                       # prices::price(...)
                 self.eat()
                 module, t = t.val, self.eat(kind="IDENT")
+            if module == "Normalizer" and t.val in NORMALIZER_FORMS and not self.at("("):
+                return Node("int", t.line, val=NORMALIZER_FORMS[t.val])     # PHP's intl constants
             if not self.at("("):
                 if t.val.startswith("PASSWORD_"):
                     raise CompileError(f"no {t.val} in Pin: password_hash($password) takes one argument (the "
@@ -1063,11 +1065,12 @@ NOT_IN_PIN = {
     "list": "list() destructuring is not in Pin; assign each value separately",
     "yield": "generators are not in Pin",
 }
+NORMALIZER_FORMS = {"FORM_D": 4, "NFD": 4, "FORM_KD": 8, "NFKD": 8, "FORM_C": 16, "NFC": 16, "FORM_KC": 32, "NFKC": 32}
 CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1121,6 +1124,8 @@ declare ptr @pn_grapheme_substr(ptr, i64, i64, i64)
 declare i64 @pn_mb_strpos(ptr, ptr)
 declare ptr @pn_mb_chr(i64)
 declare i64 @pn_mb_ord(ptr)
+declare ptr @pn_mb_case(ptr, i64)
+declare ptr @pn_normalize(ptr, i64)
 declare i64 @pn_time()
 declare void @pn_request_deadline(i64)
 declare i64 @pn_ord(ptr)
@@ -2970,7 +2975,7 @@ class FuncGen:
             return "null"
         if e.kind == "call" and self.fkey(e, quiet=True):
             return self.mod.funcs[self.fkey(e, quiet=True)][1]
-        if e.kind == "call" and e.name in ("strval", "substr", "mb_substr", "grapheme_substr", "mb_chr", "trim", "strtolower", "strtoupper", "json_encode",
+        if e.kind == "call" and e.name in ("strval", "substr", "mb_substr", "grapheme_substr", "mb_chr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "trim", "strtolower", "strtoupper", "json_encode",
                                            "implode", "url_path", "query_param", "form_param", "json_string",
                                            "db_json", "db_string", "db_error"):
             return "string"
@@ -3957,6 +3962,15 @@ class FuncGen:
             self.argc(e, 2)
             h, n = self.str_arg(e, 0), self.str_arg(e, 1)
             return self.call("i64", "@pn_mb_strpos", f"ptr {h}", f"ptr {n}"), "int", False
+        if name in ("mb_strtolower", "mb_strtoupper"):
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_mb_case", f"ptr {self.str_arg(e, 0)}", f"i64 {int(name == 'mb_strtoupper')}"), \
+                "string", True
+        if name == "normalizer_normalize":
+            self.argc(e, 1, 2)
+            s = self.str_arg(e, 0)
+            form = self.int_arg(e, 1) if len(args) == 2 else "16"      # Normalizer::FORM_C, as in PHP
+            return self.call("ptr", "@pn_normalize", f"ptr {s}", f"i64 {form}"), "string", True
         if name == "mb_chr":
             self.argc(e, 1)
             return self.call("ptr", "@pn_mb_chr", f"i64 {self.int_arg(e, 0)}"), "string", True
@@ -5838,8 +5852,12 @@ def link(ir, out):
                 r = subprocess.run(["clang", "-g", "-fsanitize=address,undefined", os.path.join(HERE, "runtime.c"), obj,
                                     "-lm", "-pthread", *db, "-o", out], capture_output=True, text=True)
         else:
-            r = subprocess.run(["clang", "-O2", "-pthread", "-Wno-override-module", ll, os.path.join(HERE, "runtime.c"),
-                                "-lm", *db, "-o", out], capture_output=True, text=True)
+            # each function and table in its own section, and the linker drops the unused ones: a program that
+            # never calls grapheme_* / normalizer_normalize() does not carry their Unicode tables
+            strip = "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections"
+            r = subprocess.run(["clang", "-O2", "-pthread", "-Wno-override-module", "-ffunction-sections",
+                                "-fdata-sections", ll, os.path.join(HERE, "runtime.c"), "-lm", *db, strip, "-o", out],
+                               capture_output=True, text=True)
     if r.returncode:
         if db and ("sqlite3.h" in r.stderr or "lsqlite3" in r.stderr):
             print("error: this program uses the database, which needs SQLite's development files. "

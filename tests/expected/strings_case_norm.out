@@ -1,0 +1,7 @@
+STRASSE Ǆ FI ไทย|οδυσσευς σ ας. ασα i̇|Äb
+5 6 != NFC equal 6
+fi 1 kg IV|ﬁ
+!= NFKC equal
+9 24 round trip
+plain ascii ||
+sorted

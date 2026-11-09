@@ -189,8 +189,10 @@ numbered list below is the older order; items 3, 4 and 7 are folded into P1–P5
 3. ~~**Strings**~~ (strings.md) ST1/ST3/ST4 built 2026-11-09: UTF-8 at the edges (request path/body → 400,
    the rest U+FFFD), `substr` boundary panic, `chr()` > 127 panics, `mb_*`, `grapheme_*` (table from Python
    3.15's unicodedata: `tools/gen_unicode.py`, checked by `tools/check_unicode.py`). HTTP `ab -k -c 50`
-   /user/42: 215k–218k req/s vs 202k–219k before. Left: ST2 `bytes`, `mb_strtolower/upper`, ST6
-   normalisation, SIMD validation.
+   /user/42: 215k–218k req/s vs 202k–219k before. ST5 `mb_strtolower/upper` and ST6 `normalizer_normalize`
+   built the same day (every code point alone + 200,000 strings equal to Python's). Binaries are linked with
+   dead stripping since then (hello: 148 KB → 54 KB), so the Unicode tables cost only programs that use them.
+   Left: ST2 `bytes`, SIMD validation.
 4. ~~**Null**~~ (null.md) steps 1–4 built on `next` 2026-11-08. Step 5 built 2026-11-09 (`{i64, i1}`; IR of all
    51 programs unchanged). Step 6 (`list<?T>`, `map<K,?T>`) built 2026-11-09. Left: property narrowing. Fresh-agent test of null done 2026-11-09
    (Sonnet, guide only: clean on the first `pin check`, all curl cases right; the guide gap on optional JSON fields fixed).

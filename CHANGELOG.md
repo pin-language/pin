@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`mb_strtolower`, `mb_strtoupper`** (full Unicode case, final sigma) and **`normalizer_normalize()`** with
+  `Normalizer::FORM_C` / `FORM_D` / `FORM_KC` / `FORM_KD` (strings.md ST5, ST6): every code point and 200,000
+  strings give what Python gives. Binaries are now linked with dead stripping: a program carries only the parts
+  of the runtime it uses (hello: 148 KB → 54 KB).
 - **Strings are always valid UTF-8** (design/strings.md ST1, ST3, ST4). A request whose path or body is not UTF-8
   gets 400; other text from outside (headers, `%XX` values, database columns, other servers' answers, `run()`,
   `read_line()`, `env()`) has bad bytes replaced by U+FFFD. `substr()` panics instead of cutting a character in

@@ -77,6 +77,26 @@ echo grapheme_substr($title, 0, 4), "…|", mb_substr($title, 0, 4), "…|", gra
   ["The same rules as `substr()` for negative and out-of-range values, in grapheme clusters.",
    "Never separates a tone mark or vowel from its letter, or an emoji from its modifier."],
   php="`grapheme_substr()`; PHP returns `false` when `$start` is past the end, Pin returns `\"\"`.")
+f("mb_strtolower", S, "mb_strtolower(string $s): string", "Lower-case copy for every script that has letter case.",
+  r'''echo mb_strtolower("ÄÖÜ ΟΔΥΣΣΕΥΣ Hello ไทย"), "\n";''',
+  ["Unicode's full mappings, and a Greek Σ at the end of a word becomes ς (as PHP 8.3 does).",
+   "Thai has no letter case: it is left as it is. `strtolower()` changes A–Z only."],
+  php="`mb_strtolower()` with UTF-8.")
+f("mb_strtoupper", S, "mb_strtoupper(string $s): string", "Upper-case copy for every script that has letter case.",
+  r'''echo mb_strtoupper("straße éa ไทย"), "\n";''',
+  ["Full mappings: `ß` becomes `SS`, so the result can be longer."],
+  php="`mb_strtoupper()` with UTF-8.")
+f("normalizer_normalize", S, "normalizer_normalize(string $s, int $form = Normalizer::FORM_C): string",
+  "The same text in one Unicode normal form, so that equal-looking strings compare equal.",
+  r'''$a = "café";                                  // é as one code point
+$b = "cafe" . mb_chr(769);                     // e + a combining accent
+echo $a == $b ? "same" : "different", " ", normalizer_normalize($a) == normalizer_normalize($b) ? "same" : "different", "\n";
+echo normalizer_normalize("ﬁle ①", Normalizer::FORM_KC), "\n";''',
+  ["`Normalizer::FORM_C` (the default), `FORM_D`, `FORM_KC`, `FORM_KD` (also `Normalizer::NFC` ...).",
+   "**Usernames, emails and lookup keys: `FORM_KC` before storing and before comparing**: it also folds "
+   "look-alikes such as `ﬁ` → `fi`, and the two spellings of Thai `ำ`.",
+   "ASCII text comes back unchanged at once."],
+  php="`normalizer_normalize()` (PHP's intl extension); Pin returns the string, never `false`.")
 f("strpos", S, "strpos(string $haystack, string $needle): int", "Byte position of the first match, or -1.",
   r'''echo strpos("hello", "ll"), " ", strpos("hello", "z"), " ", strpos("abc", ""), "\n";''',
   ["An empty needle matches at 0."],
