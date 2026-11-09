@@ -79,7 +79,10 @@ static void blk_link(Blk *b) {
 
 static void blk_unlink(Blk *b) { b->prev->next = b->next; b->next->prev = b->prev; }
 
+static void stack_headroom(void);           // tasks.c: panic before malloc / stdio when the stack is nearly full
+
 static void *xmalloc(size_t n) {
+    stack_headroom();
     Blk *b = malloc(sizeof(Blk) + n);
     if (!b) oom();
     if (cur_req) blk_link(b); else b->prev = b->next = NULL;
@@ -89,6 +92,7 @@ static void *xmalloc(size_t n) {
 static void *xcalloc(size_t n) { return memset(xmalloc(n), 0, n); }
 
 static void *xrealloc(void *p, size_t n) {
+    stack_headroom();
     if (!p) return xmalloc(n);
     Blk *b = (Blk *)p - 1;
     int linked = b->prev != NULL;

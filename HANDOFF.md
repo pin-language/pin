@@ -160,6 +160,7 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | B13 | ~~HTTP/1.0 keep-alive: no `Connection: keep-alive` in the answer, so `ab -k` hung~~ fixed 2026-10-26 (test in limits) | server | low |
 | B14 | ~~`password_hash` ~0.5 s~~ arm64 uses the SHA-256 instructions since 2026-11-08 (~0.04 s on M2). x86 SHA-NI built 2026-11-09 (CPUID check; `PIN_SHA_SOFTWARE=1` forces the portable code; CI step prints whether the runner has `sha_ni` and checks both; the ubuntu-latest runner has it: tests/crypto.pn 0.28 s with it, 1.22 s without, outputs equal). Untested: Linux arm64's getauxval path, no CI runner | runtime | speed |
 | B16 | ~~a list literal kept a borrowed heap item (`[$maybe ?? [7]]`) or freed an owned one it had pushed (`[try f(), ...]` of lists) — use-after-free~~ fixed 2026-11-09 (`tests/literal_items.pn`). `tools/fuzz_ownership.py` (306 programs: value kinds × places, ASAN + UBSAN) finds nothing else | `pinac.py listlit` | done |
+| B17 | ~~a recursion too deep crashed the whole server (any request could take it down)~~ fixed 2026-11-09: guard-page fault → panic via a sigaltstack handler; xmalloc / xrealloc / printing check a per-thread `stack_limit` first so the overflow never happens inside malloc or stdio with their lock held (that variant trapped). `tests/panics/stack_overflow.pn`, `/deep` in tests/server/panics.pn | `runtime/tasks.c` | done |
 | B15 | ~~a full pool makes `db_open()` panic (500)~~ fixed 2026-11-09: still a panic, but it answers 503 (also for a PostgreSQL server that is down): `Req.panic_status` | runtime | done |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int
@@ -207,7 +208,7 @@ numbered list below is the older order; items 3, 4 and 7 are folded into P1–P5
 8. ~~Concurrency~~ done in 0.7.0 (C1–C11; see concurrency.md status for what differs). Runtime: tasks +
    scheduler + timer heap + wait_fds in runtime.c ("tasks"), Hub ("hub"), client ("HTTP client and run()").
    Compiler: go_expr / await_expr / tasks_done / task_borrows in pinac.py. TLS: decided no (owner, 2026-10-25, design/tls.md). Next ideas: loop-head
-   cancellation checks, stack-overflow → panic message, durable await (research first).
+   cancellation checks, ~~stack-overflow → panic message~~ (B17), durable await (research first).
 9. ~~Modules/imports~~ done in 0.4.0: `import`/`export`/`mod::fn()`, packages via `pin get` + `pin.lock`
    (commit + sha256, checked every build). Not yet: transitive package resolution (a package's own package
    imports must be `pin get`-ed by the project), package versions by semver ranges, a package index.

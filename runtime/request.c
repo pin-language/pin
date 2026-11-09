@@ -323,9 +323,10 @@ Str *pn_jget_at(Str *json, int64_t i) {
 
 // ============================================================================ printing
 
-void pn_print_int(int64_t v) { printf("%lld", (long long)v); }
-void pn_print_str(Str *s) { fwrite(s->data, 1, (size_t)s->len, stdout); }
+void pn_print_int(int64_t v) { stack_headroom(); printf("%lld", (long long)v); }
+void pn_print_str(Str *s) { stack_headroom(); fwrite(s->data, 1, (size_t)s->len, stdout); }
 void pn_print_float(double v) {
+    stack_headroom();
     char buf[48];
     fmt_float(buf, sizeof buf, v);
     fputs(buf, stdout);

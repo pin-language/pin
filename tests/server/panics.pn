@@ -1,4 +1,6 @@
 // A handler that panics must answer 500, free what the request allocated, and keep serving.
+function deep(int $n, string $acc): string { $s = deep($n + 1, $acc . "y"); return $s . ""; }
+
 function boom(): string {
     $big = fill(1000000, 7);            // 8 MB that only the panic cleanup can free
     map<string,int> $m = ["a" => 1];
@@ -32,6 +34,7 @@ function lookup(string $path): string throws {
 }
 
 function handle(string $method, string $path, string $body): string throws {
+    if ($path == "/deep") { return deep(0, "x"); }      // a recursion with no end: stack overflow
     if ($path == "/boom") { return boom(); }
     if ($path == "/oob") { return oob(); }
     if ($path == "/objects") { return objects(); }

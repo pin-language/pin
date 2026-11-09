@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A recursion that goes too deep no longer kills the server**: it is a panic, so that request answers 500 and the
+  others go on (before, the whole process crashed: one request could take a server down). Outside a server it is a
+  clear message and exit code 1. Guard pages below task stacks grew from one page to 64 KB. Throughput unchanged.
 - `request_ip()`: the client's address (like `$_SERVER['REMOTE_ADDR']`).
 - **Fixed a use-after-free:** a list literal whose items were lists or maps from `try f()` (or a borrowed
   `$maybe ?? [...]`) freed them while the new list still held them. List and map literals now take owned items,

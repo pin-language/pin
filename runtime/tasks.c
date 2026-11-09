@@ -48,6 +48,7 @@ typedef struct Task {
 #define MAIN_STACK (8u << 20)           // main gets what a normal program's stack would have
 
 static __thread Task *cur_task;         // NULL = the scheduler (the thread's own stack)
+static __thread char *stack_limit;      // the running task's stack with 128 KB left (stack_headroom)
 static __thread void *sched_sp;
 static __thread __attribute__((unused)) const void *sched_bottom;
 static __thread __attribute__((unused)) size_t sched_size;
@@ -116,7 +117,66 @@ static void frame_init(Task *t) {
     t->sp = f;
 }
 
+// 64 KB of unmapped pages below every task stack: a function whose frame is bigger than one page could step
+// over a single guard page into other memory.
+static size_t guard_size(void) {
+    size_t p = page_size();
+    return p >= 65536 ? p : (65536 / p) * p;
+}
+
+// ---- stack overflow (a recursion too deep): the fault in the guard pages becomes a panic, so inside a request
+// it is that request's 500 and the server keeps running, and elsewhere a message instead of a crash. The
+// handler runs on its own small stack (sigaltstack), set up per thread before its first task. Not under ASAN,
+// which has its own handler.
+static void overflow_handler(int sig, siginfo_t *info, void *uc) {
+    (void)uc;
+    Task *t = cur_task;
+    char *a = info->si_addr;
+    if (t && t->map && a >= t->map && a < t->map + guard_size()) {
+        static const char msg[] = "panic: stack overflow: a recursion went too deep (1 MB of stack per request or go task)\n";
+        if (write(2, msg, sizeof msg - 1) < 0) {}
+        if (cur_jmp) longjmp(*cur_jmp, 1);       // the request's or task's panic path (as die() does)
+        _exit(1);
+    }
+    signal(sig, SIG_DFL);                       // any other fault: crash as before (and leave a core)
+}
+
+// A stack overflow inside malloc or stdio would leave their lock held after the jump out of the handler (the
+// next free() then traps). So the runtime's entry points that take such locks (xmalloc, xrealloc, printing)
+// check first: with less than 128 KB of stack left, they panic the ordinary way, where nothing is held.
+static void stack_headroom(void) {
+    char here;
+    if (&here < stack_limit)                    // NULL outside tasks: never
+        panic_msg("stack overflow: a recursion went too deep (1 MB of stack per request or go task)");
+}
+
+static void overflow_install(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = overflow_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;   // NODEFER: a second overflow after the jump still works
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);                // macOS reports a guard page fault as SIGBUS
+}
+
+static void overflow_guard_thread(void) {
+#ifndef PN_ASAN
+    static __thread int ready;
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    if (ready) return;
+    ready = 1;
+    stack_t ss = {0};
+    ss.ss_size = 64 * 1024;
+    ss.ss_sp = malloc(ss.ss_size);              // kept for the thread's life
+    if (!ss.ss_sp) return;
+    sigaltstack(&ss, NULL);
+    pthread_once(&once, overflow_install);
+#endif
+}
+
 static Task *task_alloc(size_t stack) {
+    overflow_guard_thread();
     Task *t;
     if (stack == TASK_STACK && pool) {
         t = pool; pool = t->next_ready; npool--;
@@ -126,15 +186,15 @@ static Task *task_alloc(size_t stack) {
     } else {
         t = calloc(1, sizeof *t);
         if (!t) oom();
-        t->map_size = stack + page_size();
+        t->map_size = stack + guard_size();
         t->map = mmap(NULL, t->map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (t->map == MAP_FAILED) oom();
-        mprotect(t->map, page_size(), PROT_NONE);   // the guard page
+        mprotect(t->map, guard_size(), PROT_NONE);  // the guard pages
     }
     t->heap_idx = -1;
 #ifdef PN_ASAN
     // a reused stack still carries the previous task's poisoned redzones
-    __asan_unpoison_memory_region(t->map + page_size(), t->map_size - page_size());
+    __asan_unpoison_memory_region(t->map + guard_size(), t->map_size - guard_size());
 #endif
     return t;
 }
@@ -149,7 +209,7 @@ static void task_unlink_req(Task *t) {
 static void task_release(Task *t) {
     task_unlink_req(t);
     if (t->queued) { t->zombie = 1; return; }       // still in the ready queue: freed when popped
-    if (t->map_size == TASK_STACK + page_size() && npool < 64) {
+    if (t->map_size == TASK_STACK + guard_size() && npool < 64) {
         t->next_ready = pool; pool = t; npool++;
     } else {
         munmap(t->map, t->map_size);
@@ -234,17 +294,19 @@ static int64_t timers_fire(int64_t now) {
 // --- switching
 static void enter_task(Task *t) {               // from the scheduler into t, until t parks or ends
     cur_task = t;
+    stack_limit = t->map + guard_size() + 128 * 1024;
     t->state = T_RUNNING;
     cur_req = t->req; cur_jmp = t->jmp;
 #ifdef PN_ASAN
     void *fake = NULL;
-    __sanitizer_start_switch_fiber(&fake, t->map + page_size(), t->map_size - page_size());
+    __sanitizer_start_switch_fiber(&fake, t->map + guard_size(), t->map_size - guard_size());
 #endif
     pn_ctx_switch(&sched_sp, t->sp);
 #ifdef PN_ASAN
     __sanitizer_finish_switch_fiber(fake, NULL, NULL);
 #endif
     cur_task = NULL; cur_req = NULL; cur_jmp = NULL;
+    stack_limit = NULL;
     if (t->state == T_DONE && t->auto_release) task_release(t);
 }
 

@@ -347,7 +347,8 @@ if "--no-server" not in sys.argv:
             for path, want in [("/boom", (500, err500)), ("/ok", (200, '{"ok":true}')), ("/oob", (500, err500)), ("/objects", (500, err500)),
                                ("/notfound", (404, '{"error":"Not Found"}')), ("/odd", (500, err500)),
                                ("/caught", (200, '{"code":404,"message":"no such thing: /notfound"}')),
-                               ("/overflow", (500, err500)), ("/ok", (200, '{"ok":true}'))]:
+                               ("/overflow", (500, err500)), ("/deep", (500, err500)), ("/deep", (500, err500)),
+                               ("/ok", (200, '{"ok":true}'))]:
                 got = http_get(8085, path)
                 if got == want:
                     ok("GET " + path)

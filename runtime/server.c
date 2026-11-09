@@ -769,7 +769,7 @@ static int serve_threads(void) {
 void pn_serve(int64_t port, Handler handler) {
     if (!handler) panic_msg("serve(): no handler compiled in");
     if (cur_task) {               // called from main's task: from here on this stack runs the scheduler
-        cur_task = NULL;
+        cur_task = NULL; stack_limit = NULL;
         cur_req = NULL; cur_jmp = NULL;
     }
     pn_user_handler = handler;
