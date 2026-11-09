@@ -1,0 +1,10 @@
+// <=> (each side evaluated once), and array_map / array_filter with built-in names
+echo 1 <=> 2, " ", 2 <=> 2, " ", 3.5 <=> 1, " ", "b" <=> "a", "\n";
+class P { public function __construct(public string $name, public int $price) {} }
+function by_price(P $a, P $b): int { return $a->price <=> $b->price; }
+list<P> $ps = [new P("tea", 45), new P("rice", 30)];
+usort($ps, "by_price");
+echo $ps[0]->name, "\n";
+echo json_encode(array_map("strtoupper", ["a", "ไทย", "b"])), json_encode(array_map("strlen", ["ab", "ไ"])), json_encode(array_map("intval", ["4", "x"])), json_encode(array_map("abs", [-1.5, 2.0])), json_encode(array_filter(["12", "a", "7"], "ctype_digit")), json_encode(array_map("trim", [" x "])), "\n";
+function noisy(int $x): int { echo "[", $x, "]"; return $x; }
+echo noisy(1) <=> noisy(2), "\n";

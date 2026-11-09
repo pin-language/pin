@@ -97,6 +97,8 @@ offset inside a character panics, a request whose path or body is not UTF-8 gets
   the compiler writes the loop); `array_filter` renumbers from 0.
 - **`usort($xs, "by_price")`**: sort lists of objects (or ints, floats, strings, lists, maps) with a function of
   the same file named as a string, `(T $a, T $b): int` checked at compile time; stable, as PHP 8.
+- **`<=>`** (each side evaluated once) for `usort` comparisons; `array_map` / `array_filter` also take one-argument
+  built-ins by name (`array_map("strtoupper", $xs)`); the closure messages say how to pass a named function.
 - **Bit operators** `| & ^ ~ << >>` and `|= &= ^= <<= >>=` on ints (PHP 8 precedence; a shift of 64+ is 0, a
   negative shift panics), and `0xFF` / `0b1010` / `0o17` / `1_000_000` literals. `array_pop` / `array_shift` (give
   `?T`), `json_encode($v, JSON_PRETTY_PRINT)`; the other `JSON_` flags are accepted and change nothing.

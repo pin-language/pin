@@ -48,7 +48,7 @@ TOKEN_RE = re.compile(r"""
  |(?P<STRING>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')
  |(?P<VAR>\$[A-Za-z_]\w*)
  |(?P<IDENT>[A-Za-z_]\w*)
- |(?P<OP>::|\+\+|--|->|\*\*=|\*\*|\+=|-=|\*=|/=|%=|\.=|<<=|>>=|\|=|&=|\^=|===|!==|==|!=|<=|>=|=>|&&|\|\||<<|>>|\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?&|^~])
+ |(?P<OP>::|\+\+|--|->|<=>|\*\*=|\*\*|\+=|-=|\*=|/=|%=|\.=|<<=|>>=|\|=|&=|\^=|===|!==|==|!=|<=|>=|=>|&&|\|\||<<|>>|\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?&|^~])
 """, re.VERBOSE)
 
 
@@ -520,7 +520,7 @@ class Parser:
         return Node("exprstmt", t.line, expr=e)
 
     # lowest precedence first. PHP 8: '.' binds looser than + - but tighter than comparisons
-    BINARY = [("??",), ("||",), ("&&",), ("|",), ("^",), ("&",), ("==", "!=", "===", "!=="), ("<", "<=", ">", ">="),
+    BINARY = [("??",), ("||",), ("&&",), ("|",), ("^",), ("&",), ("==", "!=", "===", "!==", "<=>"), ("<", "<=", ">", ">="),
               (".",), ("<<", ">>"), ("+", "-"), ("*", "/", "%")]
 
     def expr(self, level=None):
@@ -1052,12 +1052,24 @@ NOT_IN_PIN = {
     "static": "Pin has no static variables: pass values as parameters",
     "const": "const is not in Pin yet; use a variable or a function that returns the value",
     "define": "define() is not in Pin yet; use a variable or a function that returns the value",
-    "function": "anonymous functions (closures) are not in Pin yet; declare a named function",
-    "fn": "arrow functions are not in Pin yet; declare a named function",
+    "function": "anonymous functions (closures) are not in Pin yet; declare a named function and pass its name: "
+                "usort($xs, \"by_price\"), array_map(\"label\", $xs), array_filter($xs, \"is_open\")",
+    "fn": "arrow functions are not in Pin yet; declare a named function and pass its name: "
+          "array_map(\"double\", $xs) with function double(int $x): int { return $x * 2; }",
     "array": "array() is not in Pin: write [1, 2] for a list<int> or [\"k\" => 1] for a map<string,int>",
     "list": "list() destructuring is not in Pin; assign each value separately",
     "yield": "generators are not in Pin",
 }
+# built-ins array_map / array_filter take by name: the result type for an item type (or the type itself)
+ONE_ARG_BUILTINS = {**{n: "string" for n in ("strtoupper", "strtolower", "trim", "ltrim", "rtrim", "ucfirst", "lcfirst",
+                                             "ucwords", "strrev", "htmlspecialchars", "mb_strtolower", "mb_strtoupper",
+                                             "base64_encode", "rawurlencode", "rawurldecode", "urldecode", "nl2br",
+                                             "normalizer_normalize", "strval")},
+                    **{n: "int" for n in ("strlen", "mb_strlen", "grapheme_strlen", "intval")},
+                    **{n: "bool" for n in ("is_numeric", "ctype_digit", "ctype_alpha", "ctype_alnum", "ctype_space",
+                                           "ctype_upper", "ctype_lower", "ctype_xdigit", "json_validate")},
+                    "floatval": "float", "sqrt": "float", "floor": "float", "ceil": "float", "round": "float",
+                    "abs": lambda t: t, "json_encode": "string"}
 NORMALIZER_FORMS = {"FORM_D": 4, "NFD": 4, "FORM_KD": 8, "NFKD": 8, "FORM_C": 16, "NFC": 16, "FORM_KC": 32, "NFKC": 32}
 CONSTANTS = {"FILTER_VALIDATE_INT": ("int", 257), "FILTER_VALIDATE_BOOL": ("int", 258), "FILTER_VALIDATE_BOOLEAN": ("int", 258),
              "FILTER_VALIDATE_FLOAT": ("int", 259), "FILTER_VALIDATE_URL": ("int", 273), "FILTER_VALIDATE_EMAIL": ("int", 274),
@@ -3552,6 +3564,16 @@ class FuncGen:
     # --- operators
     def binary(self, e):
         op = e.op
+        if op == "<=>":                         # -1, 0 or 1 (PHP's spaceship), for usort comparisons
+            lv, lt = self.borrow(e.l)
+            rv, rt = self.borrow(e.r)              # each side once; the comparisons reuse the values
+            l, r = Node("val", e.line, v=lv, t=lt), Node("val", e.line, v=rv, t=rt)
+            lt_, gt_ = (self.binary(Node("bin", e.line, op=o, l=l, r=r))[0] for o in ("<", ">"))
+            a, b, r = self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{a} = zext i1 {gt_} to i64")
+            self.emit(f"{b} = zext i1 {lt_} to i64")
+            self.emit(f"{r} = sub i64 {a}, {b}")
+            return r, "int", False
         if op in ("==", "!=") and "null" in (e.l.kind, e.r.kind):
             return self.null_compare(e)
         if op in ("&&", "||"):
@@ -4560,12 +4582,16 @@ class FuncGen:
             et = elem_of(lt)
             key = self.fkey(Node("call", e.line, name=fe.val, args=[]), quiet=True) if fe.kind == "str" else None
             sig = self.mod.funcs.get(key) if key else None
+            if sig is None and fe.kind == "str" and fe.val in ONE_ARG_BUILTINS:     # array_map("strtoupper", $xs)
+                bt = ONE_ARG_BUILTINS[fe.val]
+                sig = ([et], bt(et) if callable(bt) else bt)
+                key = ("builtin", fe.val)
             want = "bool" if name == "array_filter" else None
             shape = (f'array_map("name", $xs) needs a function of this file taking one {et}: function name({et} $x): T'
                      if name == "array_map" else
                      f'array_filter($xs, "name") needs a function of this file declared as function name({et} $x): bool')
             if not sig or sig[0] != [et] or (want and sig[1] != want) or sig[1] == "void" or \
-                    self.mod.throws.get(key, False):
+                    (not isinstance(key, tuple) and self.mod.throws.get(key, False)):
                 raise CompileError(shape + " (it cannot throw)", e.line)
             rt = sig[1] if name == "array_map" else et
             if name == "array_filter" and uncopyable(et):
@@ -4584,7 +4610,16 @@ class FuncGen:
             self.emit(f"br i1 {c}, label %{body}, label %{done}")
             self.place_label(body)
             x = self.load_elem(self.list_elem_ptr(lv, et, i), et)
-            r = self.call(llty(sig[1]), f'@"f.{key}"', f"{llty(et)} {x}")
+            if isinstance(key, tuple):              # a built-in: its own code, on the item
+                mark = len(self.temps)
+                r, rtt, rowned = self.builtin(Node("call", e.line, name=key[1], args=[Node("val", e.line, v=x, t=et)]), None)
+                if rtt != sig[1]:
+                    raise CompileError(f"internal: {key[1]}() gave {rtt}", e.line)
+                if is_heap(rtt) and not rowned:
+                    r = self.call("ptr", copy_fn(rtt), f"ptr {r}") if rtt != "string" else self.dup_str(r)
+                self.flush_temps(mark)
+            else:
+                r = self.call(llty(sig[1]), f'@"f.{key}"', f"{llty(et)} {x}")
             if name == "array_map":                 # the result is new (a returned value is owned)
                 v = r
             else:

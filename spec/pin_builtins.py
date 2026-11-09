@@ -225,7 +225,9 @@ f("array_map", L, "array_map(string $function, list<T> $xs): list<R>", "A new li
   r'''function label(int $satang): string { return number_format($satang / 100, 2); }
 echo json_encode(array_map("label", [4500, 12000])), "\n";''',
   ["`$function` is the name of a function in the same file taking one `T` and giving any `R`; it cannot be "
-   "`throws`. The compiler writes the loop: no callback at run time."],
+   "`throws`. The compiler writes the loop: no callback at run time.",
+   "One-argument built-ins work by name too: `array_map(\"strtoupper\", $names)`, `array_map(\"intval\", $parts)`, "
+   "`array_filter($xs, \"ctype_digit\")`."],
   php="`array_map('label', $xs)` with a function name (Pin has no closures yet); one list.")
 f("array_filter", L, "array_filter(list<T> $xs, string $keep): list<T>", "A new list of the items the function keeps.",
   r'''function cheap(int $price): bool { return $price < 100; }
