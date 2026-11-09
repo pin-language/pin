@@ -1,6 +1,21 @@
-# HANDOFF — state as of 2026-11-08 (v0.8.0 released; the 0.9.0 set on `next`, not released)
+# HANDOFF — state as of 2026-11-09 (v0.8.0 released; the 0.9.0 set on `next`, not released)
 
-## 0. Next session (updated 2026-11-08)
+## 0. Next session (updated 2026-11-09)
+
+**2026-11-09 in one place** (all on `next`, CI green on Linux and macOS for pin and tack; nothing released):
+null complete (steps 5–6, property narrowing, `?int` through `go`); strings ST1/ST3–ST6 (UTF-8 always, `substr`
+panic, `chr` > 127 panics, `mb_*`, `grapheme_*`, case, `normalizer_normalize`; tables from Python 3.15's
+unicodedata, `tools/check_unicode.py` = 0 differences); `time()`, `request_ip()`, `db_all` / `db_one`; 503 for a
+full pool (B15); use-after-free in list literals (B16, found while testing; `tools/fuzz_ownership.py` added);
+stack overflow = panic, not a server crash (B17); x86 SHA-NI; dead stripping (hello 148 → 54 KB). Tack:
+PostgreSQL, cookie sessions + CSRF, rate limits (+ `Retry-After`), `client_ip()`, `db_all`/`db_one` columns
+checked at build time. K6 measured and **not built** (1.6 µs a query, pool.md). Two fresh-agent tests (Pin
+guide; Tack README): both compiled with 0–1 real errors; their doc gaps are fixed. HTTP throughput unchanged
+throughout (ab: ~205k–220k req/s on /user/42). CHANGELOG "Unreleased" is grouped and ready for 0.9.0.
+Left (not started): ST2 `bytes`, SIMD UTF-8, loop-head cancellation (costs tight loops), transitive packages /
+semver, Linux arm64 SHA path untested (no runner). Owner decisions: release 0.9.0 when, make tack public,
+tack.md Q1–Q4.
+
 
 **Tack M1–M6 are built** (2026-10-26 / 2026-11-08): github.com/pin-language/tack, branch `next` (its default:
 the first push; the repository is **private**), local clone ../pin-tack. M1 file routing, M2 OpenAPI 3.1 from
