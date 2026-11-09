@@ -49,6 +49,13 @@ jobs:
         run: >
           tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn tests/db_pool.pn tests/crypto.pn tests/json_decode.pn tests/bytes.pn tests/classes.pn tests/nested.pn tests/errors_ok.pn tests/tasks.pn tests/hub.pn tests/json_nested.pn tests/run_client_errors.pn tests/null_basics.pn tests/null_more.pn tests/null_linked.pn tests/null_json.pn tests/null_narrow.pn tests/null_ownership.pn tests/null_scalars.pn tests/null_scalar_class.pn tests/null_scalar_flow.pn tests/null_items.pn tests/null_items_class.pn tests/null_items_more.pn tests/strings_utf8.pn tests/strings_case_norm.pn tests/null_narrow_fields.pn tests/null_tasks.pn
           examples/wordcount.pn examples/ownership.pn tests/bench/listsum.pn
+      - name: SHA-256 on x86 (SHA-NI when the CPU has it, then the portable code)
+        if: runner.os == 'Linux'
+        run: |
+          grep -m1 -o -w sha_ni /proc/cpuinfo || echo "this runner has no SHA-NI"
+          mkdir -p build && python3 pinac.py tests/crypto.pn -o build/crypto_x86
+          time build/crypto_x86 | diff - tests/expected/crypto.out
+          time PIN_SHA_SOFTWARE=1 build/crypto_x86 | diff - tests/expected/crypto.out
       - name: HTTP servers under ASAN + UBSAN (sanitize.sh cannot run programs that never exit)
         run: python3 tests/run_tests.py --sanitize
       - name: Installer (install.sh from this checkout into a temp folder)

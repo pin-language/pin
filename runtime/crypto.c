@@ -5,6 +5,10 @@
 // Random bytes come from the operating system (getentropy: macOS, Linux glibc 2.25+).
 
 #include <sys/random.h>
+#if defined(__x86_64__)
+#include <cpuid.h>
+#include <immintrin.h>
+#endif
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #if defined(__linux__)
@@ -69,7 +73,47 @@ static void sha_block_arm(Sha256 *s, const uint8_t *p) {
 }
 #endif
 
-#if defined(__aarch64__)
+#if defined(__x86_64__)
+// The same block with the x86 SHA extensions (Intel since Goldmont / Ice Lake, AMD since Zen): the state is kept
+// as ABEF / CDGH, as the instructions want it. Checked by tests/crypto.pn's vectors on CI's x86 runners.
+__attribute__((target("sha,sse4.1,ssse3")))
+static void sha_block_x86(Sha256 *s, const uint8_t *p) {
+    const __m128i swap = _mm_set_epi64x(0x0c0d0e0f08090a0bULL, 0x0405060700010203ULL);   // big-endian words
+    __m128i t = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)s->h), 0xB1);          // CDAB
+    __m128i s1 = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)(s->h + 4)), 0x1B);   // EFGH
+    __m128i s0 = _mm_alignr_epi8(t, s1, 8);                                               // ABEF
+    s1 = _mm_blend_epi16(s1, t, 0xF0);                                                    // CDGH
+    __m128i a0 = s0, a1 = s1;
+    __m128i m0 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)p), swap);
+    __m128i m1 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 16)), swap);
+    __m128i m2 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 32)), swap);
+    __m128i m3 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 48)), swap);
+    for (int i = 0; i < 16; i++) {
+        __m128i w = _mm_add_epi32(m0, _mm_loadu_si128((const __m128i *)(SHA_K + 4 * i)));
+        s1 = _mm_sha256rnds2_epu32(s1, s0, w);
+        s0 = _mm_sha256rnds2_epu32(s0, s1, _mm_shuffle_epi32(w, 0x0E));
+        __m128i n = m0;
+        if (i < 12)
+            n = _mm_sha256msg2_epu32(_mm_add_epi32(_mm_sha256msg1_epu32(m0, m1), _mm_alignr_epi8(m3, m2, 4)), m3);
+        m0 = m1; m1 = m2; m2 = m3; m3 = n;
+    }
+    s0 = _mm_add_epi32(s0, a0);
+    s1 = _mm_add_epi32(s1, a1);
+    t = _mm_shuffle_epi32(s0, 0x1B);                                                      // FEBA
+    s1 = _mm_shuffle_epi32(s1, 0xB1);                                                     // DCHG
+    _mm_storeu_si128((__m128i *)s->h, _mm_blend_epi16(t, s1, 0xF0));                      // DCBA
+    _mm_storeu_si128((__m128i *)(s->h + 4), _mm_alignr_epi8(s1, t, 8));                   // HGFE
+}
+
+static int sha_x86_ok(void) {                   // SHA (CPUID 7: EBX bit 29), SSE4.1 and SSSE3 (CPUID 1: ECX 19, 9)
+    unsigned a, b, c, d;
+    if (!__get_cpuid(1, &a, &b, &c, &d) || !(c & (1u << 19)) || !(c & (1u << 9))) return 0;
+    if (!__get_cpuid_count(7, 0, &a, &b, &c, &d)) return 0;
+    return (b >> 29) & 1;
+}
+#endif
+
+#if defined(__aarch64__) || defined(__x86_64__)
 static int sha_hw = -1;                         // 1: the CPU has SHA-256 instructions (found once)
 #endif
 
@@ -87,6 +131,13 @@ static void sha_block(Sha256 *s, const uint8_t *p) {
         __atomic_store_n(&sha_hw, hw, __ATOMIC_RELAXED);
     }
     if (hw) { sha_block_arm(s, p); return; }
+#elif defined(__x86_64__)
+    int hw = __atomic_load_n(&sha_hw, __ATOMIC_RELAXED);
+    if (hw < 0) {
+        hw = getenv("PIN_SHA_SOFTWARE") ? 0 : sha_x86_ok();   // PIN_SHA_SOFTWARE=1: the portable code (for tests)
+        __atomic_store_n(&sha_hw, hw, __ATOMIC_RELAXED);
+    }
+    if (hw) { sha_block_x86(s, p); return; }
 #endif
     sha_block_c(s, p);
 }

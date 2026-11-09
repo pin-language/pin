@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- SHA-256 uses the x86 SHA extensions when the CPU has them (as it already did on arm64): `password_hash()` on
+  Linux x86 servers gets the same ~13x as on Apple M2.
 - A request whose `db_open()` finds no free pooled connection within 5 s, or a PostgreSQL server that does not
   answer, now gets **503** instead of 500 (B15). It is still a panic; only the status changed.
 - `go` tasks take and give `?int`, `?float`, `?bool` (also through `await_all` and `await_timeout`).
