@@ -88,6 +88,9 @@ offset inside a character panics, a request whose path or body is not UTF-8 gets
 
 ### Language and built-ins
 
+- `ksort` / `krsort` / `asort` / `arsort` (stable), `range`, `array_count_values`, `array_flip`, `array_combine`,
+  `mb_str_split`, the `**` operator and `pow`, `fmod`, `log`, `log10`, `exp`, trig functions, `pi`, `is_nan` /
+  `is_finite` / `is_infinite`, and `M_PI`, `M_E`, `NAN`, `INF`, `PHP_FLOAT_*`.
 - **`array_map("label", $xs)`** and **`array_filter($xs, "cheap")`** with a function name (checked signature;
   the compiler writes the loop); `array_filter` renumbers from 0.
 - **`usort($xs, "by_price")`**: sort lists of objects (or ints, floats, strings, lists, maps) with a function of

@@ -1,0 +1,13 @@
+// ksort/krsort/asort/arsort, range, array_count_values/flip/combine, mb_str_split, ** and pow, math functions and constants
+map<string,int> $m = ["b" => 2, "c" => 3, "a" => 1, "d" => 1];
+ksort($m); echo json_encode($m);
+krsort($m); echo json_encode($m);
+asort($m); echo json_encode($m);
+arsort($m); echo json_encode($m), "\n";
+echo json_encode(range(1, 5)), json_encode(range(10, 0, 5)), json_encode(range(5, 1)), "\n";
+echo json_encode(array_count_values(["a", "b", "a"])), json_encode(array_flip(["x" => "1", "y" => "2"])), json_encode(array_combine(["a", "b"], [1, 2])), "\n";
+echo json_encode(mb_str_split("ไทยok")), json_encode(mb_str_split("abcde", 2)), "\n";
+echo 2 ** 10, " ", 2 ** 3 ** 2, " ", -2 ** 2, " ", 2.0 ** -1, " ", pow(3, 4), " ", pow(2, 0.5), "\n";
+$x = 3; $x **= 2; echo $x, "\n";
+echo round(pi(), 4), " ", round(M_PI, 2), " ", fmod(10, 3), " ", log(M_E), " ", log(8, 2), " ", log10(1000), " ", exp(0), "\n";
+echo round(sin(M_PI / 2), 6), " ", cos(0), " ", round(atan2(1, 1), 4), " ", is_nan(NAN) ? "nan" : "num", " ", is_infinite(INF) ? "inf" : "fin", " ", is_finite(1.5) ? "fin" : "inf", "\n";

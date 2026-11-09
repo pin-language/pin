@@ -549,3 +549,115 @@ void pn_list_usort(List *l, CmpFn cmp) {
     }
     xfree(tmp);
 }
+
+// ---- ksort / krsort / asort / arsort: reorder a map's entries (stable, as PHP 8) and rebuild its index.
+// by_value 0: by key (kind m->kk), 1: by value (kind m->vk: 0 int, 1 float, 2 bool, 3 string)
+static int entry_cmp(const Entry *a, const Entry *b, int kind, int by_value) {
+    uint64_t x = by_value ? a->val : a->key, y = by_value ? b->val : b->key;
+    if (kind == 3) return (int)pn_str_cmp((Str *)x, (Str *)y);
+    if (kind == 1) { double p, q; memcpy(&p, &x, 8); memcpy(&q, &y, 8); return p < q ? -1 : p > q ? 1 : 0; }
+    if (kind == 2) return (x != 0) - (y != 0);
+    return (int64_t)x < (int64_t)y ? -1 : (int64_t)x > (int64_t)y;
+}
+
+void pn_map_sort(Map *m, int64_t by_value, int64_t reverse) {
+    int64_t w = 0;
+    for (int64_t i = 0; i < m->used; i++) if (m->e[i].alive) m->e[w++] = m->e[i];   // drop deleted entries
+    m->used = w;
+    int kind = by_value ? m->vk : m->kk;
+    Entry *a = m->e, *tmp = xmalloc(checked_size(w, (int64_t)sizeof(Entry), 0));
+    for (int64_t step = 1; step < w; step *= 2) {
+        for (int64_t lo = 0; lo < w; lo += 2 * step) {
+            int64_t mid = lo + step < w ? lo + step : w, hi = lo + 2 * step < w ? lo + 2 * step : w;
+            int64_t i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) {
+                int c = entry_cmp(&a[j], &a[i], kind, (int)by_value);
+                tmp[k++] = (reverse ? c > 0 : c < 0) ? a[j++] : a[i++];
+            }
+            while (i < mid) tmp[k++] = a[i++];
+            while (j < hi) tmp[k++] = a[j++];
+        }
+        memcpy(a, tmp, (size_t)w * sizeof(Entry));
+    }
+    xfree(tmp);
+    map_reindex(m);
+}
+
+// range($from, $to, $step): ints, up or down as PHP; a step of 0 panics
+List *pn_range(int64_t from, int64_t to, int64_t step) {
+    if (step == 0) panic_msg("range(): the step cannot be 0");
+    uint64_t s = step < 0 ? (uint64_t)0 - (uint64_t)step : (uint64_t)step;
+    uint64_t span = from <= to ? (uint64_t)to - (uint64_t)from : (uint64_t)from - (uint64_t)to;
+    uint64_t n = span / s + 1;
+    if (n > ((uint64_t)1 << 32)) panic_msg("range(): too many items");
+    List *l = pn_list_new(8);
+    for (uint64_t i = 0; i < n; i++) {
+        uint64_t v = from <= to ? (uint64_t)from + i * s : (uint64_t)from - i * s;
+        pn_list_push(l, 8, v);
+    }
+    return l;
+}
+
+// array_count_values($xs): how many times each int (kind 0) or string (kind 3) occurs, in first-seen order
+Map *pn_count_values(List *l, int64_t kind) {
+    Map *m = pn_map_new(kind, 0);
+    for (int64_t i = 0; i < l->len; i++) {
+        uint64_t *slot = pn_map_slot(m, ((uint64_t *)l->data)[i], 1);
+        (*slot)++;
+    }
+    return m;
+}
+
+// array_flip($m): values become keys (int or string values), later duplicates win as in PHP
+Map *pn_map_flip(Map *m) {
+    Map *r = pn_map_new(m->vk, m->kk);
+    for (int64_t i = 0; i < m->used; i++) {
+        Entry *e = &m->e[i];
+        if (!e->alive) continue;
+        uint64_t *slot = pn_map_slot(r, e->val, 1);
+        if (r->vk == 3 && *slot) pn_str_free((Str *)*slot);
+        *slot = m->kk == 3 ? (uint64_t)pn_str_dup((Str *)e->key) : e->key;
+    }
+    return r;
+}
+
+// array_combine($keys, $values): kinds kk (0 / 3) and vk (0-3); different lengths panic (PHP throws)
+Map *pn_map_combine(List *k, List *v, int64_t kk, int64_t vk) {
+    if (k->len != v->len) panic_msg("array_combine(): the two lists have different lengths");
+    Map *m = pn_map_new(kk, vk);
+    for (int64_t i = 0; i < k->len; i++) {
+        uint64_t *slot = pn_map_slot(m, ((uint64_t *)k->data)[i], 1);
+        uint64_t x = 0;
+        if (vk == 2) x = ((uint8_t *)v->data)[i]; else x = ((uint64_t *)v->data)[i];
+        if (vk == 3) { if (*slot) pn_str_free((Str *)*slot); x = (uint64_t)pn_str_dup((Str *)x); }
+        *slot = x;
+    }
+    return m;
+}
+
+// mb_str_split($s, $n): pieces of $n characters (code points)
+List *pn_mb_str_split(Str *s, int64_t n) {
+    if (n < 1) panic_msg("mb_str_split(): the length must be at least 1");
+    List *l = pn_list_new(8);
+    int64_t i = 0;
+    while (i < s->len) {
+        int64_t j = i;
+        for (int64_t c = 0; c < n && j < s->len; c++) { int k; utf8_at(s->data, j, &k); j += k; }
+        pn_list_push(l, 8, (uint64_t)str_from(s->data + i, j - i));
+        i = j;
+    }
+    return l;
+}
+
+// pow / ** for ints: exact while it fits (wrapping past 64 bits, like *); a negative exponent panics, since
+// the result would be a fraction (write a float base: 2.0 ** -1)
+int64_t pn_ipow(int64_t b, int64_t e, int32_t line) {
+    if (e < 0) {
+        fflush(stdout);
+        fprintf(stderr, "panic: int ** negative exponent on line %d gives a fraction: write the base as a float (2.0 ** -1)\n", line);
+        die();
+    }
+    uint64_t r = 1, x = (uint64_t)b;
+    while (e) { if (e & 1) r *= x; x *= x; e >>= 1; }
+    return (int64_t)r;
+}

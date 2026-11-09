@@ -48,7 +48,7 @@ TOKEN_RE = re.compile(r"""
  |(?P<STRING>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')
  |(?P<VAR>\$[A-Za-z_]\w*)
  |(?P<IDENT>[A-Za-z_]\w*)
- |(?P<OP>::|\+\+|--|->|\+=|-=|\*=|/=|%=|\.=|<<=|>>=|\|=|&=|\^=|===|!==|==|!=|<=|>=|=>|&&|\|\||<<|>>|\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?&|^~])
+ |(?P<OP>::|\+\+|--|->|\*\*=|\*\*|\+=|-=|\*=|/=|%=|\.=|<<=|>>=|\|=|&=|\^=|===|!==|==|!=|<=|>=|=>|&&|\|\||<<|>>|\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?&|^~])
 """, re.VERBOSE)
 
 
@@ -495,7 +495,7 @@ class Parser:
         t = self.cur
         e = self.expr()
         op = self.cur.val
-        if self.cur.kind == "OP" and op in ("=", "+=", "-=", "*=", "/=", "%=", ".=", "|=", "&=", "^=", "<<=", ">>="):
+        if self.cur.kind == "OP" and op in ("=", "+=", "-=", "*=", "/=", "%=", ".=", "|=", "&=", "^=", "<<=", ">>=", "**="):
             if e.kind not in ("var", "index", "append", "field"):
                 raise CompileError("left side of an assignment must be a variable, a list item, a map entry or a "
                                    "property", t.line)
@@ -618,7 +618,11 @@ class Parser:
             to = self.eat().val
             self.eat(")")
             return Node("cast", t.line, to=to, e=self.unary())
-        return self.postfix()
+        base = self.postfix()
+        if self.cur.kind == "OP" and self.cur.val == "**":    # 2 ** 3 ** 2 is 2 ** 9; -2 ** 2 is -4 (PHP)
+            t = self.eat()
+            return Node("bin", t.line, op="**", l=base, r=self.unary())
+        return base
 
     def postfix(self):
         e = self.primary()
@@ -1000,9 +1004,7 @@ def flatten_concat(e):
 # PHP functions an agent will try; what to do in Pin instead
 PHP_FUNCTION_HINTS = {
     "str_split": "no str_split() yet: use mb_substr($s, $i, 1) in a loop (grapheme_substr for what a reader sees)",
-        "ksort": "no ksort() yet: maps keep insertion order; collect the keys in a list and sort() it",
-    "asort": "no asort() yet: write the loop", "arsort": "no arsort() yet: write the loop",
-            "array_reduce": "no array_reduce() yet: use a foreach loop",
+                        "array_reduce": "no array_reduce() yet: use a foreach loop",
         "array_push": "write $xs[] = $value;",         "count_chars": "not in Pin",
     "print_r": "no print_r(): echo json_encode($value)", "var_dump": "no var_dump(): echo json_encode($value)",
     "print": "use echo",
@@ -1057,12 +1059,15 @@ NOT_IN_PIN = {
     "yield": "generators are not in Pin",
 }
 NORMALIZER_FORMS = {"FORM_D": 4, "NFD": 4, "FORM_KD": 8, "NFKD": 8, "FORM_C": 16, "NFC": 16, "FORM_KC": 32, "NFKC": 32}
-CONSTANTS = {"JSON_PRETTY_PRINT": ("int", 128), "JSON_UNESCAPED_SLASHES": ("int", 64), "JSON_UNESCAPED_UNICODE": ("int", 256),
+CONSTANTS = {"M_PI": ("float", 3.141592653589793), "M_E": ("float", 2.718281828459045), "NAN": ("float", float("nan")),
+             "INF": ("float", float("inf")), "PHP_FLOAT_EPSILON": ("float", 2.220446049250313e-16),
+             "PHP_FLOAT_MAX": ("float", 1.7976931348623157e308), "PHP_FLOAT_MIN": ("float", 2.2250738585072014e-308),
+             "JSON_PRETTY_PRINT": ("int", 128), "JSON_UNESCAPED_SLASHES": ("int", 64), "JSON_UNESCAPED_UNICODE": ("int", 256),
              "JSON_THROW_ON_ERROR": ("int", 4194304), "STR_PAD_LEFT": ("int", 0), "STR_PAD_RIGHT": ("int", 1), "STR_PAD_BOTH": ("int", 2), "PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "usort", "array_map", "array_filter", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "ksort", "krsort", "asort", "arsort", "range", "array_count_values", "array_flip", "array_combine", "mb_str_split", "fmod", "log", "log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pi", "pow", "is_nan", "is_finite", "is_infinite", "usort", "array_map", "array_filter", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1133,6 +1138,25 @@ declare ptr @pn_strrev(ptr)
 declare ptr @pn_json_pretty(ptr)
 declare void @pn_badshift(i32)
 declare void @pn_list_usort(ptr, ptr)
+declare void @pn_map_sort(ptr, i64, i64)
+declare ptr @pn_range(i64, i64, i64)
+declare ptr @pn_count_values(ptr, i64)
+declare ptr @pn_map_flip(ptr)
+declare ptr @pn_map_combine(ptr, ptr, i64, i64)
+declare ptr @pn_mb_str_split(ptr, i64)
+declare i64 @pn_ipow(i64, i64, i32)
+declare double @llvm.pow.f64(double, double)
+declare double @llvm.exp.f64(double)
+declare double @llvm.log.f64(double)
+declare double @llvm.log10.f64(double)
+declare double @llvm.sin.f64(double)
+declare double @llvm.cos.f64(double)
+declare double @tan(double)
+declare double @asin(double)
+declare double @acos(double)
+declare double @atan(double)
+declare double @atan2(double, double)
+declare double @fmod(double, double)
 declare void @pn_list_drop_first(ptr, i64)
 declare ptr @pn_date(ptr, i64)
 declare ptr @pn_str_trim_side(ptr, i64)
@@ -3572,6 +3596,13 @@ class FuncGen:
             r = self.tmp()
             self.emit(f"{r} = icmp {'eq' if op == '==' else 'ne'} i1 {lv}, {rv}")
             return r, "bool", False
+        if op == "**":
+            if lt not in ("int", "float") or rt not in ("int", "float"):
+                raise CompileError(f"'**' works on numbers, not {lt} and {rt}", e.line)
+            if (lt, rt) == ("int", "int"):
+                return self.call("i64", "@pn_ipow", f"i64 {lv}", f"i64 {rv}", f"i32 {e.line}"), "int", False
+            a, b = self.coerce(lv, lt, "float", e.line, op), self.coerce(rv, rt, "float", e.line, op)
+            return self.call("double", "@llvm.pow.f64", f"double {a}", f"double {b}"), "float", False
         if op in ("|", "&", "^", "<<", ">>"):          # bitwise: ints only (PHP 8)
             if (lt, rt) != ("int", "int"):
                 raise CompileError(f"'{op}' works on ints, not {lt} and {rt}", e.line)
@@ -4342,6 +4373,98 @@ class FuncGen:
             self.emit(f"{n} = load i64, ptr {r}")
             self.call("void", "@pn_str_free", f"ptr {r}")
             return n, "int", False
+        if name in ("ksort", "krsort", "asort", "arsort"):
+            self.argc(e, 1)
+            a = args[0]
+            root, props = path_root(a)
+            if root is None or a.kind not in ("var", "field", "index"):
+                raise CompileError(f"{name}() sorts a map variable in place, e.g. {name}($m);", e.line)
+            t = self.static_type(a) or self.use_var(root, e.line)[1]
+            if not is_map(t):
+                raise CompileError(f"{name}() needs a map but {show(a)} is {t}" +
+                                   (" (sort() / rsort() sort lists)" if is_list(t) else ""), e.line)
+            by_value = name in ("asort", "arsort")
+            if by_value and map_kv(t)[1] not in KIND:
+                raise CompileError(f"{name}() sorts by values of int, float, bool or string; {show(a)} is {t}", e.line)
+            self.mutating(root, props, e.line, at=e.order, what="sorted")
+            v, _ = self.base_value(a, e.line)
+            self.call("void", "@pn_map_sort", f"ptr {v}", f"i64 {int(by_value)}", f"i64 {int(name in ('krsort', 'arsort'))}")
+            return None, "void", False
+        if name == "range":
+            self.argc(e, 2, 3)
+            for i in range(len(args)):
+                if self.static_type(args[i]) == "float" or args[i].kind == "float":
+                    raise CompileError("range() of floats is not in Pin yet: use a for loop", e.line)
+            a, b = self.int_arg(e, 0), self.int_arg(e, 1)
+            st = self.int_arg(e, 2) if len(args) == 3 else "1"
+            return self.call("ptr", "@pn_range", f"i64 {a}", f"i64 {b}", f"i64 {st}"), "list<int>", True
+        if name == "array_count_values":
+            self.argc(e, 1)
+            v, t = self.borrow(args[0])
+            if t not in ("list<int>", "list<string>"):
+                raise CompileError(f"array_count_values() counts a list<int> or list<string>, not {t}", e.line)
+            et = elem_of(t)
+            return self.call("ptr", "@pn_count_values", f"ptr {v}", f"i64 {KIND[et]}"), f"map<{et},int>", True
+        if name == "array_flip":
+            self.argc(e, 1)
+            v, t = self.borrow(args[0])
+            if not is_map(t) or map_kv(t)[1] not in ("int", "string"):
+                raise CompileError(f"array_flip() needs a map whose values are int or string, not {t}", e.line)
+            k, vt = map_kv(t)
+            return self.call("ptr", "@pn_map_flip", f"ptr {v}"), f"map<{vt},{k}>", True
+        if name == "array_combine":
+            self.argc(e, 2)
+            kv, kt = self.borrow(args[0])
+            vv, vt = self.borrow(args[1])
+            if kt not in ("list<int>", "list<string>") or not is_list(vt) or elem_of(vt) not in KIND:
+                raise CompileError(f"array_combine() takes a list<int|string> of keys and a list of int, float, bool "
+                                   f"or string values, not {kt} and {vt}", e.line)
+            k, val = elem_of(kt), elem_of(vt)
+            return self.call("ptr", "@pn_map_combine", f"ptr {kv}", f"ptr {vv}", f"i64 {KIND[k]}", f"i64 {KIND[val]}"), \
+                f"map<{k},{val}>", True
+        if name == "mb_str_split":
+            self.argc(e, 1, 2)
+            sv = self.str_arg(e, 0)
+            n = self.int_arg(e, 1) if len(args) == 2 else "1"
+            return self.call("ptr", "@pn_mb_str_split", f"ptr {sv}", f"i64 {n}"), "list<string>", True
+        if name == "pow":
+            self.argc(e, 2)
+            return self.binary(Node("bin", e.line, op="**", l=args[0], r=args[1]))
+        if name == "pi":
+            self.argc(e, 0)
+            return "0x400921FB54442D18", "float", False
+        if name in ("is_nan", "is_finite", "is_infinite"):
+            self.argc(e, 1)
+            x = self.num_arg(e, 0, name + "()")
+            r, a, c = self.tmp(), self.tmp(), self.tmp()
+            if name == "is_nan":
+                self.emit(f"{r} = fcmp uno double {x}, {x}")
+            else:
+                self.emit(f"{a} = call double @llvm.fabs.f64(double {x})")
+                self.emit(f"{r} = fcmp {'one' if name == 'is_finite' else 'oeq'} double {a}, 0x7FF0000000000000")
+                if name == "is_finite":
+                    self.emit(f"{c} = fcmp ord double {x}, {x}")
+                    r2 = self.tmp()
+                    self.emit(f"{r2} = and i1 {r}, {c}")
+                    r = r2
+            return r, "bool", False
+        if name in ("fmod", "atan2"):
+            self.argc(e, 2)
+            a, b = self.num_arg(e, 0, name + "()"), self.num_arg(e, 1, name + "()")
+            return self.call("double", f"@{name}", f"double {a}", f"double {b}"), "float", False
+        if name == "log":
+            self.argc(e, 1, 2)
+            x = self.call("double", "@llvm.log.f64", f"double {self.num_arg(e, 0, 'log()')}")
+            if len(args) == 2:
+                b = self.call("double", "@llvm.log.f64", f"double {self.num_arg(e, 1, 'log()')}")
+                r = self.tmp()
+                self.emit(f"{r} = fdiv double {x}, {b}")
+                x = r
+            return x, "float", False
+        if name in ("log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan"):
+            self.argc(e, 1)
+            fn = f"@llvm.{name}.f64" if name in ("log10", "exp", "sin", "cos") else f"@{name}"
+            return self.call("double", fn, f"double {self.num_arg(e, 0, name + '()')}"), "float", False
         if name in ("array_map", "array_filter"):
             self.argc(e, 2)
             fe, le = (args[0], args[1]) if name == "array_map" else (args[1], args[0])
@@ -5434,7 +5557,7 @@ class FuncGen:
     def arith(self, a, at, b, bt, op, line):
         if at not in ("int", "float") or bt not in ("int", "float"):
             raise CompileError(f"'{op}' needs numbers", line)
-        if op[:-1] in ("|", "&", "^", "<<", ">>"):
+        if op[:-1] in ("|", "&", "^", "<<", ">>", "**"):
             raise CompileError(f"'{op}' works on int variables; for a list item or property write "
                                f"$x[$i] = $x[$i] {op[:-1]} ...", line)
         if op[0] in "/%":

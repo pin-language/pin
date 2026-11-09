@@ -42,6 +42,9 @@ f("substr", S, "substr(string $s, int $start, int $length = rest): string", "Par
    "giving broken text; positions from `strpos()` never do. To count characters use `mb_substr()`, to shorten "
    "text for display `grapheme_substr()`."],
   php="The same, except that cutting a character in half panics instead of giving invalid UTF-8.")
+f("mb_str_split", S, "mb_str_split(string $s, int $length = 1): list<string>", "Split into pieces of `$length` characters (code points).",
+  r'''echo json_encode(mb_str_split("ไทย")), json_encode(mb_str_split("abcde", 2)), "\n";''',
+  ["PHP's `str_split()` splits bytes and breaks Thai text; this is the one to use."])
 f("mb_strlen", S, "mb_strlen(string $s): int", "Length in characters (Unicode code points).",
   r'''echo mb_strlen("hello"), " ", mb_strlen("ไทย"), " ", mb_strlen("ที่"), "\n";''',
   ["A Thai tone mark or vowel above or below a letter is a code point of its own: `\"ที่\"` is 3. To count what a "
@@ -213,6 +216,37 @@ echo json_encode(array_filter([45, 120, 30], "cheap")), "\n";''',
   ["`$keep` names a function of the same file `(T $x): bool`. The kept items are copied, and the new list is "
    "renumbered from 0 (PHP keeps the old keys)."],
   php="PHP keeps the original keys; Pin's result is a list numbered from 0.")
+f("ksort", L, "ksort(map<K,V> $m): void", "Sort a map by its keys, in place.",
+  r'''map<string,int> $m = ["b" => 2, "a" => 1];
+ksort($m);
+echo json_encode($m), "\n";''',
+  ["Stable, as PHP 8. `krsort()` sorts the other way."])
+f("krsort", L, "krsort(map<K,V> $m): void", "Sort a map by its keys, largest first, in place.",
+  r'''map<int,string> $m = [1 => "a", 3 => "c"];
+krsort($m);
+echo json_encode($m), "\n";''')
+f("asort", L, "asort(map<K,V> $m): void", "Sort a map by its values (int, float, bool or string), keeping each key with its value.",
+  r'''map<string,int> $votes = ["tea" => 5, "coffee" => 9, "milk" => 2];
+asort($votes);
+echo json_encode($votes), "\n";''',
+  ["`arsort()` sorts the other way (largest first)."])
+f("arsort", L, "arsort(map<K,V> $m): void", "Sort a map by its values, largest first, keeping the keys.",
+  r'''map<string,int> $votes = ["tea" => 5, "coffee" => 9, "milk" => 2];
+arsort($votes);
+echo json_encode(array_keys($votes)), "\n";''')
+f("range", L, "range(int $from, int $to, int $step = 1): list<int>", "The ints from `$from` to `$to` (counting down when `$from` is larger).",
+  r'''echo json_encode(range(1, 5)), json_encode(range(10, 0, 5)), "\n";
+foreach (range(1, 3) as $i) { echo $i; }
+echo "\n";''',
+  ["A step of 0 panics. Ints only (a for loop for floats)."])
+f("array_count_values", L, "array_count_values(list<int|string> $xs): map<T,int>", "How many times each value occurs, in first-seen order.",
+  r'''echo json_encode(array_count_values(["tea", "milk", "tea"])), "\n";''')
+f("array_flip", L, "array_flip(map<K,V> $m): map<V,K>", "Values become keys and keys values (values must be int or string).",
+  r'''echo json_encode(array_flip(["a" => "x", "b" => "y"])), "\n";''',
+  ["When two keys have the same value, the later one wins (as PHP)."])
+f("array_combine", L, "array_combine(list<K> $keys, list<V> $values): map<K,V>", "A map from a list of keys and a list of values.",
+  r'''echo json_encode(array_combine(["id", "qty"], [7, 2])), "\n";''',
+  ["Lists of different lengths panic (PHP throws)."])
 f("usort", L, "usort(list<T> $xs, string $compare): void", "Sort a list in place with your own comparison function.",
   r'''class Item { public function __construct(public string $name, public int $price) {} }
 function by_price(Item $a, Item $b): int { return $a->price - $b->price; }
@@ -328,6 +362,53 @@ f("max", N, "max(int|float $a, int|float $b): int|float  /  max(list<int|float> 
   ["An int and a float give a float. `max([])` panics (PHP throws)."], php="Numbers only (no strings, no more than two values).")
 f("min", N, "min(int|float $a, int|float $b): int|float  /  min(list<int|float> $xs)", "The smaller of two numbers, or the smallest item of a list.",
   r'''echo min(3, 9), " ", min([4.5, -1.0]), "\n";''', ["`min([])` panics (PHP throws)."])
+f("pow", N, "pow(int|float $base, int|float $exp): int|float", "`$base` to the power `$exp`, the same as `$base ** $exp`.",
+  r'''echo pow(2, 10), " ", 2 ** 0.5, " ", 2.0 ** -1, " ", -2 ** 2, "\n";''',
+  ["Two ints give an int (wrapping past 64 bits, like `*`); an int base with a negative int exponent panics: write `2.0 ** -1`.", "`**` binds tighter than unary minus and from the right, as in PHP: `2 ** 3 ** 2` is 512."])
+f("fmod", N, "fmod(float $x, float $y): float", "The remainder of `$x / $y` for floats.",
+  r'''echo fmod(10, 3), " ", fmod(-7.5, 2), "\n";''')
+f("log", N, "log(float $x, float $base = M_E): float", "Natural logarithm, or in another base.",
+  r'''echo log(M_E), " ", log(8, 2), "\n";''')
+f("log10", N, "log10(float $x): float", "Base-10 logarithm.",
+  r'''echo log10(1000), "\n";''')
+f("exp", N, "exp(float $x): float", "e to the power `$x`.",
+  r'''echo exp(0), " ", round(exp(1), 5), "\n";''')
+f("sin", N, "sin(float $x): float", "Sine (radians).",
+  r'''echo round(sin(M_PI / 2), 6), "\n";''')
+f("cos", N, "cos(float $x): float", "Cosine (radians).",
+  r'''echo cos(0), "\n";''')
+f("tan", N, "tan(float $x): float", "Tangent (radians).",
+  r'''echo round(tan(M_PI / 4), 6), "\n";''')
+f("asin", N, "asin(float $x): float", "Arc sine, in radians.",
+  r'''echo round(asin(1), 4), "\n";''')
+f("acos", N, "acos(float $x): float", "Arc cosine, in radians.",
+  r'''echo acos(1), "\n";''')
+f("atan", N, "atan(float $x): float", "Arc tangent, in radians.",
+  r'''echo round(atan(1), 4), "\n";''')
+f("atan2", N, "atan2(float $y, float $x): float", "The angle of the point (`$x`, `$y`), in radians.",
+  r'''echo round(atan2(1, 1), 4), "\n";''')
+f("pi", N, "pi(): float", "π, the same as `M_PI`.",
+  r'''echo round(pi(), 5), "\n";''')
+f("is_nan", N, "is_nan(float $x): bool", "Whether `$x` is NaN (not a number).",
+  r'''echo is_nan(NAN) ? "nan" : "number", " ", is_nan(0.5) ? "nan" : "number", "\n";''')
+f("is_finite", N, "is_finite(float $x): bool", "Whether `$x` is neither infinite nor NaN.",
+  r'''echo is_finite(1.5) ? "yes" : "no", " ", is_finite(INF) ? "yes" : "no", "\n";''')
+f("is_infinite", N, "is_infinite(float $x): bool", "Whether `$x` is INF or -INF.",
+  r'''echo is_infinite(-INF) ? "yes" : "no", "\n";''')
+f("M_PI", N, "M_PI: float", "π.",
+  r'''echo round(M_PI, 5), "\n";''', kind="constant")
+f("M_E", N, "M_E: float", "e, the base of natural logarithms.",
+  r'''echo round(M_E, 5), "\n";''', kind="constant")
+f("NAN", N, "NAN: float", "Not a number.",
+  r'''echo is_nan(NAN) ? "nan" : "number", "\n";''', kind="constant")
+f("INF", N, "INF: float", "Infinity (`-INF` for minus infinity).",
+  r'''echo INF > 1e308 ? "bigger" : "not", "\n";''', kind="constant")
+f("PHP_FLOAT_EPSILON", N, "PHP_FLOAT_EPSILON: float", "The smallest float x with 1.0 + x != 1.0.",
+  r'''echo PHP_FLOAT_EPSILON < 0.000001 ? "tiny" : "big", "\n";''', kind="constant")
+f("PHP_FLOAT_MAX", N, "PHP_FLOAT_MAX: float", "The largest float.",
+  r'''echo PHP_FLOAT_MAX > 1e307 ? "huge" : "small", "\n";''', kind="constant")
+f("PHP_FLOAT_MIN", N, "PHP_FLOAT_MIN: float", "The smallest positive normal float.",
+  r'''echo PHP_FLOAT_MIN > 0 ? "positive" : "zero", "\n";''', kind="constant")
 f("sqrt", N, "sqrt(int|float $x): float", "Square root.",
   r'''echo sqrt(16), " ", sqrt(2.0), "\n";''',
   ["`sqrt` of a negative number gives NAN."])
