@@ -11,7 +11,11 @@ stack overflow = panic, not a server crash (B17); x86 SHA-NI; dead stripping (he
 PostgreSQL, cookie sessions + CSRF, rate limits (+ `Retry-After`), `client_ip()`, `db_all`/`db_one` columns
 checked at build time. K6 measured and **not built** (1.6 µs a query, pool.md). Two fresh-agent tests (Pin
 guide; Tack README): both compiled with 0–1 real errors; their doc gaps are fixed. HTTP throughput unchanged
-throughout (ab: ~205k–220k req/s on /user/42). CHANGELOG "Unreleased" is grouped and ready for 0.9.0.
+throughout (ab: ~205k–220k req/s on /user/42). CHANGELOG "Unreleased" is grouped and ready for 0.9.0. Later the same day: ~70 PHP built-ins (str_replace,
+sprintf/printf with checked formats, date, round/number_format matching PHP, in_array, array_* incl. usort /
+array_map / array_filter with function names, ksort/asort, range, math), bit operators and `**`, hex/binary
+literals; 189 built-ins now. Fuzzers: `tools/fuzz_ownership.py`, `fuzz_json.py`, `fuzz_http.py`; docs CI fixed (it
+had tested docs `next` against released Pin since 2026-10-25).
 Left (not started): ST2 `bytes`, SIMD UTF-8, loop-head cancellation (costs tight loops), transitive packages /
 semver, Linux arm64 SHA path untested (no runner). Owner decisions: release 0.9.0 when, make tack public,
 tack.md Q1–Q4.
