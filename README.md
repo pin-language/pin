@@ -215,7 +215,7 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 ## Not there yet
 
 Inheritance and interfaces, lists or maps holding null, `finally`, closures.
-`null` (`?User`, `?int`, checked before use), `json_decode()` into a class, `go`/`await`, and SQLite and PostgreSQL (with a connection pool) are built.
+`null` (`?User`, `?int`, `list<?int>`, checked before use), `json_decode()` into a class, `go`/`await`, and SQLite and PostgreSQL (with a connection pool) are built.
 Most of these are already designed in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
 [CHANGELOG.md](CHANGELOG.md) for what changed.
 

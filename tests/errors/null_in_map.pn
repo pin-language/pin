@@ -1,2 +1,3 @@
 <?php
-function h(map<string,?string> $m): int { return 0; }
+map<string,?int> $m = ["a" => null, "b" => 2];
+foreach ($m as $k => &$v) { $v = 1; }

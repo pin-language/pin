@@ -32,6 +32,15 @@ void pn_list_push(List *l, int64_t esize, uint64_t bits) {
     l->len++;
 }
 
+// A new zeroed item at the end; for items bigger than pn_list_push's 8 bytes (?int / ?float are 16).
+void *pn_list_push_slot(List *l, int64_t esize) {
+    if (l->len == l->cap) pn_list_grow(l, esize);
+    void *p = (char *)l->data + l->len * esize;
+    memset(p, 0, (size_t)esize);
+    l->len++;
+    return p;
+}
+
 List *pn_list_copy(List *src, int64_t esize) {
     List *l = xmalloc(sizeof(List));
     l->len = src->len; l->cap = src->len > 0 ? src->len : 1;
@@ -272,6 +281,8 @@ Str *pn_str_trim(Str *s) {
 // ============================================================================ maps
 
 // kinds: 0 int, 1 float, 2 bool, 3 string, 4 owned pointer (list, map or object; freed by compiled code)
+// alive: 0 deleted, 1 in use; 3 = in use and null, for ?int / ?float / ?bool values (value kinds 8, 9, 10: the
+// compiled code reads and writes that bit, 8 bytes after the value slot)
 typedef struct { uint64_t hash, key, val; int64_t alive; } Entry;
 typedef struct {
     int64_t count;          // first field so count() is one load, same as lists
@@ -404,6 +415,7 @@ Map *pn_map_copy(Map *src) {
         if (!e->alive) continue;
         uint64_t *slot = pn_map_slot(m, e->key, 1);
         *slot = src->vk == 3 ? (uint64_t)pn_str_dup((Str *)e->val) : e->val;
+        if (src->vk >= 8) ((Entry *)((char *)slot - offsetof(Entry, val)))->alive = e->alive;   // null bit
     }
     return m;
 }
@@ -455,13 +467,18 @@ static Str *json_value(Str *d, uint64_t bits, int kind) {
     }
 }
 
+// kind 8 / 9 / 10: ?int / ?float / ?bool items, the value and then a "has a value" byte ({ i64, i1 } is 16 bytes,
+// { i1, i1 } is 2)
 Str *pn_json_add_list(Str *d, List *l, int64_t kind) {
+    int64_t vk = kind & 7, vsize = vk == 2 ? 1 : 8, esize = kind >= 8 ? (vk == 2 ? 2 : 16) : vsize;
     d = str_add_bytes(d, "[", 1);
     for (int64_t i = 0; i < l->len; i++) {
         if (i) d = str_add_bytes(d, ",", 1);
+        const char *item = (char *)l->data + i * esize;
+        if (kind >= 8 && !item[vsize]) { d = str_add_bytes(d, "null", 4); continue; }
         uint64_t bits = 0;
-        memcpy(&bits, (char *)l->data + i * (kind == 2 ? 1 : 8), kind == 2 ? 1 : 8);
-        d = json_value(d, bits, (int)kind);
+        memcpy(&bits, item, (size_t)vsize);
+        d = json_value(d, bits, (int)vk);
     }
     return str_add_bytes(d, "]", 1);
 }
@@ -482,7 +499,8 @@ Str *pn_json_add_map(Str *d, Map *m) {
         if (!e->alive) continue;
         if (!first) d = str_add_bytes(d, ",", 1);
         first = 0;
-        d = json_value(json_key(d, m, e), e->val, m->vk);
+        d = json_key(d, m, e);
+        d = m->vk >= 8 && (e->alive & 2) ? str_add_bytes(d, "null", 4) : json_value(d, e->val, m->vk & 7);
     }
     return str_add_bytes(d, "}", 1);
 }

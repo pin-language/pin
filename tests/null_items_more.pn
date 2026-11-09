@@ -1,0 +1,21 @@
+// fill(n, null), foreach with &, lists built from ?int results, map<int,?bool>
+list<?int> $a = fill(3, null);
+$a[1] = 5;
+echo json_encode($a), "\n";
+list<?string> $s = fill(2, null);
+$s[0] = "x";
+echo json_encode($s), "\n";
+foreach ($a as &$x) { if ($x === null) { $x = 0; } }
+echo json_encode($a), "\n";
+list<?string> $t = ["a", null];
+foreach ($t as &$y) { $y = null; }
+echo json_encode($t), "\n";
+function maybe(int $i): ?int { return $i > 1 ? $i : null; }
+list<?int> $built = [];
+for ($i = 0; $i < 4; $i++) { $built[] = maybe($i); }
+echo json_encode($built), " ", count($built), "\n";
+$z = [maybe(0), maybe(5)];
+echo json_encode($z), "\n";
+map<int,?bool> $flags = [1 => true, 2 => null];
+$flags[3] = false;
+echo json_encode($flags), " ", $flags[2] ?? false ? "y" : "n", "\n";

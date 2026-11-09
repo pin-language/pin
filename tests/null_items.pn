@@ -1,0 +1,48 @@
+// list<?T> and map<K,?T> (null.md step 6): items that may be null, ?? and isset() on them, copy, JSON
+list<?string> $names = ["ann", null, "bob"];
+$names[] = null;
+$names[] = "cy";
+$names[1] = "dee";
+echo count($names), "\n";
+foreach ($names as $n) {
+    if ($n !== null) { echo $n, " "; } else { echo "(none) "; }
+}
+echo "\n", json_encode($names), "\n";
+$c = copy($names);
+$c[0] = null;
+echo json_encode($c), " ", json_encode($names), "\n";
+$x = $names[3];
+echo $x ?? "nobody", "\n";
+echo $names[3] ?? "default", " ", $names[0] ?? "d", " ", $names[9] ?? "out", "\n";
+
+list<?int> $ns = [1, null, 3];
+$ns[] = null;
+$ns[] = 7;
+$ns[0] = null;
+echo json_encode($ns), "\n";
+$sum = 0;
+foreach ($ns as $v) { if ($v !== null) { $sum += $v; } }
+echo $sum, " ", $ns[2] ?? -1, " ", $ns[0] ?? -1, "\n";
+$ns2 = copy($ns);
+echo json_encode($ns2), "\n";
+list<?bool> $bs = [true, null, false];
+echo json_encode($bs), "\n";
+list<?float> $fs = [1.5, null];
+echo json_encode($fs), "\n";
+
+map<string,?int> $ages = ["ann" => 31, "bob" => null];
+$ages["cy"] = 7;
+$ages["dee"] = null;
+echo json_encode($ages), " ", count($ages), "\n";
+foreach ($ages as $k => $a) { echo $k, "=", $a ?? -1, " "; }
+echo "\n";
+echo $ages["bob"] ?? 0, " ", $ages["ann"] ?? 0, " ", $ages["zed"] ?? 99, "\n";
+$ag2 = copy($ages);
+echo json_encode($ag2), "\n";
+map<string,?string> $nick = ["ann" => "A", "bob" => null];
+$nick["cy"] = null;
+$nick["ann"] = "Annie";
+echo json_encode($nick), "\n";
+$n2 = copy($nick);
+unset($nick["ann"]);
+echo json_encode($n2), json_encode($nick), "\n";

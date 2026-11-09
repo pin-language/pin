@@ -859,11 +859,23 @@ def nslots(t):
 
 
 def esize(t):
-    return 1 if t == "bool" else 8
+    """Bytes per list item: bools 1, ?int / ?float the 16-byte pair, ?bool 2, the rest 8."""
+    return {"bool": 1, "?int": 16, "?float": 16, "?bool": 2}.get(t, 8)
+
+
+# Map value kinds for ?int / ?float / ?bool: the value in the entry's 8-byte slot, and null as bit 2 of the entry's
+# "alive" word right after it (runtime/values.c Entry: alive = 1 has a value, 3 is null). 8 + the kind of the value.
+OPT_KIND = {"?int": 8, "?float": 9, "?bool": 10}
 
 
 def kind_of(t):
-    return KIND.get(t, 4)
+    return OPT_KIND.get(t) or KIND.get(t, 4)
+
+
+def per_item(t):
+    """Items of this type need a generated function each to be freed, copied or written as JSON: lists, maps,
+    objects, and ?string (null stays null; the runtime's string functions would turn it into "")."""
+    return owns_ptr(t) or t == "?string"
 
 
 def is_list(t):
@@ -908,9 +920,9 @@ def free_fn(t):
         return "@pn_stream_close"
     if is_list(t):
         e = elem_of(t)
-        return "@pn_list_free_str" if e == "string" else need("free", t) if owns_ptr(e) else "@pn_list_free"
+        return "@pn_list_free_str" if e == "string" else need("free", t) if per_item(e) else "@pn_list_free"
     if is_map(t):
-        return need("free", t) if owns_ptr(map_kv(t)[1]) else "@pn_map_free"
+        return need("free", t) if per_item(map_kv(t)[1]) else "@pn_map_free"
     return need("free", t)
 
 
@@ -937,7 +949,7 @@ def copy_fn(t):
         return "@pn_str_dup"
     if is_list(t) and elem_of(t) == "string":
         return "@pn_list_copy_str"
-    if is_map(t) and not owns_ptr(map_kv(t)[1]):
+    if is_map(t) and not per_item(map_kv(t)[1]):
         return "@pn_map_copy"
     return need("copy", t)
 
@@ -1101,6 +1113,7 @@ declare i64 @pn_jd_has(ptr, i64, ptr)
 declare i64 @pn_jd_null(ptr, i64)
 declare ptr @pn_hash_sha256(ptr)
 declare ptr @pn_env(ptr)
+declare ptr @pn_list_push_slot(ptr, i64)
 declare i64 @pn_time()
 declare void @pn_request_deadline(i64)
 declare i64 @pn_ord(ptr)
@@ -1394,8 +1407,11 @@ def gen_helper(mod, name, kind, t):
             emit(f"{r} = call ptr {json_fn(ft)}(ptr {d}, ptr {v})")
         return r
 
-    if is_opt(t):                          # copy / json of a value that may be null
+    if is_opt(t):                          # free / copy / json of a value that may be null
         inner = t[1:]
+        if kind == "free":                  # an item callback: every free function accepts null
+            return out + [f"define internal void {name}(ptr %p) {{", "entry:", f"  call void {free_fn(inner)}(ptr %p)",
+                          "  ret void", "}"]
         if kind == "copy":
             out += [f"define internal ptr {name}(ptr %p) {{", "entry:", "  %z = icmp eq ptr %p, null",
                     "  br i1 %z, label %done, label %go", "go:", f"  %r = call ptr {copy_fn(inner)}(ptr %p)",
@@ -1422,7 +1438,7 @@ def gen_helper(mod, name, kind, t):
     if kind == "free":
         out.append(f"define internal void {name}(ptr %p) {{")
         out.append("entry:")
-        if t == "string" or (is_list(t) and not owns_ptr(elem_of(t))) or (is_map(t) and not owns_ptr(map_kv(t)[1])):
+        if t == "string" or (is_list(t) and not per_item(elem_of(t))) or (is_map(t) and not per_item(map_kv(t)[1])):
             emit(f"call void {free_fn(t)}(ptr %p)")        # a wrapper with a (ptr) signature, see item_fn
         elif is_list(t):
             emit(f"call void @pn_list_free_with(ptr %p, ptr {item_fn('free', elem_of(t))})")
@@ -1442,11 +1458,11 @@ def gen_helper(mod, name, kind, t):
     elif kind == "copy":
         out.append(f"define internal ptr {name}(ptr %p) {{")
         out.append("entry:")
-        if t == "string" or (is_list(t) and elem_of(t) == "string") or (is_map(t) and not owns_ptr(map_kv(t)[1])):
+        if t == "string" or (is_list(t) and elem_of(t) == "string") or (is_map(t) and not per_item(map_kv(t)[1])):
             emit(f"%r = call ptr {copy_fn(t)}(ptr %p)")
         elif is_list(t):
             e = elem_of(t)
-            if owns_ptr(e):
+            if per_item(e):
                 emit(f"%r = call ptr @pn_list_copy_with(ptr %p, ptr {item_fn('copy', e)})")
             else:
                 emit(f"%r = call ptr @pn_list_copy(ptr %p, i64 {esize(e)})")
@@ -1470,15 +1486,15 @@ def gen_helper(mod, name, kind, t):
         if is_list(t):
             e = elem_of(t)
             r = tmp()
-            if owns_ptr(e):
+            if per_item(e):
                 emit(f"{r} = call ptr @pn_json_add_list_with(ptr %d, ptr %p, ptr {json_fn(e)})")
             else:
-                emit(f"{r} = call ptr @pn_json_add_list(ptr %d, ptr %p, i64 {KIND[e]})")
+                emit(f"{r} = call ptr @pn_json_add_list(ptr %d, ptr %p, i64 {kind_of(e)})")
             d = r
         elif is_map(t):
             v = map_kv(t)[1]
             r = tmp()
-            if owns_ptr(v):
+            if per_item(v):
                 emit(f"{r} = call ptr @pn_json_add_map_with(ptr %d, ptr %p, ptr {json_fn(v)})")
             else:
                 emit(f"{r} = call ptr @pn_json_add_map(ptr %d, ptr %p)")
@@ -2095,11 +2111,11 @@ class FuncGen:
             return r
         raise CompileError(f"{what}: expected {want} but got {t}", line)
 
-    def wrap_opt(self, v, t):
-        """A ?int / ?float / ?bool that holds v."""
+    def wrap_opt(self, v, t, has="true"):
+        """A ?int / ?float / ?bool that holds v (null when has is false)."""
         a, b = self.tmp(), self.tmp()
         self.emit(f"{a} = insertvalue {llty(t)} undef, {llty(t[1:])} {v}, 0")
-        self.emit(f"{b} = insertvalue {llty(t)} {a}, i1 true, 1")
+        self.emit(f"{b} = insertvalue {llty(t)} {a}, i1 {has}, 1")
         return b
 
     def opt_parts(self, v, t):
@@ -2721,17 +2737,30 @@ class FuncGen:
             ih = elem_of(hint) if hint and is_list(hint) else None
             for i in e.items:
                 probe = self.static_type(i) if i.kind in ("var", "field", "index") else None
-                if (probe and is_heap(probe)) or i.kind in ("listlit", "maplit", "new", "call", "mcall"):
+                if i.kind == "null" and not ih:
+                    vals.append((None, "null", False))      # typed below, from the other items: [1, null] is list<?int>
+                elif (probe and is_heap(probe)) or i.kind in ("listlit", "maplit", "new", "call", "mcall"):
                     vals.append(self.owned_value(i, ih, e.line) + (True,))     # the list owns what it holds
                 else:
                     vals.append(self.borrow(i, ih) + (False,))
-            types = {t for _, t, _ in vals}
+            types = {t for _, t, _ in vals} - {"null"}
+            nulls = any(t == "null" for _, t, _ in vals)
+            if ih and is_opt(ih) and types <= {ih, ih[1:]} | ({"int"} if ih == "?float" else set()):
+                types = {ih}                            # T and null items where a ?T goes
+            elif any(is_opt(t) for t in types):         # [$maybe, "x"]: the list holds ?string
+                nulls, types = True, {strip_opt(t) for t in types}
             et = "float" if types == {"int", "float"} else (types.pop() if len(types) == 1 else None)
+            if et is None and not types:
+                raise CompileError("[null] needs a type, e.g.  list<?string> $a = [null];", e.line)
             if et is None:
                 raise CompileError("list items must all have the same type "
                                    f"(got {', '.join(sorted({t for _, t, _ in vals}))})", e.line)
             if et in ("void", "db", "rows"):
                 raise CompileError(f"a list cannot hold {et} values", e.line)
+            if nulls and not is_opt(et):
+                et = "?" + et
+            vals = [("zeroinitializer" if is_opt_scalar(et) else "null", et, False) if t == "null" else (v, t, o)
+                    for v, t, o in vals]
         elif hint and is_list(hint):
             et = elem_of(hint)
         else:
@@ -2739,12 +2768,16 @@ class FuncGen:
         r = self.call("ptr", "@pn_list_new", f"i64 {esize(et)}")
         for v, t, owned in vals:
             v = self.coerce(v, t, et, e.line, "list item")
-            if et == "string" and not owned:
+            if t == "string" and strip_opt(et) == "string" and not owned:
                 v = self.dup_str(v)             # the list owns its strings
+            if is_opt_scalar(et):               # 16 or 2 bytes: more than pn_list_push takes
+                self.store_elem(self.call("ptr", "@pn_list_push_slot", f"ptr {r}", f"i64 {esize(et)}"), v, et)
+                continue
             self.call("void", "@pn_list_push", f"ptr {r}", f"i64 {esize(et)}", f"i64 {self.to_bits(v, et)}")
         return r, f"list<{et}>", True
 
     def to_bits(self, v, et):
+        assert not is_opt_scalar(et), et        # 16 / 2 bytes: use pn_list_push_slot
         if et == "int":
             return v
         r = self.tmp()
@@ -2810,8 +2843,27 @@ class FuncGen:
             return r
         return kv
 
+    def opt_alive(self, p):
+        a = self.tmp()
+        self.emit(f"{a} = getelementptr inbounds i8, ptr {p}, i64 8")      # Entry.alive, after the value slot
+        return a
+
     def load_slot(self, p, vt):
         r = self.tmp()
+        if is_opt_scalar(vt):                   # the value, and null as bit 2 of the entry's alive word (OPT_KIND)
+            x, a, nb, has = self.tmp(), self.tmp(), self.tmp(), self.tmp()
+            inner = vt[1:]
+            self.emit(f"{x} = load i64, ptr {p}")
+            self.emit(f"{a} = load i64, ptr {self.opt_alive(p)}")
+            self.emit(f"{nb} = and i64 {a}, 2")
+            self.emit(f"{has} = icmp eq i64 {nb}, 0")
+            if inner == "float":
+                y = self.tmp()
+                self.emit(f"{y} = bitcast i64 {x} to double")
+                x = y
+            elif inner == "bool":
+                x = self.i64_to_bool(x)
+            return self.wrap_opt(x, vt, has)
         if vt == "bool":
             self.emit(f"{r} = load i64, ptr {p}")
             return self.i64_to_bool(r)
@@ -2819,6 +2871,13 @@ class FuncGen:
         return r
 
     def store_slot(self, p, v, vt):
+        if is_opt_scalar(vt):
+            x, has = self.opt_parts(v, vt)
+            self.store_slot(p, x, vt[1:])
+            a = self.tmp()
+            self.emit(f"{a} = select i1 {has}, i64 1, i64 3")
+            self.emit(f"store i64 {a}, ptr {self.opt_alive(p)}")
+            return
         if vt == "bool":
             z = self.tmp()
             self.emit(f"{z} = zext i1 {v} to i64")
@@ -2844,6 +2903,13 @@ class FuncGen:
                 probes = {self.expr_type_probe(ve) for _, ve in entries}
                 if "float" in probes and probes <= {"int", "float", None}:
                     vt = "float"
+            if vt is None and "null" in probes:     # ["a" => 1, "b" => null] is map<string,?int>
+                lits = {"int": "int", "float": "float", "str": "string", "bool": "bool", "interp": "string"}
+                known = {lits.get(ve.kind) for _, ve in entries if ve.kind != "null"}
+                if len(known) != 1 or None in known:
+                    raise CompileError("a map literal with null values needs its type, e.g.  "
+                                       "map<string,?int> $m = [\"a\" => 1, \"b\" => null];", e.line)
+                vt = "?" + known.pop()
             m = None
             for i, (ke, ve) in enumerate(entries):
                 v, t = self.owned_value(ve, vt, e.line)
@@ -2856,7 +2922,7 @@ class FuncGen:
                 elif m is None:
                     mt = f"map<{kt},{vt}>"
                     m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {kind_of(vt)}")
-                if t != vt and not (t == "int" and vt == "float"):
+                if t != vt and not (t == "int" and strip_opt(vt) == "float") and t != strip_opt(vt):
                     raise CompileError(
                         f"a map holds one value type: this literal is {mt} (from its first value), but a value "
                         f"here is {t}. For a JSON object with values of different types, declare a class with those "
@@ -3052,6 +3118,38 @@ class FuncGen:
         self.emit(f"{r} = phi {llty(res_t)} [ {lv if res_t == lt else x}, %{end1} ], [ {rv}, %{end2} ]")
         return r, res_t, False
 
+    def isset_opt(self, seq, st, item, key_e, line):
+        """isset($m[$k]) / isset($list[$i]) on ?T items: there and not null, as in PHP (array_key_exists() is
+        true for a null value)."""
+        if is_map(st):
+            key = self.map_key(st, key_e, line)
+            p = self.call("ptr", "@pn_map_slot", f"ptr {seq}", f"i64 {key}", "i64 0")
+            c = self.tmp()
+            self.emit(f"{c} = icmp ne ptr {p}, null")
+        else:
+            iv, it = self.borrow(key_e)
+            if it != "int":
+                raise CompileError(f"list index must be int but got {it}", line)
+            ln, c = self.tmp(), self.tmp()
+            self.emit(f"{ln} = load i64, ptr {seq}, !tbaa !1")
+            self.emit(f"{c} = icmp ult i64 {iv}, {ln}")
+        there, end = self.newlabel("there"), self.newlabel("isset")
+        start = self.label
+        self.emit(f"br i1 {c}, label %{there}, label %{end}")
+        self.place_label(there)
+        v = self.load_slot(p, item) if is_map(st) else self.load_elem(self.list_elem_ptr(seq, item, iv), item)
+        if is_opt_scalar(item):
+            _, f = self.opt_parts(v, item)
+        else:
+            f = self.tmp()
+            self.emit(f"{f} = icmp ne ptr {v}, null")
+        there_end = self.label
+        self.emit(f"br label %{end}")
+        self.place_label(end)
+        r = self.tmp()
+        self.emit(f"{r} = phi i1 [ false, %{start} ], [ {f}, %{there_end} ]")
+        return r
+
     def coalesce(self, e):
         """$m[$k] ?? default   /   $list[$i] ?? default"""
         if e.l.kind != "index":
@@ -3081,9 +3179,20 @@ class FuncGen:
         if owns_ptr(vt):
             raise CompileError(f"?? works on items that are numbers, bools or strings; these are {vt}. Check with "
                                f"isset() first", e.line)
+        item = vt
+        vt = strip_opt(vt)             # a missing item and a null item both give the default (as in PHP)
         self.emit(f"br i1 {c}, label %{has}, label %{dflt}")
         self.place_label(has)
-        v1 = self.load_slot(p, vt) if is_map(st) else self.load_elem(self.list_elem_ptr(seq, vt, iv), vt)
+        v1 = self.load_slot(p, item) if is_map(st) else self.load_elem(self.list_elem_ptr(seq, item, iv), item)
+        if is_opt(item):
+            if is_opt_scalar(item):
+                v1, f = self.opt_parts(v1, item)
+            else:
+                f = self.tmp()
+                self.emit(f"{f} = icmp ne ptr {v1}, null")
+            notnull = self.newlabel("notnull")
+            self.emit(f"br i1 {f}, label %{notnull}, label %{dflt}")
+            self.place_label(notnull)
         if vt == "string":
             v1 = self.dup_str(v1)      # result is owned on both paths
         end1 = self.label
@@ -3785,6 +3894,11 @@ class FuncGen:
         if name == "fill":
             self.argc(e, 2)
             n = self.int_arg(e, 0)
+            if args[1].kind == "null":          # fill(3, null) where a list<?T> goes: all null (zero bytes)
+                if not (hint and is_list(hint) and is_opt(elem_of(hint))):
+                    raise CompileError("fill($n, null) needs a list of ?T: list<?int> $a = fill(3, null);", e.line)
+                et = elem_of(hint)
+                return self.call("ptr", "@pn_list_fill", f"i64 {n}", f"i64 {esize(et)}", "i64 0"), hint, True
             v, vt = self.borrow(args[1])
             if hint and is_list(hint) and elem_of(hint) == "float":
                 v, vt = self.coerce(v, vt, "float", e.line, "fill()"), "float"
@@ -3799,7 +3913,7 @@ class FuncGen:
             v, t = self.borrow(args[0])
             if t == "string":
                 return self.dup_str(v), t, not v.startswith("@.L")
-            if is_list(t) and not owns_ptr(elem_of(t)) and elem_of(t) != "string":
+            if is_list(t) and not per_item(elem_of(t)) and elem_of(t) != "string":
                 return self.call("ptr", "@pn_list_copy", f"ptr {v}", f"i64 {esize(elem_of(t))}"), t, True
             if owns_ptr(t):
                 bad = uncopyable(t)
@@ -3911,7 +4025,7 @@ class FuncGen:
                                        f"it out", e.line)
                 d = self.call("ptr", "@pn_str_new", "i64 64")
                 return self.call("ptr", json_fn(t), f"ptr {d}", f"ptr {v}"), "string", True
-            if owns_ptr(t) and (is_class(t) or owns_ptr(elem_of(t) if is_list(t) else map_kv(t)[1])):
+            if owns_ptr(t) and (is_class(t) or per_item(elem_of(t) if is_list(t) else map_kv(t)[1])):
                 bad = unjsonable(t)
                 if bad:
                     raise CompileError(f"json_encode() cannot write {bad}; make that property private to leave "
@@ -3919,7 +4033,7 @@ class FuncGen:
                 d = self.call("ptr", "@pn_str_new", "i64 64")
                 return self.call("ptr", json_fn(t), f"ptr {d}", f"ptr {v}"), "string", True
             if is_list(t):
-                return self.call("ptr", "@pn_json_list", f"ptr {v}", f"i64 {KIND[elem_of(t)]}"), "string", True
+                return self.call("ptr", "@pn_json_list", f"ptr {v}", f"i64 {kind_of(elem_of(t))}"), "string", True
             if is_map(t):
                 return self.call("ptr", "@pn_json_map", f"ptr {v}"), "string", True
             if t == "string":
@@ -3945,6 +4059,9 @@ class FuncGen:
                 self.argc(e, 2)
                 key_e, seq_e = args
             seq, st = self.seq_of(seq_e, e.line)
+            item = elem_of(st) if is_list(st) else map_kv(st)[1] if is_map(st) else None
+            if name == "isset" and item and is_opt(item):
+                return self.isset_opt(seq, st, item, key_e, e.line), "bool", False
             if is_map(st):
                 key = self.map_key(st, key_e, e.line)
                 return self.i64_to_bool(self.call("i64", "@pn_map_has", f"ptr {seq}", f"i64 {key}")), "bool", False
@@ -3972,7 +4089,7 @@ class FuncGen:
             m, _ = self.base_value(a.seq, e.line)
             key = self.map_key(mt, a.idx, e.line)
             vt = map_kv(mt)[1]
-            if owns_ptr(vt):
+            if per_item(vt):
                 self.call("void", "@pn_map_del_with", f"ptr {m}", f"i64 {key}", f"ptr {item_fn('free', vt)}")
             else:
                 self.call("void", "@pn_map_del", f"ptr {m}", f"i64 {key}")
@@ -4441,7 +4558,7 @@ class FuncGen:
             elif is_heap(et):
                 v, t = self.owned_value(s.val, et, s.line, into=name)    # the list owns what it holds
             else:
-                v, t = self.borrow(s.val)
+                v, t = self.borrow(s.val, et)
             v = self.coerce(v, t, et, s.line, f"appending to {name}")
             lst, _ = self.use_var(name, s.line)
             ln, cp, capp, full = self.tmp(), self.tmp(), self.tmp(), self.tmp()
@@ -4468,8 +4585,10 @@ class FuncGen:
             if op not in ("=", ".=") or (op == ".=" and et != "string"):
                 raise CompileError(f"'{op}' needs numbers; {name} is {st}", s.line)
             v, t = self.owned_value(s.val, et, s.line, into=name) if op == "=" else self.borrow(s.val)
-            if t != et:
+            if op == ".=" and t != "string":
                 raise CompileError(f"storing into {name}: expected {et} but got {t}", s.line)
+            if op == "=":
+                v = self.coerce(v, t, et, s.line, f"storing into {name}")
             lst, _ = self.use_var(name, s.line)
             iv, it = self.borrow(tg.idx)
             if it != "int":
@@ -4487,7 +4606,7 @@ class FuncGen:
             et = elem_of(st)
             if op == ".=":
                 raise CompileError("'.=' needs a string", s.line)
-            v, t = self.borrow(s.val)
+            v, t = self.borrow(s.val, et)
             lst, _ = self.use_var(name, s.line)
             iv, it = self.borrow(tg.idx)
             if it != "int":
@@ -4565,7 +4684,10 @@ class FuncGen:
             v = self.coerce(v, vt, tt, line, f"storing into {show(tg)}")
             if tg.kind == "append":
                 lst, _ = self.base_value(tg.seq, line)
-                self.call("void", "@pn_list_push", f"ptr {lst}", f"i64 {esize(tt)}", f"i64 {self.to_bits(v, tt)}")
+                if is_opt_scalar(tt):
+                    self.store_elem(self.call("ptr", "@pn_list_push_slot", f"ptr {lst}", f"i64 {esize(tt)}"), v, tt)
+                else:
+                    self.call("void", "@pn_list_push", f"ptr {lst}", f"i64 {esize(tt)}", f"i64 {self.to_bits(v, tt)}")
                 return
             p, t, st = self.place(tg, line, create=True)
             if is_heap(t):
@@ -4715,6 +4837,9 @@ class FuncGen:
             if vt == "bool":
                 raise CompileError("foreach with & does not work on bools yet; assign by index: $xs[$i] = ...",
                                    s.line)
+            if is_map(st) and is_opt_scalar(vt):
+                raise CompileError(f"foreach with & does not work on {vt} map values yet; assign by key: "
+                                   f"$m[$k] = ...", s.line)
             self.vars[s.var] = vt
             self.refs.add(s.var)
         else:
@@ -4934,18 +5059,12 @@ def resolve_type(t, mid, imports, line, file=None):
         e = resolve_type(t[5:-1], mid, imports, line, file)
         if e in ("db", "rows", "sub", "stream"):
             raise CompileError(f"a list cannot hold {e} values", line, file)
-        if is_opt(e):
-            raise CompileError(f"list<{e}> is not in Pin yet (null.md step 6): a list cannot hold null. Leave the "
-                               f"missing items out, or use a map keyed by position", line, file)
         return f"list<{e}>"
     if t.startswith("map<"):
         k, v = split_type_args(t[4:-1])
         v = resolve_type(v, mid, imports, line, file)
         if v in ("db", "rows", "sub", "stream") or holds_task(v):
             raise CompileError(f"a map cannot hold {v} values", line, file)
-        if is_opt(v):
-            raise CompileError(f"map<{k},{v}> is not in Pin yet (null.md step 6): a map cannot hold null. Leave "
-                               f"the key out instead (isset($m[$k]) tells whether it is there)", line, file)
         return f"map<{k},{v}>"
     if "::" in t:
         alias, name = t.split("::", 1)

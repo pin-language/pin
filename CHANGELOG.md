@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`list<?T>` and `map<K,?T>`** (design/null.md step 6): items that may be null, e.g. `[1, null, 3]` or
+  `map<string,?string>`. An item is `?T` (check it, or `$xs[$i] ?? 0`, which also covers a null item);
+  `isset()` is false for a null item as in PHP; `fill($n, null)`; JSON both ways. Existing programs compile to the
+  same code (one new `declare` line).
 - **`time()`**: Unix seconds, like PHP. Tack's sessions use it instead of SQLite's clock, so their SQL runs on
   PostgreSQL too. `date()` / `microtime()` are still compile errors that point at it.
 - **`?int`, `?float`, `?bool`** (design/null.md step 5): the value and a "has a value" flag side by side in
