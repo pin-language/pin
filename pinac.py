@@ -806,6 +806,17 @@ def llty(t):
     return OPT_SCALAR.get(t) or {"int": "i64", "float": "double", "bool": "i1", "void": "void"}.get(t, "ptr")
 
 
+def task_frame(argtys, ret):
+    """Byte offsets in a go task's frame: the result at 0 and the error pointer at 8 (where the runtime and the
+    task's free function read them); for a ?int / ?float / ?bool result its "has a value" flag at 16; then the
+    arguments (16 bytes for a ?int / ?float pair, 8 for the rest). Returns (offsets, first free offset)."""
+    off, out = 24 if is_opt_scalar(ret) else 16, []
+    for ty in argtys:
+        out.append(off)
+        off += 16 if ty in (OPT_SCALAR["?int"], OPT_SCALAR["?float"]) else 8
+    return out, off
+
+
 def fn_llret(ret, throws):
     """LLVM return type of a function: a function that can fail also returns an error pointer (null = no error),
     in registers next to the result (error-handling.md E-R3)."""
@@ -1274,8 +1285,9 @@ class Module:
             return name
         L = [f"define internal void {name}(ptr %f) {{", "entry:"]
         args = []
+        offs, rest = task_frame(argtys, ret)
         for i, ty in enumerate(argtys):
-            L += [f"  %p{i} = getelementptr inbounds i8, ptr %f, i64 {16 + 8 * i}", f"  %a{i} = load {ty}, ptr %p{i}"]
+            L += [f"  %p{i} = getelementptr inbounds i8, ptr %f, i64 {offs[i]}", f"  %a{i} = load {ty}, ptr %p{i}"]
             args.append(f"{ty} %a{i}")
         rt = fn_llret(ret, throws)
         call = f"call {rt} @\"f.{key}\"({', '.join(args)})"
@@ -1285,12 +1297,17 @@ class Module:
                 L += ["  %ep = getelementptr inbounds i8, ptr %f, i64 8", "  store ptr %r, ptr %ep"]
             else:
                 L += [f"  %v = extractvalue {rt} %r, 0", f"  %e = extractvalue {rt} %r, 1",
-                      "  %ep = getelementptr inbounds i8, ptr %f, i64 8", "  store ptr %e, ptr %ep",
-                      f"  store {llty(ret)} %v, ptr %f"]
-        elif ret != "void":
-            L.append(f"  store {llty(ret)} %r, ptr %f")
+                      "  %ep = getelementptr inbounds i8, ptr %f, i64 8", "  store ptr %e, ptr %ep"]
+        if ret != "void":
+            v = "%v" if throws else "%r"
+            if is_opt_scalar(ret):              # the value at 0, the flag at 16 (8 holds the error)
+                L += [f"  %rv = extractvalue {llty(ret)} {v}, 0", f"  %rf = extractvalue {llty(ret)} {v}, 1",
+                      f"  store {llty(ret[1:])} %rv, ptr %f", "  %fp = getelementptr inbounds i8, ptr %f, i64 16",
+                      "  store i1 %rf, ptr %fp"]
+            else:
+                L.append(f"  store {llty(ret)} {v}, ptr %f")
         for j, t in enumerate(owned):
-            off = 16 + 8 * (len(argtys) + j)
+            off = rest + 8 * j
             L += [f"  %o{j}p = getelementptr inbounds i8, ptr %f, i64 {off}", f"  %o{j} = load ptr, ptr %o{j}p",
                   f"  call void {free_fn(t)}(ptr %o{j})"]
         L += ["  ret void", "}"]
@@ -2650,9 +2667,6 @@ class FuncGen:
             raise CompileError(f"unknown function {c.name}()", e.line)
         params, (_, ret), throws = self.mod.params[key], self.mod.funcs[key], self.mod.throws.get(key, False)
         c = self.with_defaults(c, params, self.mod.defaults.get(key), c.name)
-        if is_opt_scalar(ret) or any(is_opt_scalar(pt) for pt, _, _ in params):
-            raise CompileError(f"go {c.name}(): a task cannot take or give ?int, ?float or ?bool yet. Pass a value "
-                               f"and a bool, or a ?string", e.line)
         mark = len(self.temps)
         slots, roots, lent = [], set(), set()
         for i, (a, (pt, pn, ref)) in enumerate(zip(c.args, params)):
@@ -2677,10 +2691,12 @@ class FuncGen:
                     roots |= self.task_roots(a)
         owned = self.temps[mark:]                   # temporaries made for the arguments: the task frees them
         del self.temps[mark:]
-        frame = self.call("ptr", "@pn_obj_new", f"i64 {16 + 8 * (len(slots) + len(owned))}")
-        for i, (ty, v) in enumerate(slots + [("ptr", v) for v, _ in owned]):
+        offs, rest = task_frame([ty for ty, _ in slots], ret)
+        frame = self.call("ptr", "@pn_obj_new", f"i64 {rest + 8 * len(owned)}")
+        for off, (ty, v) in zip(offs + [rest + 8 * j for j in range(len(owned))],
+                                slots + [("ptr", v) for v, _ in owned]):
             p = self.tmp()
-            self.emit(f"{p} = getelementptr inbounds i8, ptr {frame}, i64 {16 + 8 * i}")
+            self.emit(f"{p} = getelementptr inbounds i8, ptr {frame}, i64 {off}")
             self.emit(f"store {ty} {v}, ptr {p}")
         tramp = self.mod.go_trampoline(key, [ty for ty, _ in slots], ret, throws, [t for _, t in owned])
         task = self.call("ptr", "@pn_go", f"ptr {tramp}", f"ptr {frame}")
@@ -2720,10 +2736,21 @@ class FuncGen:
         if ret == "void":
             self.call("void", "@pn_obj_free", f"ptr {frame}")
             return None, "void", False
-        v = self.tmp()
-        self.emit(f"{v} = load {llty(ret)}, ptr {frame}")
+        v = self.frame_result(frame, ret)
         self.call("void", "@pn_obj_free", f"ptr {frame}")
         return v, ret, is_heap(ret)
+
+    def frame_result(self, frame, ret):
+        """What a finished task gave, from its frame (see task_frame)."""
+        v = self.tmp()
+        if is_opt_scalar(ret):                  # the value at 0, the flag at 16
+            fp, fl = self.tmp(), self.tmp()
+            self.emit(f"{v} = load {llty(ret[1:])}, ptr {frame}")
+            self.emit(f"{fp} = getelementptr inbounds i8, ptr {frame}, i64 16")
+            self.emit(f"{fl} = load i1, ptr {fp}")
+            return self.wrap_opt(v, ret, fl)
+        self.emit(f"{v} = load {llty(ret)}, ptr {frame}")
+        return v
 
     def tasks_done(self, line):
         """C1: a task started in this function is awaited before it returns (on every path)."""
@@ -4377,8 +4404,7 @@ class FuncGen:
             if rt == "void":
                 self.call("void", "@pn_obj_free", f"ptr {frame}")
                 return None, "void", False
-            v = self.tmp()
-            self.emit(f"{v} = load {llty(rt)}, ptr {frame}")
+            v = self.frame_result(frame, rt)
             self.call("void", "@pn_obj_free", f"ptr {frame}")
             return v, rt, is_heap(rt)
         if name == "sleep_ms":

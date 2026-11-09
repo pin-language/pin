@@ -604,7 +604,7 @@ Str *pn_json_str(Str *s) { return json_string(NULL, s->data, s->len); }
 
 // Bytes from a database as a JSON string, or as JSON text as it is: U+FFFD where they are not UTF-8 (a SQLite
 // TEXT column can hold any bytes; so can a PostgreSQL database in the SQL_ASCII encoding).
-static Str *json_text(Str *d, const char *p, int64_t n) {
+__attribute__((unused)) static Str *json_text(Str *d, const char *p, int64_t n) {
     if (utf8_valid(p, n)) return json_string(d, p, n);
     Str *t = str_from_lossy(p, n);
     d = json_string(d, t->data, t->len);
@@ -612,7 +612,7 @@ static Str *json_text(Str *d, const char *p, int64_t n) {
     return d;
 }
 
-static Str *add_text(Str *d, const char *p, int64_t n) {
+__attribute__((unused)) static Str *add_text(Str *d, const char *p, int64_t n) {
     if (utf8_valid(p, n)) return str_add_bytes(d, p, n);
     Str *t = str_from_lossy(p, n);
     d = str_add_bytes(d, t->data, t->len);

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `go` tasks take and give `?int`, `?float`, `?bool` (also through `await_all` and `await_timeout`).
 - **A checked property counts as not null** (null.md N2): `if ($u->email !== null) { strlen($u->email); }`,
   `$u->addr !== null && $u->addr->zip !== null`, `$this->email`, until the object is changed (assignment, a
   changing method, `&`, or a loop that does so).
@@ -25,7 +26,7 @@
 - **`?int`, `?float`, `?bool`** (design/null.md step 5): the value and a "has a value" flag side by side in
   registers, two 8-byte slots in an object. Checks, `??`, `?? throw`, `?->`, `?:`, `&` parameters, defaults and
   JSON work as for `?string`. Programs without them compile to the same code as before (all 51 tests, examples
-  and benchmarks checked). Not yet: passing or returning them through `go` tasks.
+  and benchmarks checked). 
 - **null** (design/null.md steps 1–4): `?string`, `?list<T>`, `?map<K,V>` and `?ClassName` for variables,
   parameters, returns and properties (a `?T` property starts as null). A `?T` variable must be checked before use;
   `if ($u !== null)`, `if ($u === null) { return; }`, `&&`, `||`, `!`, `isset($u)`, `while` and `?:` narrow it to

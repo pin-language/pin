@@ -404,6 +404,8 @@ void *pn_await(Task *t) {
 List *pn_list_new(int64_t esize);
 void pn_list_free(List *l);
 void pn_list_push(List *l, int64_t esize, uint64_t bits);
+void *pn_list_push_slot(List *l, int64_t esize);
+
 List *pn_await_all(List *tasks, int64_t esize, void (*free_res)(void *), void (*free_err)(void *), void **err_out) {
     List *out = pn_list_new(esize);
     void *err = NULL;
@@ -411,7 +413,11 @@ List *pn_await_all(List *tasks, int64_t esize, void (*free_res)(void *), void (*
         void **f = pn_await(((Task **)tasks->data)[i]);
         void *e = f[1];
         if (e) { if (!err) err = e; else free_err(e); }
-        else if (!err) {
+        else if (!err && (esize == 16 || esize == 2)) {   // ?int / ?float, ?bool: the value, then the flag kept at
+            char *item = pn_list_push_slot(out, esize);  // byte 16 of the frame (pinac.py task_frame)
+            memcpy(item, f, esize == 16 ? 8 : 1);
+            item[esize == 16 ? 8 : 1] = ((char *)f)[16];
+        } else if (!err) {
             uint64_t bits = 0;
             memcpy(&bits, f, (size_t)esize);
             pn_list_push(out, esize, bits);
