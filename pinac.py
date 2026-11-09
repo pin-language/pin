@@ -1006,17 +1006,13 @@ PHP_FUNCTION_HINTS = {
     "array_map": "no array_map() yet: use a for/foreach loop into a new list",
     "array_filter": "no array_filter() yet: use a foreach loop into a new list",
     "array_reduce": "no array_reduce() yet: use a foreach loop",
-    "array_search": "no array_search() yet: loop and return the index, -1 if not found",
-    "array_push": "write $xs[] = $value;", "array_pop": "no array_pop() yet",
-    "array_merge": "no array_merge() yet: copy() one list and append the other in a loop",
-    "array_slice": "no array_slice() yet: copy the range in a loop", "count_chars": "not in Pin",
+        "array_push": "write $xs[] = $value;", "array_pop": "no array_pop() yet",
+        "count_chars": "not in Pin",
     "print_r": "no print_r(): echo json_encode($value)", "var_dump": "no var_dump(): echo json_encode($value)",
     "print": "use echo",
     "fgets": "try read_line() reads one line of standard input", "readline": "try read_line()",
     "stream_get_line": "try read_line()",
-    "is_numeric": "no is_numeric() yet: check the characters with substr() in a loop",
-    "strrev": "no strrev() yet: loop from the end with substr($s, $i, 1)",
-    "usleep": "sleep_ms($milliseconds) waits without blocking other tasks",
+            "usleep": "sleep_ms($milliseconds) waits without blocking other tasks",
     "sleep": "sleep_ms($milliseconds): Pin counts milliseconds (sleep_ms(1000) is one second) and does not block "
              "other tasks",
     "rand": "random_int($min, $max) (from the system's secure random source)",
@@ -1065,11 +1061,11 @@ NOT_IN_PIN = {
     "yield": "generators are not in Pin",
 }
 NORMALIZER_FORMS = {"FORM_D": 4, "NFD": 4, "FORM_KD": 8, "NFKD": 8, "FORM_C": 16, "NFC": 16, "FORM_KC": 32, "NFKC": 32}
-CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
+CONSTANTS = {"STR_PAD_LEFT": ("int", 0), "STR_PAD_RIGHT": ("int", 1), "STR_PAD_BOTH": ("int", 2), "PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
@@ -1128,6 +1124,15 @@ declare i64 @pn_mb_ord(ptr)
 declare ptr @pn_mb_case(ptr, i64)
 declare ptr @pn_str_replace(ptr, ptr, ptr)
 declare ptr @pn_fmt(ptr, i64, i64, i64, i64, i64)
+declare ptr @pn_list_slice(ptr, i64, i64, i64, i64, ptr)
+declare ptr @pn_list_merge(ptr, ptr, i64, ptr)
+declare ptr @pn_list_reverse(ptr, i64, ptr)
+declare i64 @pn_list_index(ptr, i64, i64)
+declare ptr @pn_list_unique(ptr, i64)
+declare i64 @pn_is_numeric(ptr)
+declare ptr @pn_str_pad(ptr, i64, ptr, i64)
+declare ptr @pn_ucwords(ptr)
+declare ptr @pn_strrev(ptr)
 declare ptr @pn_date(ptr, i64)
 declare ptr @pn_str_trim_side(ptr, i64)
 declare ptr @pn_ucfirst(ptr, i64)
@@ -4294,6 +4299,51 @@ class FuncGen:
             self.emit(f"{n} = load i64, ptr {r}")
             self.call("void", "@pn_str_free", f"ptr {r}")
             return n, "int", False
+        if name in ("array_slice", "array_merge", "array_reverse"):
+            self.argc(e, *{"array_slice": (2, 3), "array_merge": (2, 2), "array_reverse": (1, 1)}[name])
+            v, t = self.borrow(args[0])
+            if not is_list(t):
+                raise CompileError(f"{name}() works on lists, not {t}", e.line)
+            et = elem_of(t)
+            bad = uncopyable(et)
+            if bad:
+                raise CompileError(f"{name}() would copy the items, and {bad} cannot be copied", e.line)
+            cp = item_fn("copy", et) if (is_heap(et)) else "null"
+            if name == "array_slice":
+                off = self.int_arg(e, 1)
+                ln = self.int_arg(e, 2) if len(args) == 3 else "0"
+                return self.call("ptr", "@pn_list_slice", f"ptr {v}", f"i64 {esize(et)}", f"i64 {off}", f"i64 {ln}",
+                                 f"i64 {int(len(args) == 3)}", f"ptr {cp}"), t, True
+            if name == "array_merge":
+                w, t2 = self.borrow(args[1])
+                if t2 != t:
+                    raise CompileError(f"array_merge() joins two lists of one type: {t} and {t2}", e.line)
+                return self.call("ptr", "@pn_list_merge", f"ptr {v}", f"ptr {w}", f"i64 {esize(et)}", f"ptr {cp}"), t, True
+            return self.call("ptr", "@pn_list_reverse", f"ptr {v}", f"i64 {esize(et)}", f"ptr {cp}"), t, True
+        if name in ("array_search", "array_unique"):
+            self.argc(e, 2 if name == "array_search" else 1)
+            lv, lt = self.borrow(args[-1] if name == "array_search" else args[0])
+            if not (is_list(lt) and elem_of(lt) in KIND):
+                raise CompileError(f"{name}() works on a list of int, float, bool or string, not {lt}", e.line)
+            et = elem_of(lt)
+            if name == "array_unique":
+                return self.call("ptr", "@pn_list_unique", f"ptr {lv}", f"i64 {KIND[et]}"), lt, True
+            v, t = self.borrow(args[0], et)
+            v = self.coerce(v, t, et, e.line, "array_search()")
+            return self.call("i64", "@pn_list_index", f"ptr {lv}", f"i64 {self.to_bits(v, et)}", f"i64 {KIND[et]}"), \
+                "int", False
+        if name == "is_numeric":
+            self.argc(e, 1)
+            return self.i64_to_bool(self.call("i64", "@pn_is_numeric", f"ptr {self.str_arg(e, 0)}")), "bool", False
+        if name == "str_pad":
+            self.argc(e, 2, 4)
+            sv, n = self.str_arg(e, 0), self.int_arg(e, 1)
+            pad = self.str_arg(e, 2) if len(args) > 2 else self.mod.lit(" ")
+            ty = self.int_arg(e, 3) if len(args) > 3 else "1"
+            return self.call("ptr", "@pn_str_pad", f"ptr {sv}", f"i64 {n}", f"ptr {pad}", f"i64 {ty}"), "string", True
+        if name in ("ucwords", "strrev"):
+            self.argc(e, 1)
+            return self.call("ptr", f"@pn_{name}", f"ptr {self.str_arg(e, 0)}"), "string", True
         if name == "date":
             self.argc(e, 1, 2)
             f = self.str_arg(e, 0)

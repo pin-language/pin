@@ -135,6 +135,22 @@ f("date", N, "date(string $format, int $timestamp = time()): string", "A time as
    "Always UTC: Pin has no time zones yet (`T` is `UTC`, `P` is `+00:00`). For an API, `date(\"c\")` (ISO 8601) "
    "or plain `time()` numbers are the usual choice."],
   php="Like `date()` with `date.timezone=UTC`.")
+f("str_pad", S, "str_pad(string $s, int $length, string $pad = \" \", int $type = STR_PAD_RIGHT): string",
+  "Pad a string to `$length` bytes.",
+  r'''echo "[", str_pad("7", 3, "0", STR_PAD_LEFT), "] [", str_pad("ab", 6), "] [", str_pad("ab", 6, "-", STR_PAD_BOTH), "]\n";''',
+  ["`STR_PAD_RIGHT` (default), `STR_PAD_LEFT`, `STR_PAD_BOTH`. Lengths are bytes, as in PHP; only whole characters "
+   "of `$pad` are added, so the result can be a little shorter with a Thai `$pad`."])
+f("STR_PAD_LEFT", S, "STR_PAD_LEFT: int", "For `str_pad()`: pad on the left.", r'''echo STR_PAD_LEFT, "\n";''', kind="constant")
+f("STR_PAD_RIGHT", S, "STR_PAD_RIGHT: int", "For `str_pad()`: pad on the right (the default).", r'''echo STR_PAD_RIGHT, "\n";''', kind="constant")
+f("STR_PAD_BOTH", S, "STR_PAD_BOTH: int", "For `str_pad()`: pad both sides.", r'''echo STR_PAD_BOTH, "\n";''', kind="constant")
+f("ucwords", S, "ucwords(string $s): string", "Upper-case the first letter of every word (ASCII a–z).",
+  r'''echo ucwords("hello big world"), "\n";''')
+f("strrev", S, "strrev(string $s): string", "The string backwards, by what a reader sees as characters.",
+  r'''echo strrev("stressed"), " ", strrev("ไทย"), "\n";''',
+  php="PHP reverses bytes, which breaks UTF-8 text; Pin reverses grapheme clusters (Thai marks stay on their letter).")
+f("is_numeric", S, "is_numeric(string $s): bool", "Whether the text is a number PHP would accept (`12`, `-1.5`, `2e3`, spaces around).",
+  r'''foreach (["12", " 1.5 ", "1e3", "12abc", ""] as $s) { echo is_numeric($s) ? "y" : "n"; }
+echo "\n";''', ["Check with it, then read the value with `intval()` / `floatval()`."], php="For strings (PHP's also takes ints and floats).")
 f("str_replace", S, "str_replace(string $search, string $replace, string $subject): string",
   "Replace every `$search` in `$subject`.",
   r'''echo str_replace("cat", "dog", "cat and catalog"), " ", str_replace("-", "", "08-1234-5678"), "\n";''',
@@ -185,6 +201,18 @@ f("implode", S, "implode(string $glue, list<string|int|float> $xs): string", "Jo
 f("PHP_EOL", S, "PHP_EOL: string", r'The string `"\n"`.', r'''echo "line", PHP_EOL;''', kind="constant")
 
 # ----------------------------------------------------------------------------------------- lists and maps
+f("array_slice", L, "array_slice(list<T> $xs, int $offset, int $length = rest): list<T>", "A copy of part of a list.",
+  r'''echo json_encode(array_slice([1, 2, 3, 4, 5], 1, 2)), json_encode(array_slice([1, 2, 3, 4, 5], -2)), "\n";''',
+  ["`substr()`'s rules for negative values, counted in items. The items are copied."])
+f("array_merge", L, "array_merge(list<T> $a, list<T> $b): list<T>", "A new list: the items of `$a`, then those of `$b` (copied).",
+  r'''echo json_encode(array_merge([1, 2], [3])), "\n";''', php="Two lists of one type (no maps, no more than two).")
+f("array_reverse", L, "array_reverse(list<T> $xs): list<T>", "A copy of the list in reverse order.",
+  r'''echo json_encode(array_reverse(["a", "b", "c"])), "\n";''')
+f("array_search", L, "array_search(T $value, list<T> $xs): int", "The index of the first item equal to `$value`, or -1.",
+  r'''echo array_search("b", ["a", "b"]), " ", array_search(9, [1, 2]), "\n";''',
+  php="PHP returns `false` when not found; Pin returns `-1` (as `strpos`). Strict comparison.")
+f("array_unique", L, "array_unique(list<T> $xs): list<T>", "The list without repeated items (first ones kept, in order).",
+  r'''echo json_encode(array_unique(["b", "a", "b", "c", "a"])), "\n";''', ["Lists of int, float, bool or string."])
 f("in_array", L, "in_array(T $value, list<T> $xs): bool", "Whether the list holds the value (lists of int, float, bool, string).",
   r'''echo in_array("tea", ["coffee", "tea"]) ? "yes" : "no", " ", in_array(4, [1, 2, 3]) ? "yes" : "no", "\n";''',
   ["Compares strictly, like `in_array($v, $xs, true)`. For many lookups use a `map<string,bool>` and `isset()`."])

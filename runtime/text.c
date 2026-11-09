@@ -352,3 +352,136 @@ Str *pn_date(Str *fmt, int64_t ts) {
     }
     return d;
 }
+
+// ---- list helpers that copy items: copy is the generated per-item copier for strings, lists, maps and objects,
+// NULL for numbers and bools (copied as bytes)
+static void list_put(List *dst, int64_t esize, const char *item, CopyFn copy) {
+    if (copy) { void *v = copy(*(void **)item); pn_list_push(dst, 8, (uint64_t)v); return; }
+    memcpy(pn_list_push_slot(dst, esize), item, (size_t)esize);
+}
+
+// array_slice($xs, $offset, $length): substr()'s rules for negative values, in items
+List *pn_list_slice(List *l, int64_t esize, int64_t off, int64_t len, int64_t has_len, CopyFn copy) {
+    int64_t n = l->len;
+    if (off < 0) { off += n; if (off < 0) off = 0; }
+    if (off > n) off = n;
+    int64_t end = n;
+    if (has_len) {
+        if (len < 0) end = n + len < off ? off : n + len;
+        else if (len < n - off) end = off + len;
+    }
+    List *r = pn_list_new(esize);
+    for (int64_t i = off; i < end; i++) list_put(r, esize, (char *)l->data + i * esize, copy);
+    return r;
+}
+
+List *pn_list_merge(List *a, List *b, int64_t esize, CopyFn copy) {
+    List *r = pn_list_new(esize);
+    for (int64_t i = 0; i < a->len; i++) list_put(r, esize, (char *)a->data + i * esize, copy);
+    for (int64_t i = 0; i < b->len; i++) list_put(r, esize, (char *)b->data + i * esize, copy);
+    return r;
+}
+
+List *pn_list_reverse(List *l, int64_t esize, CopyFn copy) {
+    List *r = pn_list_new(esize);
+    for (int64_t i = l->len - 1; i >= 0; i--) list_put(r, esize, (char *)l->data + i * esize, copy);
+    return r;
+}
+
+// array_search($v, $xs): the first index, or -1 (kinds as in_array)
+int64_t pn_list_index(List *l, uint64_t bits, int64_t kind) {
+    for (int64_t i = 0; i < l->len; i++) {
+        if (kind == 2) { if (((uint8_t *)l->data)[i] == (uint8_t)bits) return i; continue; }
+        uint64_t x = ((uint64_t *)l->data)[i];
+        if (kind == 3) { if (pn_str_eq((Str *)x, (Str *)bits)) return i; }
+        else if (kind == 1) { double a, b; memcpy(&a, &x, 8); memcpy(&b, &bits, 8); if (a == b) return i; }
+        else if (x == bits) return i;
+    }
+    return -1;
+}
+
+// array_unique($xs): first occurrences, in order (int and string lists through a map, so it stays O(n))
+List *pn_list_unique(List *l, int64_t kind) {
+    int64_t es = kind == 2 ? 1 : 8;
+    List *r = pn_list_new(es);
+    Map *seen = kind == 0 || kind == 3 ? pn_map_new(kind, 0) : NULL;
+    for (int64_t i = 0; i < l->len; i++) {
+        uint64_t x = 0;
+        memcpy(&x, (char *)l->data + i * es, (size_t)es);
+        if (seen) {
+            if (pn_map_has(seen, x)) continue;
+            pn_map_slot(seen, x, 1);
+        } else if (pn_list_index(r, x, kind) >= 0) {
+            continue;
+        }
+        pn_list_push(r, es, kind == 3 ? (uint64_t)pn_str_dup((Str *)x) : x);
+    }
+    if (seen) pn_map_free(seen);
+    return r;
+}
+
+// is_numeric($s) as PHP 8: optional whitespace, a sign, digits with one optional point, an optional exponent,
+// optional trailing whitespace
+int64_t pn_is_numeric(Str *s) {
+    const char *p = s->data, *e = s->data + s->len;
+    while (p < e && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\v' || *p == '\f')) p++;
+    if (p < e && (*p == '+' || *p == '-')) p++;
+    int digits = 0;
+    while (p < e && *p >= '0' && *p <= '9') { p++; digits++; }
+    if (p < e && *p == '.') { p++; while (p < e && *p >= '0' && *p <= '9') { p++; digits++; } }
+    if (!digits) return 0;
+    if (p < e && (*p == 'e' || *p == 'E')) {
+        const char *q = p + 1;
+        if (q < e && (*q == '+' || *q == '-')) q++;
+        if (q < e && *q >= '0' && *q <= '9') { while (q < e && *q >= '0' && *q <= '9') q++; p = q; }
+        else return 0;
+    }
+    while (p < e && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\v' || *p == '\f')) p++;
+    return p == e;
+}
+
+// str_pad($s, $length, $pad, $type): STR_PAD_RIGHT 1, LEFT 0, BOTH 2; lengths in bytes as PHP, but only whole
+// characters of $pad are added
+Str *pn_str_pad(Str *s, int64_t len, Str *pad, int64_t type) {
+    if (len > ((int64_t)1 << 30)) panic_msg("str_pad(): length too large");
+    int64_t need = len - s->len;
+    if (need <= 0 || pad->len == 0) return str_from(s->data, s->len);
+    int64_t left = type == 0 ? need : type == 2 ? need / 2 : 0, right = need - left;
+    Str *d = str_alloc(len);
+    for (int side = 0; side < 2; side++) {
+        int64_t want = side ? right : left, got = 0, i = 0;
+        while (got < want) {
+            int k;
+            utf8_at(pad->data, i, &k);
+            if (got + k > want) break;
+            d = str_add_bytes(d, pad->data + i, k);
+            got += k;
+            i = i + k >= pad->len ? 0 : i + k;
+        }
+        if (!side) d = str_add_bytes(d, s->data, s->len);
+    }
+    return d;
+}
+
+// ucwords: the first letter of every word (after a space, tab or newline) in upper case, ASCII a-z
+Str *pn_ucwords(Str *s) {
+    Str *r = str_from(s->data, s->len);
+    for (int64_t i = 0; i < r->len; i++) {
+        char c = r->data[i];
+        if ((i == 0 || strchr(" \t\r\n\f\v", r->data[i - 1])) && c >= 'a' && c <= 'z') r->data[i] = (char)(c - 32);
+    }
+    return r;
+}
+
+// strrev: the characters as a reader sees them, in reverse (PHP reverses bytes, which breaks UTF-8 and Thai marks)
+Str *pn_strrev(Str *s) {
+    Str *d = str_alloc(s->len);
+    d->len = s->len;
+    d->data[s->len] = 0;
+    for (int64_t i = 0; i < s->len;) {
+        int64_t j = grapheme_end(s->data, s->len, i);
+        memcpy(d->data + (s->len - j), s->data + i, (size_t)(j - i));
+        i = j;
+    }
+    return d;
+}

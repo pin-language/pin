@@ -1,0 +1,13 @@
+// array_slice / merge / reverse / search / unique (items copied), is_numeric, str_pad, ucwords, strrev by graphemes
+list<int> $xs = [1, 2, 3, 4, 5];
+echo json_encode(array_slice($xs, 1, 2)), json_encode(array_slice($xs, -2)), json_encode(array_slice($xs, 1, -1)), json_encode(array_slice($xs, 9)), "\n";
+echo json_encode(array_merge($xs, [6])), json_encode(array_reverse($xs)), " ", array_search(3, $xs), " ", array_search(9, $xs), "\n";
+list<string> $ss = ["b", "a", "b", "c", "a"];
+echo json_encode(array_unique($ss)), json_encode(array_unique([1, 1, 2])), json_encode(array_reverse($ss)), json_encode(array_merge($ss, ["z"])), "\n";
+list<list<int>> $ll = [[1], [2, 3]];
+echo json_encode(array_reverse($ll)), json_encode(array_slice($ll, 1)), json_encode($ll), "\n";
+list<?int> $oi = [1, null, 3];
+echo json_encode(array_reverse($oi)), json_encode(array_slice($oi, 1)), "\n";
+echo is_numeric("12") ? "y" : "n", is_numeric(" 1.5e3 ") ? "y" : "n", is_numeric("12abc") ? "y" : "n", is_numeric(".") ? "y" : "n", is_numeric("-.5") ? "y" : "n", "\n";
+echo "[", str_pad("7", 3, "0", STR_PAD_LEFT), "][", str_pad("ab", 6), "][", str_pad("ab", 7, "-=", STR_PAD_BOTH), "][", str_pad("x", 5, "ไ"), "]\n";
+echo ucwords("hello big world"), " ", strrev("abc"), " ", strrev("ที่นี่ไทย"), "\n";
