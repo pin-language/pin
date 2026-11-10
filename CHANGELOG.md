@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (planned 0.9.0)
+## 0.9.0 — 2026-11-10
 
 Breaking, on purpose (strings are always UTF-8): `chr()` above 127 panics (use `mb_chr()`), `substr()` with an
 offset inside a character panics, a request whose path or body is not UTF-8 gets 400.

@@ -1,4 +1,4 @@
-# HANDOFF — state as of 2026-11-09 (v0.8.0 released; the 0.9.0 set on `next`, not released)
+# HANDOFF — state as of 2026-11-10 (0.9.0: release PRs open, next → release/v0.1.0; tags after merge)
 
 ## 0. Next session (updated 2026-11-09)
 
