@@ -1,1 +1,1 @@
-a task cannot take a function yet (step 4 of closures.md)
+use (&$n) cannot be in a closure that is returned, stored or given to go

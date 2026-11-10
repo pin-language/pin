@@ -1,1 +1,1 @@
-use (&$count) is step 3 of closures.md (not built yet)
+cannot change $names while a foreach is looping over it

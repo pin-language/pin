@@ -1,0 +1,5 @@
+<?php
+// a closure with use (&$n) points at $n of this function: it cannot be copied (kept) (C5)
+$n = 0;
+$inc = function () use (&$n): void { $n++; };
+$kept = copy($inc);

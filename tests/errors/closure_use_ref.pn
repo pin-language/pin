@@ -1,3 +1,5 @@
 <?php
-$count = 0;
-$xs = array_map(function (int $x) use (&$count): int { return $x; }, [1, 2]);
+// use (&$names): calling $add changes $names, so it cannot be called while a foreach walks $names (C5)
+list<string> $names = ["a"];
+$add = function (string $n) use (&$names): void { $names[] = $n; };
+foreach ($names as $n) { $add($n . "!"); }

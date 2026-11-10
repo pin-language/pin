@@ -528,7 +528,7 @@ class Parser:
             raise CompileError("$a[] can only be assigned to", t.line)
         if e.kind == "go":
             raise CompileError("a task started with go must be awaited: $t = go f(...); ... await $t;", t.line)
-        if e.kind not in ("call", "mcall", "nsmcall", "try", "new", "await"):
+        if e.kind not in ("call", "mcall", "nsmcall", "callv", "try", "new", "await"):
             raise CompileError("this expression does nothing on its own. (In a catch block, the value it gives must be "
                                "its last line, outside any if: catch ($e) { if (...) { return ...; } \"\"; })", t.line)
         return Node("exprstmt", t.line, expr=e)
@@ -673,7 +673,7 @@ class Parser:
                     e = Node("nsfield", t.line, obj=e, name=name)
             elif t.kind == "OP" and t.val == "::" and e.kind == "var":
                 raise CompileError("static members are not in Pin; use $obj->name", t.line)
-            elif t.kind == "OP" and t.val == "(" and e.kind in ("var", "field"):     # $f($x): calling an fn value
+            elif t.kind == "OP" and t.val == "(" and e.kind in ("var", "field", "index", "call", "mcall", "callv", "closure", "coalesce", "ternary"):  # $f($x)
                 e = Node("callv", t.line, fn=e, args=self.args())
             else:
                 return e
@@ -888,6 +888,11 @@ def is_fn(t):
     return t.startswith("fn(")
 
 
+def closure_block(ctys):
+    """LLVM type of a closure's block: code, free, copy, then the captured values (runtime FnBlock)."""
+    return "{ ptr, ptr, ptr" + "".join(", " + c for c in ctys) + " }"
+
+
 def fn_parts(t):
     """fn(int,Item):string throws -> (["int", "Item"], "string", True)."""
     depth, i = 0, 2
@@ -922,8 +927,7 @@ def fn_type(params, ret, throws=False):
 
 
 def llty(t):
-    if t.startswith("fn("):
-        return "{ ptr, ptr }"                   # the code, and the captured values (null for a named function)
+    # fn(...) is a ptr too: a block { code, free, copy, captured values } (closures.md, runtime pn_fn_free)
     return OPT_SCALAR.get(t) or {"int": "i64", "float": "double", "bool": "i1", "void": "void"}.get(t, "ptr")
 
 
@@ -979,7 +983,7 @@ def holds_task(t):
 def owns_ptr(t):
     """Lists, maps, objects and tasks: an owned pointer whose freeing / copying / JSON needs per-type code."""
     t = strip_opt(t)
-    return is_list(t) or is_map(t) or is_class(t) or is_task(t)
+    return is_list(t) or is_map(t) or is_class(t) or is_task(t) or is_fn(t)
 
 
 def ell(t):
@@ -1022,7 +1026,8 @@ def is_map(t):
 
 def is_heap(t):
     t = strip_opt(t)
-    return t in ("string", "db", "rows", "sub", "stream") or is_list(t) or is_map(t) or is_class(t) or is_task(t)
+    return t in ("string", "db", "rows", "sub", "stream") or is_list(t) or is_map(t) or is_class(t) or is_task(t) \
+        or is_fn(t)
 
 
 def elem_of(t):
@@ -1057,6 +1062,8 @@ def free_fn(t):
         return "@pn_list_free_str" if e == "string" else need("free", t) if per_item(e) else "@pn_list_free"
     if is_map(t):
         return need("free", t) if per_item(map_kv(t)[1]) else "@pn_map_free"
+    if is_fn(t):
+        return "@pn_fn_free"
     return need("free", t)
 
 
@@ -1077,6 +1084,8 @@ def uncopyable(t, seen=()):
 
 
 def copy_fn(t):
+    if is_fn(t):
+        return "@pn_fn_copy"
     if is_opt(t):
         return need("copy", t)              # null stays null (pn_str_dup(NULL) would give "")
     if t == "string":
@@ -1098,6 +1107,19 @@ def item_fn(kind, t):
 def json_fn(t):
     """A function (ptr out, ptr value) -> ptr out that appends the JSON of a list, map or object."""
     return need("json", t)
+
+
+def mentions_except(node, name, skip):
+    """mentions(), not looking inside the node skip."""
+    if node is skip:
+        return False
+    if isinstance(node, Node):
+        if node.kind == "var" and node.name == name:
+            return True
+        return any(mentions_except(v, name, skip) for k, v in node.__dict__.items() if k not in ("kind", "line"))
+    if isinstance(node, (list, tuple)):
+        return any(mentions_except(x, name, skip) for x in node)
+    return False
 
 
 def mentions(node, name):
@@ -1169,10 +1191,6 @@ NOT_IN_PIN = {
     "static": "Pin has no static variables: pass values as parameters",
     "const": "const is not in Pin yet; use a variable or a function that returns the value",
     "define": "define() is not in Pin yet; use a variable or a function that returns the value",
-    "function": "anonymous functions (closures) are not in Pin yet; declare a named function and pass its name: "
-                "usort($xs, \"by_price\"), array_map(\"label\", $xs), array_filter($xs, \"is_open\")",
-    "fn": "arrow functions are not in Pin yet; declare a named function and pass its name: "
-          "array_map(\"double\", $xs) with function double(int $x): int { return $x * 2; }",
     "array": "array() is not in Pin: write [1, 2] for a list<int> or [\"k\" => 1] for a map<string,int>",
     "list": "list() destructuring is not in Pin; assign each value separately",
     "yield": "generators are not in Pin",
@@ -1430,6 +1448,9 @@ declare i64 @pn_request_has_header(ptr)
 declare void @pn_response_header(ptr, ptr)
 declare ptr @pn_handler_error(ptr)
 declare void @pn_obj_free(ptr)
+declare void @pn_fn_free(ptr)
+declare ptr @pn_fn_copy(ptr)
+declare ptr @pn_fn_nocopy(ptr)
 declare void @pn_list_free_with(ptr, ptr)
 declare ptr @pn_list_copy_with(ptr, ptr)
 declare ptr @pn_json_add_list(ptr, ptr, i64)
@@ -1499,17 +1520,19 @@ class Module:
         return name
 
     def fn_wrapper(self, key, ps, ret, throws):
-        """A named function as an fn value: (ptr env, args) -> the function's result, env unused."""
-        name = f'@"fnv.{key}"'
+        """A named function as an fn value: a constant block whose code is (ptr env, args) -> the function's
+        result, env unused. Returns the block."""
+        name, blk = f'@"fnv.{key}"', f'@"fnb.{key}"'
         if self.inferring or name in self.wrappers:
-            return name
+            return blk
         self.wrappers.add(name)
+        self.go_funcs.append(f"{blk} = internal constant {{ ptr, ptr, ptr }} {{ ptr {name}, ptr null, ptr null }}")
         rt = fn_llret(ret, throws)
         args = [f"{llty(t)} %a{i}" for i, t in enumerate(ps)]
         call = f'call {rt} @"f.{key}"({", ".join(args)})'
         self.go_funcs += [f"define internal {rt} {name}(ptr %env{''.join(', ' + a for a in args)}) {{", "entry:",
                           f"  %r = {call}" if rt != "void" else f"  {call}", "  ret void" if rt == "void" else f"  ret {rt} %r", "}"]
-        return name
+        return blk
 
     def closure_code(self, llname, cname, capts, ps, ret, throws, ir):
         """The trampoline of a closure (ptr env, args): load the captured values, call the body's function."""
@@ -1518,27 +1541,56 @@ class Module:
             return name
         self.wrappers.add(name)
         rt = fn_llret(ret, throws)
-        st = "{ " + ", ".join(llty(t) for t in capts) + " }"
+        st = closure_block(capts)                       # capts: the LLVM types of the captured values
         L = [f"define internal {rt} {name}(ptr %env{''.join(f', {llty(t)} %a{i}' for i, t in enumerate(ps))}) {{", "entry:"]
         cargs = []
-        for i, t in enumerate(capts):
-            L += [f"  %cp{i} = getelementptr inbounds {st}, ptr %env, i32 0, i32 {i}", f"  %c{i} = load {llty(t)}, ptr %cp{i}"]
-            cargs.append(f"{llty(t)} %c{i}")
+        for i, ct in enumerate(capts):
+            L += [f"  %cp{i} = getelementptr inbounds {st}, ptr %env, i32 0, i32 {3 + i}", f"  %c{i} = load {ct}, ptr %cp{i}"]
+            cargs.append(f"{ct} %c{i}")
         cargs += [f"{llty(t)} %a{i}" for i, t in enumerate(ps)]
         call = f"call {rt} {llname}({', '.join(cargs)})"
         L += [f"  %r = {call}" if rt != "void" else f"  {call}", "  ret void" if rt == "void" else f"  ret {rt} %r", "}"]
         self.go_funcs += ir + L
         return name
 
+    def closure_helpers(self, cname, tramp, ctypes):
+        """The free and copy functions of a closure's block (C6): free what it owns, then the block; copy makes a
+        new owned block with copies of the captured values (lists, maps and objects copied deeply, as copy())."""
+        fr, cp = f'@"clofree.{cname}"', f'@"clocopy.{cname}"'
+        if self.inferring or fr in self.wrappers:
+            return fr, cp
+        self.wrappers.add(fr)
+        st = closure_block([llty(t) for t in ctypes])
+        size = f"ptrtoint (ptr getelementptr ({st}, ptr null, i32 1) to i64)"
+        L = [f"define internal void {fr}(ptr %p) {{", "entry:"]
+        for i, t in enumerate(ctypes):
+            if is_heap(t):
+                L += [f"  %q{i} = getelementptr inbounds {st}, ptr %p, i32 0, i32 {3 + i}", f"  %v{i} = load ptr, ptr %q{i}",
+                      f"  call void {free_fn(t)}(ptr %v{i})"]
+        L += ["  call void @pn_obj_free(ptr %p)", "  ret void", "}",
+              f"define internal ptr {cp}(ptr %p) {{", "entry:", f"  %r = call ptr @pn_obj_new(i64 {size})",
+              f"  store ptr {tramp}, ptr %r", "  %h1 = getelementptr inbounds ptr, ptr %r, i64 1",
+              f"  store ptr {fr}, ptr %h1", "  %h2 = getelementptr inbounds ptr, ptr %r, i64 2", f"  store ptr {cp}, ptr %h2"]
+        for i, t in enumerate(ctypes):
+            ty = llty(t)
+            L += [f"  %q{i} = getelementptr inbounds {st}, ptr %p, i32 0, i32 {3 + i}", f"  %v{i} = load {ty}, ptr %q{i}"]
+            v = f"%v{i}"
+            if is_heap(t):
+                L.append(f"  %c{i} = call ptr {copy_fn(t)}(ptr %v{i})")
+                v = f"%c{i}"
+            L += [f"  %d{i} = getelementptr inbounds {st}, ptr %r, i32 0, i32 {3 + i}", f"  store {ty} {v}, ptr %d{i}"]
+        L += ["  ret ptr %r", "}"]
+        self.go_funcs += L
+        return fr, cp
+
     def cmp_adapter(self, et):
-        """usort with an fn value: (ptr ctx, i64 a, i64 b) -> i64, ctx pointing at the { code, env } pair."""
+        """usort with an fn value: (ptr ctx, i64 a, i64 b) -> i64, ctx being the fn value's block."""
         name = f'@"cmpv.{et}"'
         if self.inferring or name in self.wrappers:
             return name
         self.wrappers.add(name)
         ty = llty(et)
-        L = [f"define internal i64 {name}(ptr %ctx, i64 %a, i64 %b) {{", "entry:", "  %fv = load { ptr, ptr }, ptr %ctx",
-             "  %code = extractvalue { ptr, ptr } %fv, 0", "  %env = extractvalue { ptr, ptr } %fv, 1"]
+        L = [f"define internal i64 {name}(ptr %env, i64 %a, i64 %b) {{", "entry:", "  %code = load ptr, ptr %env, !invariant.load !15"]
         for x in ("a", "b"):
             if ty == "i64":
                 L.append(f"  %{x}v = add i64 %{x}, 0")
@@ -1691,6 +1743,12 @@ def gen_helper(mod, name, kind, t):
             emit(f"{r} = call ptr {json_fn(ft)}(ptr {d}, ptr {v})")
         return r
 
+    if is_fn(t):                            # an item callback around the runtime's fn functions
+        if kind == "free":
+            return out + [f"define internal void {name}(ptr %p) {{", "entry:", "  call void @pn_fn_free(ptr %p)",
+                          "  ret void", "}"]
+        return out + [f"define internal ptr {name}(ptr %p) {{", "entry:", "  %r = call ptr @pn_fn_copy(ptr %p)",
+                      "  ret ptr %r", "}"]
     if is_opt(t):                          # free / copy / json of a value that may be null
         inner = t[1:]
         if kind == "free":                  # an item callback: every free function accepts null
@@ -1810,7 +1868,7 @@ def json_string_literal(s):
 def unjsonable(t, seen=()):
     """The part of type t that json_encode() cannot write, or None. Private properties are left out."""
     t = strip_opt(t)
-    if t in ("db", "rows", "sub", "stream") or is_task(t):
+    if t in ("db", "rows", "sub", "stream") or is_task(t) or is_fn(t):
         return t
     if is_list(t):
         return unjsonable(elem_of(t), seen)
@@ -1895,6 +1953,72 @@ def lent_names(node):
                 walk(y)
     walk(node)
     return out
+
+
+def fn_branches(e):
+    """The expressions whose value an expression can be: both sides of ?: and ??."""
+    if e.kind == "ternary":
+        return [x for x in (e.a or e.c, e.b) for x in fn_branches(x)]
+    if e.kind == "coalesce":
+        return fn_branches(e.l) + fn_branches(e.r)
+    return [e]
+
+
+def mark_escaping(nodes):
+    """C6: a closure that is returned, stored in a property, list or map, or given to go -- written there, or kept
+    in a variable that goes there -- owns what it captures. Marks those closure nodes .escaping. (A closure's own
+    body is marked when it is compiled.)"""
+    places, assigns, slots = [], [], set()
+
+    def walk(x):
+        if isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+            return
+        if not isinstance(x, Node) or x.kind == "closure":
+            return
+        k = x.kind
+        if k == "return" and x.val is not None:
+            places.append(x.val)
+        elif k == "assign":
+            if x.target.kind == "var" and x.op == "=":
+                assigns.append((x.target.name, x.val))
+            else:
+                places.append(x.val)
+        elif k == "decl" and x.val is not None:
+            assigns.append((x.name, x.val))
+        elif k == "listlit":
+            places.extend(x.items)
+        elif k == "maplit":
+            places.extend(v for _, v in x.pairs)
+        elif k == "go":
+            places.extend(x.call.args)
+        elif k == "foreach" and getattr(x, "ref", False):
+            slots.add(x.var)                    # foreach (... as &$f): $f is an item of the list / map
+        for kk, v in x.__dict__.items():
+            if kk not in ("kind", "line"):
+                walk(v)
+    walk(nodes)
+    out = set()
+
+    def mark(e):
+        new = False
+        for b in fn_branches(e) if isinstance(e, Node) else ():
+            if b.kind == "closure":
+                b.escaping = True
+            elif b.kind == "var" and b.name not in out:
+                out.add(b.name)
+                new = True
+        return new
+    places += [v for n, v in assigns if n in slots]
+    for e in places:
+        mark(e)
+    changed = True
+    while changed:
+        changed = False
+        for n, v in assigns:
+            if n in out and mark(v):
+                changed = True
 
 
 def free_vars(node):
@@ -2049,6 +2173,10 @@ class FuncGen:
         self.frozen = {}        # variable -> (closure variable, line): read by a closure kept in a variable (C4)
         self.frozen_by = {}     # closure variable -> the variables it keeps read-only
         self.closure_target = None
+        self.ref_caps = {}      # fn variable -> the variables it changes through use (&$x) (C5)
+        self.has_ref_closures = False
+        self.local_fn = set()   # fn variables holding a local closure (a block in this frame: never stored, C4)
+        self.depth, self.top_expr = 0, None     # the outermost expression being evaluated (C5 checks)
         self.loops = []         # Loop: labels + the flows that leave by break / continue
         self.temps = []         # owned temporaries (value, type) freed at the end of the statement
         self.pending = []       # temporaries that must live until a foreach ends
@@ -2087,6 +2215,11 @@ class FuncGen:
                 self.declare(pname, ptype, borrowed=is_heap(ptype))
                 self.inits.append(f"  store {llty(ptype)} %arg.{pname[1:]}, ptr {self.slot(pname)}")
             self.flow.assigned.add(pname)
+
+    @property
+    def shown(self):
+        """How messages name this function."""
+        return f"the closure in {self.closure_of}()" if getattr(self, "closure_of", None) else f"{self.name}()"
 
     @property
     def moved(self):
@@ -2133,6 +2266,8 @@ class FuncGen:
         used again later (ownership-v2.md R2); these numbers say what "later" is."""
         count = [0]
         self.uses = {}
+        self.writes = {}        # variable -> [(order, line)] of the places that replace it (loop check, C4)
+        mark_escaping(nodes)
 
         def walk(x, target=False):
             if isinstance(x, (list, tuple)):
@@ -2151,8 +2286,23 @@ class FuncGen:
                         walk(v)
             count[0] += 1
             x.order = count[0]
+            if x.kind == "closure" and any(r for _, r in x.uses):
+                self.has_ref_closures = True
+            for a in getattr(x, "args", None) or ():
+                if isinstance(a, Node) and a.kind == "closure":
+                    a.as_arg = True             # lives only as long as the call (C4)
             if x.kind == "var" and not target:
                 self.uses.setdefault(x.name, []).append((x.order, x.line))
+            if x.kind == "assign" and x.target.kind == "var":
+                self.writes.setdefault(x.target.name, []).append((x.order, x.line))
+            elif x.kind == "decl":
+                self.writes.setdefault(x.name, []).append((x.order, x.line))
+            elif x.kind == "ref" and x.e.kind == "var":
+                self.writes.setdefault(x.e.name, []).append((x.order, x.line))
+            elif x.kind == "closure":
+                for n, r in x.uses:
+                    if r:               # a call it is given may replace n: counted where the closure is
+                        self.writes.setdefault(n, []).append((x.order, x.line))
             if x.kind in ("while", "for", "foreach"):
                 x.first = first
                 body = x.body.body if x.body.kind == "block" else [x.body]
@@ -2535,6 +2685,10 @@ class FuncGen:
     def owned_value(self, e, hint, line, may_move_string=False, into=None):
         """Evaluate an expression whose result will be stored somewhere: the result must be owned.
         `into`: the variable the result is stored under (it cannot be stored inside itself)."""
+        if self.local_fn and e.kind == "var" and e.name in self.local_fn:
+            raise CompileError(f"{e.name} holds a closure that reads values of this function (a loan), so it can "
+                               f"only be called or passed to a function here. To keep it, store copy({e.name}): the "
+                               f"copy has its own values", line)
         if e.kind == "var" and e.name in self.vars and is_heap(self.vars[e.name]):
             if into == e.name and strip_opt(self.vars[e.name]) != "string":
                 raise CompileError(f"cannot store {e.name} inside itself; store copy({e.name})", line)
@@ -2565,11 +2719,25 @@ class FuncGen:
         if self.walked(src):
             raise CompileError(f"cannot move {src} while a foreach is looping over it", line)
         self.mutating(src, (), line, what="moved")
+        for f, roots in self.ref_caps.items():
+            ln = self.live_use(f, self.at) if src in roots else None
+            if ln:
+                raise CompileError(f"{src} is changed by the closure in {f} (use (&{src})), which can still be "
+                                   f"called (line {ln}), so it cannot be moved. Use copy({src})", line)
         self.moved[src] = line
         self.flow.nonnull.discard(src)
         self.emit(f"store ptr null, ptr {self.slot(src)}")
 
     def expr(self, e, hint=None):
+        if self.depth == 0:
+            self.top_expr = e
+        self.depth += 1
+        try:
+            return self.expr_(e, hint)
+        finally:
+            self.depth -= 1
+
+    def expr_(self, e, hint=None):
         k = e.kind
         if k == "int":
             return str(e.val), "int", False
@@ -2593,6 +2761,8 @@ class FuncGen:
         if k == "closure":
             return self.closure_value(e, hint)
         if k == "callv":
+            if self.ref_caps_seen:
+                self.lend_fns(e)
             return self.call_value(e)
         if k == "val":                          # a value computed already (inside ?->)
             return e.v, e.t, False
@@ -2643,6 +2813,8 @@ class FuncGen:
             return self.listlit(e, hint)
         if k == "maplit":
             return self.maplit(e, hint)
+        if k in ("call", "mcall", "new") and self.ref_caps_seen:
+            self.lend_fns(e)
         if k == "call":
             return self.call_expr(e, hint)
         if k == "field":
@@ -2974,9 +3146,6 @@ class FuncGen:
             raise CompileError(f"unknown function {c.name}()", e.line)
         params, (_, ret), throws = self.mod.params[key], self.mod.funcs[key], self.mod.throws.get(key, False)
         c = self.with_defaults(c, params, self.mod.defaults.get(key), c.name)
-        if any(is_fn(pt) for pt, _, _ in params):
-            raise CompileError(f"go {c.name}(): a task cannot take a function yet (step 4 of closures.md): the closure "
-                               f"reads values of this function, which may be gone while the task runs", e.line)
         mark = len(self.temps)
         slots, roots, lent = [], set(), set()
         for i, (a, (pt, pn, ref)) in enumerate(zip(c.args, params)):
@@ -3232,8 +3401,6 @@ class FuncGen:
                                    f"(got {', '.join(sorted({t for _, t, _ in vals}))})", e.line)
             if et in ("void", "db", "rows"):
                 raise CompileError(f"a list cannot hold {et} values", e.line)
-            if is_fn(et):
-                raise CompileError("a list of functions is step 4 of closures.md (not built yet)", e.line)
             if nulls and not is_opt(et):
                 et = "?" + et
             vals = [("zeroinitializer" if is_opt_scalar(et) else "null", et, False) if t == "null" else (v, t, o)
@@ -3394,8 +3561,6 @@ class FuncGen:
                     vt = t
                     if vt in ("void", "db", "rows"):
                         raise CompileError(f"a map cannot hold {vt} values", e.line)
-                    if is_fn(vt):
-                        raise CompileError("a map of functions is step 4 of closures.md (not built yet)", e.line)
                 if m is None:
                     mt = f"map<{kt},{vt}>"
                     m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {kind_of(vt)}")
@@ -4285,7 +4450,7 @@ class FuncGen:
             self.emit("unreachable")
             return
         if not self.throws:
-            raise CompileError(f"{self.name}() is not declared throws, so an error cannot leave it. Add throws "
+            raise CompileError(f"{self.shown} is not declared throws, so an error cannot leave it. Add throws "
                                f"after the return type (: {self.ret} throws), or handle it with catch", line)
         self.free_temps(self.temps)
         for group, _ in self.temp_stack:
@@ -4331,7 +4496,7 @@ class FuncGen:
 
     def can_propagate(self, line, what):
         if not (self.try_stack or self.throws or self.is_main):
-            raise CompileError(f"{self.name}() is not declared throws, so {what}. Add throws after the return "
+            raise CompileError(f"{self.shown} is not declared throws, so {what}. Add throws after the return "
                                f"type (: {self.ret} throws), or handle the error: try ... catch ($e) {{ ... }}", line)
 
     def try_expr(self, e, hint):
@@ -4575,6 +4740,10 @@ class FuncGen:
             return r, f"list<{vt}>", True
         if name == "copy":
             self.argc(e, 1)
+            if self.ref_caps_seen and self.fn_lends(args[0]):
+                r = sorted(self.fn_lends(args[0]))[0]
+                raise CompileError(f"copy() cannot copy a closure with use (&{r}): it changes {r} of this function, "
+                                   f"and a copy could outlive it. Return the new value from the closure instead", e.line)
             v, t = self.borrow(args[0])
             if t == "string":
                 return self.dup_str(v), t, not v.startswith("@.L")
@@ -4815,7 +4984,9 @@ class FuncGen:
                 fps, fret, fth = fn_parts(ft)
                 if fth:
                     raise CompileError(f"the function given to {name}() cannot be throws", e.line)
-                key, sig = ("value", fnv), (fps, fret)
+                code = self.tmp()
+                self.emit(f"{code} = load ptr, ptr {fnv}, !invariant.load !15")      # once, before the loop
+                key, sig = ("value", fnv, code), (fps, fret)
             key = key if fnv is not None else (self.fkey(Node("call", e.line, name=fe.val, args=[]), quiet=True) if fe.kind == "str" else None)
             sig = sig if fnv is not None else (self.mod.funcs.get(key) if key else None)
             if sig is None and fe.kind == "str" and fe.val in ONE_ARG_BUILTINS:     # array_map("strtoupper", $xs)
@@ -4849,10 +5020,7 @@ class FuncGen:
             self.place_label(body)
             x = self.load_elem(self.list_elem_ptr(lv, et, i), et)
             if isinstance(key, tuple) and key[0] == "value":
-                code, env = self.tmp(), self.tmp()
-                self.emit(f"{code} = extractvalue {{ ptr, ptr }} {key[1]}, 0")
-                self.emit(f"{env} = extractvalue {{ ptr, ptr }} {key[1]}, 1")
-                r = self.call(llty(sig[1]), code, f"ptr {env}", f"{llty(et)} {x}")
+                r = self.call(llty(sig[1]), key[2], f"ptr {key[1]}", f"{llty(et)} {x}")
             elif isinstance(key, tuple):              # a built-in: its own code, on the item
                 mark = len(self.temps)
                 r, rtt, rowned = self.builtin(Node("call", e.line, name=key[1], args=[Node("val", e.line, v=x, t=et)]), None)
@@ -4898,7 +5066,7 @@ class FuncGen:
                 if key is None or self.mod.funcs[key] != ([ct, et], ct) or self.mod.throws.get(key, False):
                     raise CompileError(f'array_reduce($xs, "name", $initial) needs a function declared as '
                                        f'function name({ct} $carry, {et} $item): {ct}', e.line)
-                fv = self.fn_pair(self.mod.fn_wrapper(key, [ct, et], ct, False), "null")
+                fv = self.mod.fn_wrapper(key, [ct, et], ct, False)
             else:
                 fv, ft = self.borrow(args[1], want)
                 if ft != want:
@@ -4907,9 +5075,8 @@ class FuncGen:
             self.n += 1
             self.allocas.append(f"  {slot} = alloca {llty(ct)}")
             self.emit(f"store {llty(ct)} {cv}, ptr {slot}")
-            code, env, n = self.tmp(), self.tmp(), self.tmp()
-            self.emit(f"{code} = extractvalue {{ ptr, ptr }} {fv}, 0")
-            self.emit(f"{env} = extractvalue {{ ptr, ptr }} {fv}, 1")
+            code, env, n = self.tmp(), fv, self.tmp()
+            self.emit(f"{code} = load ptr, ptr {fv}, !invariant.load !15")
             self.emit(f"{n} = load i64, ptr {lv}, !tbaa !1")
             pre, head, body, done = self.label, self.newlabel("redh"), self.newlabel("redb"), self.newlabel("rede")
             self.emit(f"br label %{head}")
@@ -4954,11 +5121,7 @@ class FuncGen:
                     raise CompileError(f"usort() needs an fn({et}, {et}): int, not {ft}", e.line)
                 self.mutating(root, props, e.line, at=e.order, what="sorted")
                 v, _ = self.base_value(a, e.line)
-                ctx = f"%v.__cmp{self.n}"
-                self.n += 1
-                self.allocas.append(f"  {ctx} = alloca {{ ptr, ptr }}")
-                self.emit(f"store {{ ptr, ptr }} {fv}, ptr {ctx}")
-                self.call("void", "@pn_list_usort_ctx", f"ptr {v}", f"ptr {self.mod.cmp_adapter(et)}", f"ptr {ctx}")
+                self.call("void", "@pn_list_usort_ctx", f"ptr {v}", f"ptr {self.mod.cmp_adapter(et)}", f"ptr {fv}")
                 return None, "void", False
             key = self.fkey(Node("call", e.line, name=h.val, args=[]), quiet=True) if h.kind == "str" else None
             want = f"function {h.val if h.kind == 'str' else 'compare'}({et} $a, {et} $b): int"
@@ -5700,19 +5863,69 @@ class FuncGen:
         self.flow.maybe.discard(name)
         self.flow.assigned.add(name)
 
-    # --- closures (design/closures.md, steps 1-2)
+    # --- closures (design/closures.md)
+    @property
+    def ref_caps_seen(self):
+        return self.has_ref_closures or bool(self.ref_caps)
+
+    def fn_lends(self, x):
+        """The variables a call of the functions in x can change: use (&$v) of a closure written there, and what the
+        fn variables named there change (C5)."""
+        out = set()
+
+        def walk(y):
+            if isinstance(y, Node):
+                if y.kind == "closure":
+                    out.update(n for n, r in y.uses if r)
+                    out.update(r for v in free_vars(y.body) for r in self.ref_caps.get(v, ()))
+                    return
+                if y.kind == "var" and y.name in self.ref_caps:
+                    out.update(self.ref_caps[y.name])
+                for k, v in y.__dict__.items():
+                    if k not in ("kind", "line"):
+                        walk(v)
+            elif isinstance(y, (list, tuple)):
+                for z in y:
+                    walk(z)
+        walk(x)
+        return out
+
+    def lend_fns(self, e):
+        """A call that is given (or is) a closure changing $v through use (&$v) changes $v while it runs: it is
+        a change of $v at this point (no foreach over it, no loan of it used later), and nothing else in the
+        expression may read $v (it could be freed under it)."""
+        parts = ([e.fn] if e.kind == "callv" else []) + list(e.args or ())
+        for a in parts:
+            roots = self.fn_lends(a)
+            for r in sorted(roots):
+                who = show(a) if a.kind == "var" else "the closure given here"
+                self.mutating(r, (), e.line, at=getattr(e, "order", self.at), what="changed")
+                if is_opt(self.vars.get(r, "")):
+                    self.flow.nonnull.discard(r)
+                if mentions_except(self.top_expr, r, a):
+                    raise CompileError(f"{who} changes {r} (use (&{r})), so nothing else in this expression can use "
+                                       f"{r}: read it in a statement of its own", e.line)
+                for b, broots in self.borrow_vars.items():
+                    if any(x == r for x, _ in broots) and mentions_except(self.top_expr, b, a):
+                        raise CompileError(f"{who} changes {r} (use (&{r})), and {b} borrows from {r}: they cannot "
+                                           f"be used in the same expression", e.line)
+
+    def no_lend_into(self, root, val, line):
+        if root and root in self.fn_lends(val):
+            raise CompileError(f"the closure called here changes {root} (use (&{root})), so its result cannot be "
+                               f"stored into {root} in the same statement: $r = ...; then store $r", line)
+
+    def fn_local(self, e):
+        """Does e give a local closure (a block in this function's frame)?"""
+        return any((b.kind == "closure" and not getattr(b, "escaping", False)) or
+                   (b.kind == "var" and b.name in self.local_fn) for b in fn_branches(e))
+
     def check_frozen(self, name, line):
         if name in self.frozen:
             f, at = self.frozen[name]
             raise CompileError(f"{name} is read by the closure in {f} (line {at}), so it cannot change while {f} can "
                                f"still be called. Change it before making the closure, or give the closure its own "
                                f"value: $copy = {name}; then use $copy in the closure", line)
-
-    def fn_pair(self, code, env):
-        a, b = self.tmp(), self.tmp()
-        self.emit(f"{a} = insertvalue {{ ptr, ptr }} undef, ptr {code}, 0")
-        self.emit(f"{b} = insertvalue {{ ptr, ptr }} {a}, ptr {env}, 1")
-        return b
 
     def fn_ref(self, e):
         """by_price(...): a function of this program as an fn value (C2)."""
@@ -5723,7 +5936,7 @@ class FuncGen:
         if any(r for _, _, r in params):
             raise CompileError(f"{e.name}() has & parameters, so it cannot be an fn value", e.line)
         ps, ret, th = [t for t, _, _ in params], self.mod.funcs[key][1], self.mod.throws.get(key, False)
-        return self.fn_pair(self.mod.fn_wrapper(key, ps, ret, th), "null"), fn_type(ps, ret, th), False
+        return self.mod.fn_wrapper(key, ps, ret, th), fn_type(ps, ret, th), True
 
     def closure_value(self, e, hint):
         """fn($x) => ... / function ($x) use ($a) { ... }: a local closure (C3, C4). Its body becomes a function of
@@ -5749,15 +5962,24 @@ class FuncGen:
         if ret is None and not e.arrow:
             raise CompileError("function (...) { ... } needs its result type here: function ($x): int { ... }", e.line)
         pnames = {pn for _, pn in e.params}
+        refs = set()
         if e.arrow:
             names = sorted(n for n in free_vars(e.body) - pnames if n in self.vars or n == "$this")
         else:
+            seen = set()
             for n, ref in e.uses:
-                if ref:
-                    raise CompileError(f"use (&{n}) is step 3 of closures.md (not built yet): return the new value "
-                                       f"from the closure instead", e.line)
+                if n in seen:
+                    raise CompileError(f"use (...) names {n} twice", e.line)
+                seen.add(n)
+                if n == "$this":
+                    raise CompileError("use ($this) is not needed: a closure in a method can use $this", e.line)
+                if n in pnames:
+                    raise CompileError(f"{n} is a parameter of the closure and cannot also be in use (...)", e.line)
                 if n not in self.vars:
-                    raise CompileError(f"use ({n}): there is no {n} here", e.line)
+                    raise CompileError(f"use ({'&' if ref else ''}{n}): there is no {n} here" +
+                                       (f"; give it a value first, e.g. {n} = 0;" if ref else ""), e.line)
+                if ref:
+                    refs.add(n)
             names = [n for n, _ in e.uses]
             if "$this" in free_vars(e.body) and self.method:
                 names.append("$this")
@@ -5766,7 +5988,7 @@ class FuncGen:
             if n == "$this":
                 if not self.method:
                     raise CompileError("$this is only inside methods", e.line)
-                caps.append(("$__this", self.cls.key, "$this"))
+                caps.append(("$__this", self.cls.key, "$this", False))
             else:
                 self.require_assigned(n, e.line)
                 if n in self.moved:
@@ -5774,51 +5996,142 @@ class FuncGen:
                 t = self.vtype(n)
                 if is_task(t) or t in ("db", "rows", "sub", "stream"):
                     raise CompileError(f"a closure cannot use {n} ({t})", e.line)
-                caps.append((n, t, n))
+                if n in refs:
+                    if is_fn(t):
+                        raise CompileError(f"use (&{n}): a function cannot be lent with &; use ({n})", e.line)
+                    if n in self.borrowed and n not in self.refs:
+                        self.check_writable(n, e.line, "changed by a closure (use (&...))")
+                caps.append((n, t, n, n in refs))
+        # what this closure changes (its own use (&) and the fn values it calls): nothing it reads may be or
+        # borrow from one of those, or a call could free what it reads
+        lends = refs | {r for n in names for r in self.ref_caps.get(n, ())}
+        for n, t, src, ref in caps:
+            if ref or src == "$this":
+                continue
+            under = {src} | {r for r, _ in self.borrow_vars.get(src, ())}
+            if self.foreach_root.get(src):
+                under.add(self.foreach_root[src][0])
+            hit = sorted(under & lends)
+            if hit:
+                raise CompileError(f"this closure changes {hit[0]} (use (&{hit[0]})" +
+                                   (f", through {', '.join(sorted(m for m in names if hit[0] in self.ref_caps.get(m, ())))}"
+                                    if hit[0] not in refs else "") +
+                                   f") and also reads {src}" + (f", which borrows from {hit[0]}" if src != hit[0] else "") +
+                                   ": use one of them, or give the closure its own copy()", e.line)
         body = rename_var(e.body, "$this", "$__this") if any(c[0] == "$__this" for c in caps) else e.body
         cname = f"__clo{e.order}_{self.key}".replace("::", "_").replace('"', "")
-        sub = FuncGen(self.mod, cname, [(t, n, False) for n, t, _ in caps] + list(zip(ptypes, [pn for _, pn in e.params],
+        sub = FuncGen(self.mod, cname, [(t, n, ref) for n, t, _, ref in caps] + list(zip(ptypes, [pn for _, pn in e.params],
                       [False] * len(ptypes))), ret or "?infer", e.line, modid=self.modid, imports=self.imports, throws=throws)
         sub.closure_of = self.name
+        for n in names:                         # an fn value it calls changes what the closure has with &
+            if self.ref_caps.get(n):
+                sub.ref_caps[n] = self.ref_caps[n] & refs
         sub.prepare(body)
         sub.stmt(body)
         ir = sub.finish()
         ret = sub.ret
         if ret == "?infer":
             raise CompileError("this closure never returns a value", e.line)
-        if is_fn(ret):
-            raise CompileError("a closure that returns a function is step 4 of closures.md (not built yet)", e.line)
-        tramp = self.mod.closure_code(sub.llname, cname, [t for _, t, _ in caps], ptypes, ret, throws, ir)
-        env = "null"
-        if caps:
-            st = "{ " + ", ".join(llty(t) for _, t, _ in caps) + " }"
-            env = f"%v.__env{self.n}"
-            self.n += 1
-            self.allocas.append(f"  {env} = alloca {st}")
-            for i, (n, t, src) in enumerate(caps):
-                v = self.use_var(src, e.line, raw=True)[0] if src != "$this" else "%arg.this"
-                p = self.tmp()
-                self.emit(f"{p} = getelementptr inbounds {st}, ptr {env}, i32 0, i32 {i}")
-                self.emit(f"store {llty(t)} {v}, ptr {p}")
-        if self.closure_target:                 # $f = fn(...) => ...: what it reads stays read-only (C4)
-            f, line = self.closure_target
-            self.closure_target = None
-            keep = set()
-            for _, _, src in caps:
+        ctys = ["ptr" if ref else llty(t) for _, t, _, ref in caps]
+        tramp = self.mod.closure_code(sub.llname, cname, ctys, ptypes, ret, throws, ir)
+        st = closure_block(ctys)
+        ft = fn_type(ptypes, ret, throws)
+        if getattr(e, "escaping", False):       # returned, stored or given to go: it owns its captures (C6)
+            if lends:
+                raise CompileError(f"use (&{sorted(lends)[0]}) cannot be in a closure that is returned, stored or "
+                                   f"given to go: {sorted(lends)[0]} would be gone when it runs", e.line)
+            vals = []
+            for n, t, src, ref in caps:
                 if src == "$this":
+                    raise CompileError("a closure that is returned, stored or given to go cannot use $this (the "
+                                       "object may be gone when it runs): read what it needs into a variable "
+                                       "first, e.g. $rate = $this->rate;", e.line)
+                if is_heap(t):                  # strings copied, lists / maps / objects / closures moved
+                    v, _ = self.owned_value(Node("var", e.line, name=src), t, e.line)
+                else:
+                    v = self.use_var(src, e.line)[0]
+                vals.append(v)
+            fr, cp = self.mod.closure_helpers(cname, tramp, [t for _, t, _, _ in caps])
+            blk = self.call("ptr", "@pn_obj_new", f"i64 ptrtoint (ptr getelementptr ({st}, ptr null, i32 1) to i64)")
+            self.fn_header(blk, tramp, fr, cp)
+            for i, v in enumerate(vals):
+                p = self.tmp()
+                self.emit(f"{p} = getelementptr inbounds {st}, ptr {blk}, i32 0, i32 {3 + i}")
+                self.emit(f"store {ctys[i]} {v}, ptr {p}")
+            return blk, ft, True
+        # a local closure: a block in this function's stack frame; the captured values are loans (C4)
+        if lends:
+            cp = "@pn_fn_nocopy"
+        else:
+            cp = self.mod.closure_helpers(cname, tramp, [t for _, t, _, _ in caps])[1]
+        blk = f"%v.__env{self.n}"
+        self.n += 1
+        self.allocas.append(f"  {blk} = alloca {st}")
+        self.fn_header(blk, tramp, "null", cp)
+        for i, (n, t, src, ref) in enumerate(caps):
+            if ref:                             # use (&$x): the address of $x (C5)
+                v = self.slot(src)
+            else:
+                v = self.use_var(src, e.line, raw=True)[0] if src != "$this" else "%arg.this"
+            p = self.tmp()
+            self.emit(f"{p} = getelementptr inbounds {st}, ptr {blk}, i32 0, i32 {3 + i}")
+            self.emit(f"store {ctys[i]} {v}, ptr {p}")
+        if not getattr(e, "as_arg", False):     # kept beyond one call: what it reads stays read-only (C4)
+            f, line = self.closure_target or ("the closure", e.line)
+            if lends and not self.closure_target:
+                raise CompileError("a closure that changes variables (use (&...)) must be passed straight to a call "
+                                   "or kept in a variable", e.line)
+            keep = set()
+            for _, _, src, ref in caps:
+                if src == "$this" or ref:
                     continue
                 keep.add(src)
                 keep |= {r for r, _ in self.borrow_vars.get(src, ())}
                 if self.foreach_root.get(src):
                     keep.add(self.foreach_root[src][0])
+            if self.closure_target:
+                self.loop_frozen(f, keep, e.line)
             for n in keep:
                 self.frozen.setdefault(n, (f, line))
-            self.frozen_by[f] = keep
-        return self.fn_pair(tramp, env), fn_type(ptypes, ret, throws), False
+            self.frozen_by.setdefault(f, set()).update(keep)
+        return blk, ft, True
+
+    def loop_frozen(self, f, keep, line):
+        """In a loop, a value the closure in f reads may be replaced earlier in the body: the next round frees it
+        while the closure from this round can still be called. Allowed only when every round makes f again after
+        the change and before any use of f (C4)."""
+        for n in sorted(keep):
+            if not is_heap(self.vars.get(n, "")):
+                continue                        # numbers and bools are copied into the block
+            ws = list(self.writes.get(n, ()))
+            for g, roots in self.ref_caps.items():
+                if n in roots:
+                    ws += self.uses.get(g, [])
+            for lo, hi, kills in self.open_loops:
+                for w, wl in ws:
+                    if not lo <= w < self.at:
+                        continue
+                    ks = [k for k in kills.get(f, ()) if k > w]
+                    seen = [ul for o, ul in self.uses.get(f, ()) if w < o < (min(ks) if ks else hi + 1)]
+                    if not ks or seen:
+                        raise CompileError(
+                            f"{f} keeps a closure that reads {n}, and {n} is replaced on line {wl} in this loop: "
+                            f"the next round would free what the closure from this round reads" +
+                            (f" (it is called on line {seen[0]})" if seen else "") + ". Make the closure where it is "
+                            f"used, or give it its own value with copy({n})", line)
+
+    def fn_header(self, blk, code, fr, cp):
+        self.emit(f"store ptr {code}, ptr {blk}")
+        for i, v in ((1, fr), (2, cp)):
+            p = self.tmp()
+            self.emit(f"{p} = getelementptr inbounds ptr, ptr {blk}, i64 {i}")
+            self.emit(f"store ptr {v}, ptr {p}")
 
     def call_value(self, e):
         """$f($x): call an fn value (code pointer + captured values)."""
         fv, ft = self.borrow(e.fn)
+        if is_opt(ft) and is_fn(ft[1:]):
+            self.not_null(e.fn, ft, e.line)
         if not is_fn(ft):
             raise CompileError(f"{show(e.fn)} is {ft}, not a function", e.line)
         ps, ret, th = fn_parts(ft)
@@ -5830,9 +6143,8 @@ class FuncGen:
                 raise CompileError("an fn value's parameters are read-only: no &", e.line)
             v, t = self.borrow(a, pt)
             args.append(f"{llty(pt)} {self.coerce(v, t, pt, e.line, f'argument of {show(e.fn)}')}")
-        code, env = self.tmp(), self.tmp()
-        self.emit(f"{code} = extractvalue {{ ptr, ptr }} {fv}, 0")
-        self.emit(f"{env} = extractvalue {{ ptr, ptr }} {fv}, 1")
+        code, env = self.tmp(), fv
+        self.emit(f"{code} = load ptr, ptr {fv}, !invariant.load !15")    # a block's code never changes
         if th:
             return self.failing_call(ret, code, [f"ptr {env}"] + args, e.line, f"{show(e.fn)}(...)"), ret, is_heap(ret)
         if ret == "void":
@@ -5844,8 +6156,21 @@ class FuncGen:
         if name == "$this":
             raise CompileError("$this cannot be assigned", line)
         self.check_frozen(name, line)
-        if val_e.kind == "closure" or (val_e.kind == "var" and val_e.name in self.frozen_by):
-            self.closure_target = (name, line)    # its captures stay read-only while it can be called (C4)
+        if self.ref_caps_seen:
+            self.no_lend_into(name, val_e, line)
+        try:
+            self.closure_target = (name, line)    # closures made here: their captures stay read-only (C4)
+            return self.assign_var_(name, val_e, line, want)
+        finally:
+            self.closure_target = None
+            if is_fn(self.vars.get(name, "")) and self.fn_local(val_e):
+                self.local_fn.add(name)
+            if self.ref_caps_seen and is_fn(self.vars.get(name, "")):
+                lends = self.fn_lends(val_e)
+                if lends:
+                    self.ref_caps.setdefault(name, set()).update(lends)
+
+    def assign_var_(self, name, val_e, line, want):
         if self.is_borrow(name, val_e):
             return self.assign_borrow(name, val_e, line, want)
         if val_e.kind == "go" or (val_e.kind == "var" and holds_task(self.vars.get(val_e.name, ""))):
@@ -5902,6 +6227,8 @@ class FuncGen:
 
     def assign(self, s):
         tg, op = s.target, s.op
+        if self.ref_caps_seen and (tg.kind != "var" or op != "="):
+            self.no_lend_into(path_root(tg)[0], s.val, s.line)
         if tg.kind == "var":
             name = tg.name
             if op == "=":
@@ -6344,7 +6671,7 @@ class FuncGen:
             return
         if s.val is None:
             if self.ret != "void":
-                raise CompileError(f"{self.name}() must return {self.ret}", s.line)
+                raise CompileError(f"{self.shown} must return {self.ret}", s.line)
             self.ctor_done(s.line)
             self.tasks_done(s.line)
             self.flush_temps()
@@ -6369,12 +6696,12 @@ class FuncGen:
             self.flow.live = False
             return
         if self.ret == "void":
-            raise CompileError(f"{self.name}() is void and cannot return a value", s.line)
+            raise CompileError(f"{self.shown} is void and cannot return a value", s.line)
         if is_heap(self.ret):
             v, t = self.owned_value(s.val, self.ret, s.line, may_move_string=True)
         else:
             v, t = self.borrow(s.val, self.ret)
-        v = self.coerce(v, t, self.ret, s.line, f"return value of {self.name}()")
+        v = self.coerce(v, t, self.ret, s.line, f"return value of {self.shown}")
         self.tasks_done(s.line)                 # after the value: it may be what awaits them
         self.flush_temps()
         self.free_stashed()
@@ -6415,7 +6742,7 @@ class FuncGen:
                 self.emit_ret()
             else:
                 if self.flow.live:
-                    raise CompileError(f"{self.name}() can reach its end without returning {'an' if self.ret[0] in 'aeiou' else 'a'} {self.ret}. "
+                    raise CompileError(f"{self.shown} can reach its end without returning {'an' if self.ret[0] in 'aeiou' else 'a'} {self.ret}. "
                                        f"Add a return at the end (or in every branch)", self.line)
                 self.call("void", "@pn_noreturn", f"i32 {self.line}")
                 self.emit("unreachable")
@@ -6448,6 +6775,7 @@ TBAA = """
 !5 = !{!12, !12, i64 0}
 !10 = !{!"branch_weights", i32 2000, i32 1}
 !11 = !{!"branch_weights", i32 1, i32 2000}
+!15 = !{}
 """
 
 
@@ -6492,17 +6820,12 @@ def resolve_type(t, mid, imports, line, file=None):
         e = resolve_type(t[5:-1], mid, imports, line, file)
         if e in ("db", "rows", "sub", "stream"):
             raise CompileError(f"a list cannot hold {e} values", line, file)
-        if is_fn(e):
-            raise CompileError("a list of functions is step 4 of closures.md (not built yet): keep the functions in "
-                               "variables or parameters", line, file)
         return f"list<{e}>"
     if t.startswith("map<"):
         k, v = split_type_args(t[4:-1])
         v = resolve_type(v, mid, imports, line, file)
         if v in ("db", "rows", "sub", "stream") or holds_task(v):
             raise CompileError(f"a map cannot hold {v} values", line, file)
-        if is_fn(v):
-            raise CompileError("a map of functions is step 4 of closures.md (not built yet)", line, file)
         return f"map<{k},{v}>"
     if "::" in t:
         alias, name = t.split("::", 1)
@@ -6793,9 +7116,9 @@ def compile_file(path, src=None):
                 except CompileError as err:
                     err.file = ci.file
                     raise
-            if is_fn(ft):
-                raise CompileError(f"a property holding a function ({pr.name}) is step 4 of closures.md (not built "
-                                   f"yet): pass the function as a parameter where it is used", pr.line, ci.file)
+            if is_fn(ft) and pr.default is not None:
+                raise CompileError(f"a property holding a function ({pr.name}) cannot have a default: set it in "
+                                   f"__construct", pr.line, ci.file)
             ci.fields[pr.name] = Field(pr.name, ft, pr.vis, pr.default, ci.slots, pr.line)
             ci.slots += nslots(ft)
         for m in ci.node.methods:
@@ -6837,9 +7160,6 @@ def compile_file(path, src=None):
             if any(holds_task(t) for t, _, _ in ps) or holds_task(resolve_type(f.ret, mid, table, f.line, file)):
                 raise CompileError("a task cannot be passed to or returned from a function: await it in the function "
                                    "that started it (concurrency.md C1)", f.line, file)
-            if is_fn(resolve_type(f.ret, mid, table, f.line, file)):
-                raise CompileError(f"{f.name}() returns a function: that is step 4 of closures.md (not built yet). "
-                                   f"Take the function as a parameter instead", f.line, file)
             if any(r and is_fn(t) for t, _, r in ps):
                 raise CompileError("an fn parameter cannot be &", f.line, file)
             mod.params[key] = ps

@@ -1,0 +1,1 @@
+a closure that is returned, stored or given to go cannot use $this

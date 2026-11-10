@@ -1,0 +1,8 @@
+<?php
+// a returned closure owns its lists: $xs is moved into it (C6, Q1)
+function counter(): fn(): int {
+    $xs = [1, 2, 3];
+    $f = fn(): int => count($xs);
+    echo count($xs);
+    return $f;
+}

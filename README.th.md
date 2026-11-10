@@ -151,7 +151,7 @@ macOS ล็อก CPU core ไม่ได้ ส่วนต่างต่ำ
 
 ## ยังไม่มี
 
-inheritance/interface, `finally`, closure ที่ return หรือเก็บไว้ (closure ที่ใช้ตรงจุดมีแล้ว), type `bytes` สำหรับข้อมูล binary
+inheritance/interface, `finally`, type `bytes` สำหรับข้อมูล binary
 
 ฟังก์ชันแบบ PHP ที่มีแล้วกว่า 200 ตัว เช่น `sprintf`, `str_replace`, `number_format`, `round`, `date`, `in_array`, `usort($xs, "ชื่อฟังก์ชัน")`,
 `array_map`, `filter_var`, `ksort` และ operator `**`, `<=>`, `| & ^ << >>`

@@ -1,0 +1,8 @@
+<?php
+// $u borrows from $users; $wipe replaces $users: $u would point at freed memory (C5 with ownership-v2 R2)
+class User { public function __construct(public string $name) {} }
+list<User> $users = [new User("a")];
+$wipe = function () use (&$users): void { $users = []; };
+$u = $users[0];
+$wipe();
+echo $u->name;

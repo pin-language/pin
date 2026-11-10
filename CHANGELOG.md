@@ -88,11 +88,13 @@ offset inside a character panics, a request whose path or body is not UTF-8 gets
 
 ### Language and built-ins
 
-- **Closures** (design/closures.md steps 1–2): `fn($x) => ...` and `function ($x) use ($a) { ... }` where they are
-  used — `array_map`, `array_filter`, `usort`, the new `array_reduce`, and your own `fn(T): R` parameters; parameter
-  types come from there. `by_price(...)` makes a function a value; `$f($x)` calls one. A closure borrows what it
-  reads (nothing copied or allocated; as fast as a named function). Returning or storing closures, and `use (&$x)`,
-  are steps 3–4 and give compile errors that say so.
+- **Closures** (design/closures.md, all four steps): `fn($x) => ...` and `function ($x) use ($a, &$b) { ... }`.
+  Passed to `array_map`, `array_filter`, `usort`, the new `array_reduce` or your own `fn(T): R` parameters they take
+  their parameter types from there and borrow what they read (nothing copied or allocated; as fast as a named
+  function). `use (&$x)` changes `$x`; every call of such a closure is checked as a change of `$x` (no `foreach`
+  over it, no loan of it used later). Closures can be returned, stored in properties, lists and maps, and given to
+  `go`: those own what they use (strings and numbers copied, lists / maps / objects moved; `copy()` to keep yours).
+  `by_price(...)` makes a function a value; `$f($x)`, `adder(1)(2)` and `($this->onClick)($x)` call one.
 - **`filter_var()`** with `FILTER_VALIDATE_EMAIL`, `_URL`, `_IP` (`?string`), `_INT` (`?int`), `_FLOAT`, `_BOOL`:
   null where PHP gives false, same answers as PHP; `ctype_*`, `nl2br`, `json_validate`, `array_key_first` / `_last`.
 - `ksort` / `krsort` / `asort` / `arsort` (stable), `range`, `array_count_values`, `array_flip`, `array_combine`,

@@ -1,1 +1,1 @@
-adder() returns a function: that is step 4 of closures.md
+$f is a parameter lent to this function read-only, so it cannot be moved or returned

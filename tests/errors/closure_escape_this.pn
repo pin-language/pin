@@ -1,0 +1,6 @@
+<?php
+// a returned closure owns what it uses; $this belongs to the caller (C6)
+class Tax {
+    public int $rate = 7;
+    public function adder(): fn(int): int { return fn(int $x): int => $x + intdiv($x * $this->rate, 100); }
+}

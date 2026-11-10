@@ -1,0 +1,1 @@
+the closure given here changes $xs (use (&$xs)), so nothing else in this expression can use $xs

@@ -1,0 +1,5 @@
+<?php
+// $both would read $xs while calling $push, which can replace $xs (C5)
+list<int> $xs = [1];
+$push = function () use (&$xs): void { $xs = [2]; };
+$both = function () use ($xs, $push): int { $push(); return count($xs); };

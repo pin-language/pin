@@ -641,6 +641,25 @@ typedef Str *(*JsonFn)(Str *, void *);
 void *pn_obj_new(int64_t size) { return xcalloc((size_t)size); }
 void pn_obj_free(void *o) { xfree(o); }
 
+/* fn values (closures.md): a pointer to a block { code, free, copy, captured values... }. A named function's block
+   is a constant and a local closure's is on its maker's stack: both have free = NULL. A closure that is returned or
+   stored owns its block and what it captured; its free / copy are generated for it. A local closure's copy makes
+   such an owned block; one with use (&$x) cannot be copied (it points at a variable of its maker). */
+typedef struct FnBlock { void *code; void (*free)(void *); void *(*copy)(void *); } FnBlock;
+void pn_fn_free(void *p) {
+    FnBlock *b = p;
+    if (b && b->free) b->free(p);
+}
+void *pn_fn_copy(void *p) {
+    FnBlock *b = p;
+    return b->copy ? b->copy(p) : p;
+}
+void *pn_fn_nocopy(void *p) {
+    (void)p;
+    panic_msg("a closure with use (&...) cannot be copied or kept: it changes a variable of the function that "
+              "made it (closures.md C5). Return the new value from the closure instead");
+}
+
 void pn_list_free_with(List *l, FreeFn f) {
     if (!l) return;
     void **d = l->data;

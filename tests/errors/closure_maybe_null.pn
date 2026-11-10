@@ -1,0 +1,5 @@
+<?php
+// a ?fn value must be checked before it is called
+list<fn(int): int> $fs = [fn(int $x): int => $x];
+$p = array_pop($fs);
+echo $p(1);

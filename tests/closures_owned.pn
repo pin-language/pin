@@ -1,0 +1,36 @@
+<?php
+// owned closures: overwritten, in lists and maps, copied, with ?T captures, throws (closures.md C6)
+function discounter(int $p): fn(int): int { return fn(int $x): int => $x - $p; }
+function run_all(list<fn(int): int> $fs, int $v): int {
+    foreach ($fs as $f) { $v = $f($v); }
+    return $fs[0]($v);
+}
+function maybe(?string $name, ?int $age): fn(): string {
+    return fn(): string => ($name ?? "anon") . ":" . strval($age ?? -1);
+}
+function checker(int $max): fn(int): int throws {
+    return function (int $x) use ($max): int throws {
+        if ($x > $max) { throw error(400, "too big"); }
+        return $x;
+    };
+}
+$f = discounter(1);
+$f = discounter(2);
+echo $f(10), "\n";
+list<fn(int): int> $fs = [discounter(1), discounter(10)];
+echo run_all($fs, 100), "\n";
+echo maybe("ann", null)(), " ", maybe(null, 3)(), "\n";
+$c = checker(5);
+try { echo $c(3), "\n"; echo $c(9), "\n"; } catch (Error $e) { echo "error ", $e->message, "\n"; }
+$copies = copy($fs);
+echo $copies[1](50), " ", count($copies), "\n";
+map<string, fn(int): int> $m = [];
+$m["a"] = discounter(3);
+$m["a"] = discounter(4);
+echo $m["a"](10), "\n";
+// array_pop gives ?fn: check it, or give a default
+list<fn(int): int> $pq = [double_it(...), fn(int $x): int => $x + 1];
+$p = array_pop($pq);
+if ($p !== null) { echo $p(5), "\n"; }
+echo ($p ?? double_it(...))(1), "\n";
+function double_it(int $x): int { return $x * 2; }
