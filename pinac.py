@@ -20,6 +20,7 @@ Language rules in this prototype:
     usable in the other branch.
   * There are no global variables, so request handlers running on many threads share nothing.
 """
+import copy
 import os
 import re
 import struct
@@ -41,13 +42,13 @@ TOKEN_RE = re.compile(r"""
   (?P<NL>\n)
  |(?P<WS>[ \t\r]+)
  |(?P<COMMENT>//[^\n]*|\#[^\n]*|/\*(?:.|\n)*?\*/)
- |(?P<OPEN><\?php)
+ |(?P<OPEN><\?(?:php|pin)?(?![A-Za-z_])|\?>\s*\Z)
  |(?P<FLOAT>\d+\.\d+(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)
- |(?P<INT>\d+)
+ |(?P<INT>0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*|0[bB][01](?:_?[01])*|0[oO][0-7](?:_?[0-7])*|\d(?:_?\d)*)
  |(?P<STRING>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')
  |(?P<VAR>\$[A-Za-z_]\w*)
  |(?P<IDENT>[A-Za-z_]\w*)
- |(?P<OP>::|\+\+|--|->|\+=|-=|\*=|/=|%=|\.=|===|!==|==|!=|<=|>=|=>|&&|\|\||\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?&])
+ |(?P<OP>::|\+\+|--|->|<=>|\*\*=|\*\*|\+=|-=|\*=|/=|%=|\.=|<<=|>>=|\|=|&=|\^=|===|!==|==|!=|<=|>=|=>|&&|\|\||<<|>>|\?\?|\[\]|[-+*/%<>=!(){}\[\];,:.?&|^~])
 """, re.VERBOSE)
 
 
@@ -244,13 +245,16 @@ class Parser:
             parts.append(self.cur.val)
             self.i += 1
         path = "".join(parts)
-        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*(/[A-Za-z0-9_][A-Za-z0-9_.\-]*)*", path) or ".." in path.split("/"):
+        seg = r"(?:[A-Za-z0-9_][A-Za-z0-9_.\-]*|\[(?:\.\.\.)?[A-Za-z_][A-Za-z0-9_]*\])"   # [id], [...rest]: route files
+        if not re.fullmatch(seg + r"(?:/" + seg + r")*", path) or ".." in path.split("/"):
             raise CompileError("import needs a module path like  import prices;  or  import http/router;  "
                                "(a file in the project folder, without .pn; paths start at the main file's folder, "
                                "so no ../ is needed)", line)
         alias = None
         if self.accept("as"):
             alias = self.eat(kind="IDENT").val
+        elif path.endswith("]"):
+            raise CompileError(f"import {path}: give it a name with as, e.g.  import {path} as user;", line)
         self.eat(";")
         return Node("import", line, path=path, alias=alias or path.split("/")[-1].replace("-", "_").replace(".", "_"))
 
@@ -260,7 +264,7 @@ class Parser:
         name = self.eat(kind="IDENT").val
         ctor = in_class is not None and name == "__construct"
         self.eat("(")
-        params, promoted = [], []
+        params, promoted, defaults = [], [], []
         while not self.at(")"):
             pvis = None
             if self.cur.kind == "IDENT" and self.cur.val in ("public", "private", "protected", "readonly"):
@@ -277,10 +281,17 @@ class Parser:
             ptype = self.type_()
             ref = self.accept("&")
             pname = self.eat(kind="VAR").val
-            if self.at("="):
-                raise CompileError(f"parameters cannot have default values in Pin yet ({pname} = ...); pass the "
-                                   f"value at every call" + (", or set the property in the constructor body"
-                                                             if pvis else ""), self.cur.line)
+            default = None
+            if self.accept("="):                    # a default: a literal, like a property default
+                dline = self.cur.line
+                default = self.expr()
+                check_default(default, dline, what="parameter")
+                if ref:
+                    raise CompileError(f"{pname} is changed by the function (&), so it cannot have a default", dline)
+            elif defaults and defaults[-1] is not None:
+                raise CompileError(f"{pname} has no default but a parameter before it has one: put the "
+                                   f"parameters with defaults last", self.cur.line)
+            defaults.append(default)
             if pname == "$this":
                 raise CompileError("$this cannot be a parameter name", line)
             if pvis:
@@ -308,12 +319,28 @@ class Parser:
             body.body.insert(0, Node("assign", line, target=Node("field", line, obj=this, name=pname[1:]), op="=",
                                      val=Node("var", line, name=pname), promoted=True))
         return Node("func", line, name=name, params=params, ret=ret, body=body, exported=exported,
-                    promoted=promoted, vis="public", throws=throws)
+                    promoted=promoted, vis="public", throws=throws, defaults=defaults)
 
     def type_(self):
         t = self.cur
-        if t.val == "?":
-            raise CompileError("nullable types (?T) are not in Pin yet (designed: pin-language/docs design/null.md)", t.line)
+        if t.kind == "IDENT" and t.val == "fn" and self.peek().val == "(":   # fn(int, string): bool (closures.md C1)
+            self.eat()
+            self.eat("(")
+            ps = []
+            while not self.at(")"):
+                ps.append(self.type_())
+                if not self.accept(","):
+                    break
+            self.eat(")")
+            self.eat(":")
+            r = self.type_()
+            throws = self.accept("throws")
+            return f"fn({','.join(ps)}):{r}" + (" throws" if throws else "")
+        if t.val == "?":                            # ?T: may be null (null.md N1)
+            self.eat()
+            if self.cur.val == "?":
+                raise CompileError("??T is not a type: one ? is enough", t.line)
+            return "?" + self.type_()
         name = self.eat(kind="IDENT").val
         if name not in TYPE_NAMES:
             if name in NOT_IN_PIN or name in ("array", "mixed", "object", "integer", "boolean", "double", "str"):
@@ -439,6 +466,7 @@ class Parser:
                 self.eat(";")
                 return Node(t.val, t.line)
             if ((t.val in TYPE_NAMES and self.peek().kind == "VAR") or (t.val in ("list", "map") and self.peek().val == "<")
+                    or (t.val == "fn" and self.peek().val == "(" and self.fn_type_ahead())
                     or (t.val not in NOT_IN_PIN and t.val not in ("new", "print", "try", "throw", "await", "go") and self.peek().kind == "VAR")
                     or (self.peek().val == "::" and self.peek(2).kind == "IDENT" and self.peek(3).kind == "VAR")):
                 vtype = self.type_()
@@ -449,7 +477,17 @@ class Parser:
                 return Node("decl", t.line, vtype=vtype, name=name, val=val)
             if t.val == "function":
                 raise CompileError("functions must be declared at the top level", t.line)
+        if t.kind == "OP" and t.val == "?" and self.peek().kind == "IDENT":     # ?User $u = null;
+            vtype = self.type_()
+            name = self.eat(kind="VAR").val
+            self.eat("=")
+            val = self.expr()
+            self.eat(";")
+            return Node("decl", t.line, vtype=vtype, name=name, val=val)
         s = self.simple()
+        if not self.at(";") and s.kind == "assign" and s.val.kind == "try" and getattr(s.val, "catch", False):
+            raise CompileError("a try ... catch that gives a value is an expression, so it ends with ; after its "
+                               "closing brace: $x = try f() catch ($e) { ...; } ;", self.cur.line)
         self.eat(";")
         return s
 
@@ -471,7 +509,7 @@ class Parser:
         t = self.cur
         e = self.expr()
         op = self.cur.val
-        if self.cur.kind == "OP" and op in ("=", "+=", "-=", "*=", "/=", "%=", ".="):
+        if self.cur.kind == "OP" and op in ("=", "+=", "-=", "*=", "/=", "%=", ".=", "|=", "&=", "^=", "<<=", ">>=", "**="):
             if e.kind not in ("var", "index", "append", "field"):
                 raise CompileError("left side of an assignment must be a variable, a list item, a map entry or a "
                                    "property", t.line)
@@ -490,14 +528,14 @@ class Parser:
             raise CompileError("$a[] can only be assigned to", t.line)
         if e.kind == "go":
             raise CompileError("a task started with go must be awaited: $t = go f(...); ... await $t;", t.line)
-        if e.kind not in ("call", "mcall", "try", "new", "await"):
+        if e.kind not in ("call", "mcall", "nsmcall", "callv", "try", "new", "await"):
             raise CompileError("this expression does nothing on its own. (In a catch block, the value it gives must be "
                                "its last line, outside any if: catch ($e) { if (...) { return ...; } \"\"; })", t.line)
         return Node("exprstmt", t.line, expr=e)
 
     # lowest precedence first. PHP 8: '.' binds looser than + - but tighter than comparisons
-    BINARY = [("??",), ("||",), ("&&",), ("==", "!=", "===", "!=="), ("<", "<=", ">", ">="),
-              (".",), ("+", "-"), ("*", "/", "%")]
+    BINARY = [("??",), ("||",), ("&&",), ("|",), ("^",), ("&",), ("==", "!=", "===", "!==", "<=>"), ("<", "<=", ">", ">="),
+              (".",), ("<<", ">>"), ("+", "-"), ("*", "/", "%")]
 
     def expr(self, level=None):
         if level is None:                          # ternary: lowest precedence
@@ -515,12 +553,15 @@ class Parser:
         while self.cur.kind == "OP" and self.cur.val in self.BINARY[level]:
             t = self.eat()
             if t.val == "??":                      # right-associative
+                if self.at("throw", "IDENT"):      # $u = find($id) ?? throw error(404, "not found");
+                    th = self.eat()
+                    return Node("coalesce", t.line, l=left, r=Node("throwexpr", th.line, val=self.expr(level)))
                 right = self.expr(level)
                 return Node("coalesce", t.line, l=left, r=right)
             right = self.expr(level + 1)
             op = {"===": "==", "!==": "!="}.get(t.val, t.val)
             left = Node("bin", t.line, op=op, l=left, r=right)
-            if level in (3, 4) and self.cur.kind == "OP" and self.cur.val in self.BINARY[level]:
+            if level in (6, 7) and self.cur.kind == "OP" and self.cur.val in self.BINARY[level]:
                 raise CompileError("chained comparisons need parentheses", self.cur.line)
         return left
 
@@ -582,7 +623,7 @@ class Parser:
                 var, body, val = self.catch_clause(value=True)
                 return Node("try", t.line, e=e, var=var, cbody=body, cval=val, catch=True)
             return Node("try", t.line, e=e, catch=False)
-        if t.kind == "OP" and t.val in ("!", "-"):
+        if t.kind == "OP" and t.val in ("!", "-", "~"):
             self.eat()
             return Node("unary", t.line, op=t.val, e=self.unary())
         if (t.val == "(" and self.peek().kind == "IDENT" and self.peek().val in ("int", "float", "string")
@@ -591,7 +632,11 @@ class Parser:
             to = self.eat().val
             self.eat(")")
             return Node("cast", t.line, to=to, e=self.unary())
-        return self.postfix()
+        base = self.postfix()
+        if self.cur.kind == "OP" and self.cur.val == "**":    # 2 ** 3 ** 2 is 2 ** 9; -2 ** 2 is -4 (PHP)
+            t = self.eat()
+            return Node("bin", t.line, op="**", l=base, r=self.unary())
+        return base
 
     def postfix(self):
         e = self.primary()
@@ -616,12 +661,78 @@ class Parser:
                     e = Node("mcall", t.line, obj=e, name=name, args=self.args())
                 else:
                     e = Node("field", t.line, obj=e, name=name)
-            elif t.kind == "OP" and t.val == "?" and self.peek().val == "->":
-                raise CompileError("?-> is not in Pin yet: values are never null", t.line)
+            elif t.kind == "OP" and t.val == "?" and self.peek().val == "->":    # $u?->name (null.md N3)
+                self.eat()
+                self.eat()
+                if self.cur.kind == "VAR":
+                    raise CompileError(f"write $obj?->{self.cur.val[1:]} without the second $", t.line)
+                name = self.eat(kind="IDENT").val
+                if self.at("("):
+                    e = Node("nsmcall", t.line, obj=e, name=name, args=self.args())
+                else:
+                    e = Node("nsfield", t.line, obj=e, name=name)
             elif t.kind == "OP" and t.val == "::" and e.kind == "var":
                 raise CompileError("static members are not in Pin; use $obj->name", t.line)
+            elif t.kind == "OP" and t.val == "(" and e.kind in ("var", "field", "index", "call", "mcall", "callv", "closure", "coalesce", "ternary"):  # $f($x)
+                e = Node("callv", t.line, fn=e, args=self.args())
             else:
                 return e
+
+    def fn_type_ahead(self):
+        """At `fn (`: a type (fn(int): bool $f = ...) has no $variables inside the parentheses, a closure does."""
+        depth, k = 0, 1
+        while True:
+            tok = self.peek(k)
+            if tok.kind == "EOF":
+                return False
+            if tok.val == "(":
+                depth += 1
+            elif tok.val == ")":
+                depth -= 1
+                if depth == 0:
+                    return True
+            elif tok.kind == "VAR":
+                return False
+            k += 1
+
+    def closure(self):
+        """fn($x) => expr   /   fn(int $x): int => expr   /   function ($x) use ($a, &$b): T { ... }"""
+        t = self.eat()
+        arrow = t.val == "fn"
+        self.eat("(")
+        params = []
+        while not self.at(")"):
+            ptype = None
+            if self.cur.kind != "VAR":
+                ptype = self.type_()
+            if self.at("&"):
+                raise CompileError("a closure's parameters cannot be & (they are read-only, like every parameter "
+                                   "of an fn value)", self.cur.line)
+            params.append((ptype, self.eat(kind="VAR").val))
+            if not self.accept(","):
+                break
+        self.eat(")")
+        uses = []
+        if not arrow and self.at("use", "IDENT"):
+            self.eat()
+            self.eat("(")
+            while not self.at(")"):
+                ref = bool(self.accept("&"))
+                uses.append((self.eat(kind="VAR").val, ref))
+                if not self.accept(","):
+                    break
+            self.eat(")")
+        ret = None
+        if self.accept(":"):
+            ret = self.type_()
+        throws = bool(self.accept("throws"))
+        if arrow:
+            self.eat("=>")
+            line = self.cur.line
+            body = Node("block", line, body=[Node("return", line, val=self.expr())])
+        else:
+            body = self.block()
+        return Node("closure", t.line, params=params, uses=uses, ret=ret, throws=throws, body=body, arrow=arrow)
 
     def args(self):
         """( a, b, &$c )"""
@@ -642,7 +753,7 @@ class Parser:
         t = self.cur
         if t.kind == "INT":
             self.eat()
-            v = int(t.val)
+            v = int(t.val.replace("_", ""), 0 if t.val[:2].lower() in ("0x", "0b", "0o") else 10)
             if v >= 2 ** 63:
                 raise CompileError(f"integer {t.val} is too large", t.line)
             return Node("int", t.line, val=v)
@@ -685,8 +796,8 @@ class Parser:
                 self.eat()
                 return Node("bool", t.line, val=t.val == "true")
             if t.val == "null":
-                raise CompileError("null is not in Pin yet (designed: pin-language/docs design/null.md); use a value "
-                                   "that means 'none', e.g. -1, \"\" or an empty list", t.line)
+                self.eat()
+                return Node("null", t.line)
             if t.val in CONSTANTS:
                 self.eat()
                 kind, val = CONSTANTS[t.val]
@@ -700,6 +811,8 @@ class Parser:
                     self.eat()
                     cname = f"{cname}::{self.eat(kind='IDENT').val}"
                 return Node("new", t.line, cls=cname, args=self.args() if self.at("(") else [])
+            if t.val in ("fn", "function") and self.peek().val == "(":    # closures.md C3
+                return self.closure()
             if t.val in NOT_IN_PIN and not (t.val == "list" and self.peek().val == "<"):
                 raise CompileError(NOT_IN_PIN[t.val], t.line)
             self.eat()
@@ -707,8 +820,17 @@ class Parser:
             if self.at("::"):                       # prices::price(...)
                 self.eat()
                 module, t = t.val, self.eat(kind="IDENT")
+            if module == "Normalizer" and t.val in NORMALIZER_FORMS and not self.at("("):
+                return Node("int", t.line, val=NORMALIZER_FORMS[t.val])     # PHP's intl constants
             if not self.at("("):
+                if t.val.startswith("PASSWORD_"):
+                    raise CompileError(f"no {t.val} in Pin: password_hash($password) takes one argument (the "
+                                       f"algorithm is always PBKDF2-SHA256)", t.line)
                 raise CompileError(f"unknown name '{t.val}' (variables start with $)", t.line)
+            if [self.peek(k).val for k in range(1, 5)] == [".", ".", ".", ")"]:   # by_price(...): the function as a value
+                for _ in range(5):
+                    self.eat()
+                return Node("fnref", t.line, name=t.val, module=module)
             return Node("call", t.line, name=t.val, args=self.args(), module=module)
         if t.kind == "OP" and t.val == "(":
             self.eat()
@@ -752,8 +874,72 @@ CLASSES = {}    # class key ("Order", or "shop::Order" in a module) -> ClassInfo
 NEEDED = {}     # helper functions the generated code calls: '@"free:list<Order>"' -> (kind, type)
 
 
+# ?int / ?float / ?bool: the value and a "has a value" flag, side by side (null.md N6). A variable holds the pair in
+# registers; in an object it is stored with the same layout (value first, so a variable known not to be null can
+# load just the value).
+OPT_SCALAR = {"?int": "{ i64, i1 }", "?float": "{ double, i1 }", "?bool": "{ i1, i1 }"}
+
+
+def is_opt_scalar(t):
+    return t in OPT_SCALAR
+
+
+def is_fn(t):
+    return t.startswith("fn(")
+
+
+def closure_block(ctys):
+    """LLVM type of a closure's block: code, free, copy, then the captured values (runtime FnBlock)."""
+    return "{ ptr, ptr, ptr" + "".join(", " + c for c in ctys) + " }"
+
+
+def fn_parts(t):
+    """fn(int,Item):string throws -> (["int", "Item"], "string", True)."""
+    depth, i = 0, 2
+    while True:
+        c = t[i]
+        depth += c in "(<"
+        depth -= c in ")>"
+        if depth == 0:
+            break
+        i += 1
+    inner, rest = t[3:i], t[i + 2:]
+    throws = rest.endswith(" throws")
+    ret = rest[:-7] if throws else rest
+    return (split_type_list(inner) if inner else []), ret, throws
+
+
+def split_type_list(inner):
+    out, depth, cur = [], 0, ""
+    for c in inner:
+        if c == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+            continue
+        depth += c in "(<"
+        depth -= c in ")>"
+        cur += c
+    return out + [cur]
+
+
+def fn_type(params, ret, throws=False):
+    return f"fn({','.join(params)}):{ret}" + (" throws" if throws else "")
+
+
 def llty(t):
-    return {"int": "i64", "float": "double", "bool": "i1", "void": "void"}.get(t, "ptr")
+    # fn(...) is a ptr too: a block { code, free, copy, captured values } (closures.md, runtime pn_fn_free)
+    return OPT_SCALAR.get(t) or {"int": "i64", "float": "double", "bool": "i1", "void": "void"}.get(t, "ptr")
+
+
+def task_frame(argtys, ret):
+    """Byte offsets in a go task's frame: the result at 0 and the error pointer at 8 (where the runtime and the
+    task's free function read them); for a ?int / ?float / ?bool result its "has a value" flag at 16; then the
+    arguments (16 bytes for a ?int / ?float pair, 8 for the rest). Returns (offsets, first free offset)."""
+    off, out = 24 if is_opt_scalar(ret) else 16, []
+    for ty in argtys:
+        out.append(off)
+        off += 16 if ty in (OPT_SCALAR["?int"], OPT_SCALAR["?float"]) else 8
+    return out, off
 
 
 def fn_llret(ret, throws):
@@ -776,6 +962,16 @@ def is_class(t):
     return t in CLASSES
 
 
+def is_opt(t):
+    """?T: a value that may be null. Strings, lists, maps and objects: a pointer with null = 0; ?int, ?float,
+    ?bool: see OPT_SCALAR (null.md N6)."""
+    return t.startswith("?")
+
+
+def strip_opt(t):
+    return t[1:] if is_opt(t) else t
+
+
 def is_task(t):
     return t.startswith("Task<")
 
@@ -786,20 +982,38 @@ def holds_task(t):
 
 def owns_ptr(t):
     """Lists, maps, objects and tasks: an owned pointer whose freeing / copying / JSON needs per-type code."""
-    return is_list(t) or is_map(t) or is_class(t) or is_task(t)
+    t = strip_opt(t)
+    return is_list(t) or is_map(t) or is_class(t) or is_task(t) or is_fn(t)
 
 
 def ell(t):
     """How a value is stored inside a list, an object field: bools take one byte, the rest 8."""
-    return {"int": "i64", "float": "double", "bool": "i8"}.get(t, "ptr")
+    return OPT_SCALAR.get(t) or {"int": "i64", "float": "double", "bool": "i8"}.get(t, "ptr")
+
+
+def nslots(t):
+    """How many 8-byte slots a property takes."""
+    return 2 if t in ("?int", "?float") else 1
 
 
 def esize(t):
-    return 1 if t == "bool" else 8
+    """Bytes per list item: bools 1, ?int / ?float the 16-byte pair, ?bool 2, the rest 8."""
+    return {"bool": 1, "?int": 16, "?float": 16, "?bool": 2}.get(t, 8)
+
+
+# Map value kinds for ?int / ?float / ?bool: the value in the entry's 8-byte slot, and null as bit 2 of the entry's
+# "alive" word right after it (runtime/values.c Entry: alive = 1 has a value, 3 is null). 8 + the kind of the value.
+OPT_KIND = {"?int": 8, "?float": 9, "?bool": 10}
 
 
 def kind_of(t):
-    return KIND.get(t, 4)
+    return OPT_KIND.get(t) or KIND.get(t, 4)
+
+
+def per_item(t):
+    """Items of this type need a generated function each to be freed, copied or written as JSON: lists, maps,
+    objects, and ?string (null stays null; the runtime's string functions would turn it into "")."""
+    return owns_ptr(t) or t == "?string"
 
 
 def is_list(t):
@@ -811,7 +1025,9 @@ def is_map(t):
 
 
 def is_heap(t):
-    return t in ("string", "db", "rows", "sub", "stream") or is_list(t) or is_map(t) or is_class(t) or is_task(t)
+    t = strip_opt(t)
+    return t in ("string", "db", "rows", "sub", "stream") or is_list(t) or is_map(t) or is_class(t) or is_task(t) \
+        or is_fn(t)
 
 
 def elem_of(t):
@@ -830,6 +1046,7 @@ def need(kind, t):
 
 
 def free_fn(t):
+    t = strip_opt(t)                        # every free function accepts null
     if t == "string":
         return "@pn_str_free"
     if t == "db":
@@ -842,14 +1059,17 @@ def free_fn(t):
         return "@pn_stream_close"
     if is_list(t):
         e = elem_of(t)
-        return "@pn_list_free_str" if e == "string" else need("free", t) if owns_ptr(e) else "@pn_list_free"
+        return "@pn_list_free_str" if e == "string" else need("free", t) if per_item(e) else "@pn_list_free"
     if is_map(t):
-        return need("free", t) if owns_ptr(map_kv(t)[1]) else "@pn_map_free"
+        return need("free", t) if per_item(map_kv(t)[1]) else "@pn_map_free"
+    if is_fn(t):
+        return "@pn_fn_free"
     return need("free", t)
 
 
 def uncopyable(t, seen=()):
     """The part of type t that cannot be copied (a db connection, a result set, a running task), or None."""
+    t = strip_opt(t)
     if t in ("db", "rows", "sub", "stream") or is_task(t):
         return t
     if is_list(t):
@@ -864,11 +1084,15 @@ def uncopyable(t, seen=()):
 
 
 def copy_fn(t):
+    if is_fn(t):
+        return "@pn_fn_copy"
+    if is_opt(t):
+        return need("copy", t)              # null stays null (pn_str_dup(NULL) would give "")
     if t == "string":
         return "@pn_str_dup"
     if is_list(t) and elem_of(t) == "string":
         return "@pn_list_copy_str"
-    if is_map(t) and not owns_ptr(map_kv(t)[1]):
+    if is_map(t) and not per_item(map_kv(t)[1]):
         return "@pn_map_copy"
     return need("copy", t)
 
@@ -883,6 +1107,19 @@ def item_fn(kind, t):
 def json_fn(t):
     """A function (ptr out, ptr value) -> ptr out that appends the JSON of a list, map or object."""
     return need("json", t)
+
+
+def mentions_except(node, name, skip):
+    """mentions(), not looking inside the node skip."""
+    if node is skip:
+        return False
+    if isinstance(node, Node):
+        if node.kind == "var" and node.name == name:
+            return True
+        return any(mentions_except(v, name, skip) for k, v in node.__dict__.items() if k not in ("kind", "line"))
+    if isinstance(node, (list, tuple)):
+        return any(mentions_except(x, name, skip) for x in node)
+    return False
 
 
 def mentions(node, name):
@@ -905,42 +1142,26 @@ def flatten_concat(e):
 
 # PHP functions an agent will try; what to do in Pin instead
 PHP_FUNCTION_HINTS = {
-    "str_split": "no str_split() yet: use substr($s, $i, 1) in a loop",
-    "usort": "no usort() yet: sort($xs) / rsort($xs) sort lists of int, float, bool or string",
-    "ksort": "no ksort() yet: maps keep insertion order; collect the keys in a list and sort() it",
-    "asort": "no asort() yet: write the loop", "arsort": "no arsort() yet: write the loop",
-    "array_map": "no array_map() yet: use a for/foreach loop into a new list",
-    "array_filter": "no array_filter() yet: use a foreach loop into a new list",
-    "array_reduce": "no array_reduce() yet: use a foreach loop",
-    "array_sum": "no array_sum() yet: $t = 0; foreach ($xs as $x) { $t += $x; }",
-    "in_array": "no in_array() yet: loop and compare, or keep a map<int,bool> and use isset()",
-    "array_search": "no array_search() yet: loop and return the index, -1 if not found",
-    "array_keys": "no array_keys() yet: foreach ($m as $k => $v)", "array_values": "no array_values() yet",
-    "array_push": "write $xs[] = $value;", "array_pop": "no array_pop() yet",
-    "array_merge": "no array_merge() yet: copy() one list and append the other in a loop",
-    "array_slice": "no array_slice() yet: copy the range in a loop", "count_chars": "not in Pin",
-    "max": "no max() yet: $a > $b ? $a : $b", "min": "no min() yet: $a < $b ? $a : $b",
-    "abs": "no abs() yet: $x < 0 ? -$x : $x",
-    "round": "no round() yet: (int)($x + 0.5) for positive numbers, or keep money in integer satang/cents",
-    "floor": "no floor() yet: (int)$x truncates toward zero", "ceil": "no ceil() yet",
-    "number_format": "no number_format() yet: keep money as integer satang/cents and format with intdiv() and %",
-    "sprintf": "no sprintf() yet: build the string with . and \"$var\" interpolation",
-    "printf": "no printf() yet: use echo with . or \"$var\" interpolation",
+    "str_split": "no str_split() yet: use mb_substr($s, $i, 1) in a loop (grapheme_substr for what a reader sees)",
+                        "array_reduce": "no array_reduce() yet: use a foreach loop",
+        "array_push": "write $xs[] = $value;",         "count_chars": "not in Pin",
     "print_r": "no print_r(): echo json_encode($value)", "var_dump": "no var_dump(): echo json_encode($value)",
     "print": "use echo",
-    "json_decode": "no json_decode() yet: read values with json_string / json_int / json_float / json_bool, and go "
-                   "into nested objects and arrays with json_raw($json, \"key\"), json_at($array, $i), json_len($array)",
     "fgets": "try read_line() reads one line of standard input", "readline": "try read_line()",
     "stream_get_line": "try read_line()",
-    "is_numeric": "no is_numeric() yet: check the characters with substr() in a loop",
-    "str_replace": "no str_replace() yet: rebuild the string with strpos()/substr()",
-    "ucfirst": "no ucfirst() yet: strtoupper(substr($s, 0, 1)) . substr($s, 1)",
-    "strrev": "no strrev() yet: loop from the end with substr($s, $i, 1)",
-    "usleep": "sleep_ms($milliseconds) waits without blocking other tasks",
+            "usleep": "sleep_ms($milliseconds) waits without blocking other tasks",
     "sleep": "sleep_ms($milliseconds): Pin counts milliseconds (sleep_ms(1000) is one second) and does not block "
              "other tasks",
-    "rand": "no random numbers yet", "mt_rand": "no random numbers yet", "time": "no clock yet",
-    "date": "no dates yet", "microtime": "no clock yet", "exit": "return from the top level instead",
+    "rand": "random_int($min, $max) (from the system's secure random source)",
+    "mt_rand": "random_int($min, $max) (from the system's secure random source)",
+    "random_bytes": "random_token($bytes) gives that many random bytes as hex text (bin2hex(random_bytes(n)))",
+    "bin2hex": "random_token($bytes) for random hex; hash(\"sha256\", $s) returns hex already",
+    "uniqid": "random_token(16) (uniqid is predictable; this is not)",
+    "md5": "hash(\"sha256\", $s): MD5 is broken", "sha1": "hash(\"sha256\", $s): SHA-1 is broken",
+    "crypt": "password_hash($password) / password_verify($password, $hash)",
+    "urlencode": "rawurlencode($s) (spaces as %20; for query values too)",
+    "getenv": "env(\"NAME\") reads an environment variable (\"\" when it is not set)",
+"microtime": "time() gives whole Unix seconds (no finer clock yet)", "exit": "return from the top level instead",
     "die": "return from the top level instead",
     "header": "response_header(\"Name\", \"value\") adds a response header; http_status() sets the status",
     "getallheaders": "request_header(\"Name\") reads one request header (\"\" if absent)",
@@ -970,23 +1191,41 @@ NOT_IN_PIN = {
     "static": "Pin has no static variables: pass values as parameters",
     "const": "const is not in Pin yet; use a variable or a function that returns the value",
     "define": "define() is not in Pin yet; use a variable or a function that returns the value",
-    "function": "anonymous functions (closures) are not in Pin yet; declare a named function",
-    "fn": "arrow functions are not in Pin yet; declare a named function",
     "array": "array() is not in Pin: write [1, 2] for a list<int> or [\"k\" => 1] for a map<string,int>",
     "list": "list() destructuring is not in Pin; assign each value separately",
     "yield": "generators are not in Pin",
 }
-CONSTANTS = {"PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
+# built-ins array_map / array_filter take by name: the result type for an item type (or the type itself)
+ONE_ARG_BUILTINS = {**{n: "string" for n in ("strtoupper", "strtolower", "trim", "ltrim", "rtrim", "ucfirst", "lcfirst",
+                                             "ucwords", "strrev", "htmlspecialchars", "mb_strtolower", "mb_strtoupper",
+                                             "base64_encode", "rawurlencode", "rawurldecode", "urldecode", "nl2br",
+                                             "normalizer_normalize", "strval")},
+                    **{n: "int" for n in ("strlen", "mb_strlen", "grapheme_strlen", "intval")},
+                    **{n: "bool" for n in ("is_numeric", "ctype_digit", "ctype_alpha", "ctype_alnum", "ctype_space",
+                                           "ctype_upper", "ctype_lower", "ctype_xdigit", "json_validate")},
+                    "floatval": "float", "sqrt": "float", "floor": "float", "ceil": "float", "round": "float",
+                    "abs": lambda t: t, "json_encode": "string"}
+NORMALIZER_FORMS = {"FORM_D": 4, "NFD": 4, "FORM_KD": 8, "NFKD": 8, "FORM_C": 16, "NFC": 16, "FORM_KC": 32, "NFKC": 32}
+CONSTANTS = {"FILTER_VALIDATE_INT": ("int", 257), "FILTER_VALIDATE_BOOL": ("int", 258), "FILTER_VALIDATE_BOOLEAN": ("int", 258),
+             "FILTER_VALIDATE_FLOAT": ("int", 259), "FILTER_VALIDATE_URL": ("int", 273), "FILTER_VALIDATE_EMAIL": ("int", 274),
+             "FILTER_VALIDATE_IP": ("int", 275), "M_PI": ("float", 3.141592653589793), "M_E": ("float", 2.718281828459045), "NAN": ("float", float("nan")),
+             "INF": ("float", float("inf")), "PHP_FLOAT_EPSILON": ("float", 2.220446049250313e-16),
+             "PHP_FLOAT_MAX": ("float", 1.7976931348623157e308), "PHP_FLOAT_MIN": ("float", 2.2250738585072014e-308),
+             "JSON_PRETTY_PRINT": ("int", 128), "JSON_UNESCAPED_SLASHES": ("int", 64), "JSON_UNESCAPED_UNICODE": ("int", 256),
+             "JSON_THROW_ON_ERROR": ("int", 4194304), "STR_PAD_LEFT": ("int", 0), "STR_PAD_RIGHT": ("int", 1), "STR_PAD_BOTH": ("int", 2), "PHP_INT_MAX": ("int", 9223372036854775807), "PHP_INT_MIN": ("int", -9223372036854775808),
              "PHP_EOL": ("str", "\n")}
 
 BUILTINS = {"json_raw", "json_at", "json_len", "read_line", "http_get", "http_post", "http_stream", "stream_next", "stream_last_id", "run", "await_all", "await_timeout", "hub_publish", "hub_subscribe", "hub_resume", "hub_next", "hub_last_id",
-            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "str_contains",
+            "sse_start", "sse_send", "sse_send_id", "sse_comment", "sleep_ms", "error", "request_header", "request_has_header", "request_ip", "response_header", "count", "fill", "copy", "sqrt", "intdiv", "strlen", "substr", "strpos", "mb_strlen", "mb_substr", "mb_strpos", "mb_chr", "mb_ord", "grapheme_strlen", "grapheme_substr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "sprintf", "printf", "date", "filter_var", "nl2br", "json_validate", "array_key_first", "array_key_last", "ctype_digit", "ctype_alpha", "ctype_alnum", "ctype_space", "ctype_upper", "ctype_lower", "ctype_xdigit", "ksort", "krsort", "asort", "arsort", "range", "array_count_values", "array_flip", "array_combine", "mb_str_split", "fmod", "log", "log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pi", "pow", "is_nan", "is_finite", "is_infinite", "usort", "array_reduce", "array_map", "array_filter", "array_pop", "array_shift", "array_slice", "array_merge", "array_reverse", "array_search", "array_unique", "is_numeric", "str_pad", "mb_str_pad", "ucwords", "strrev", "str_replace", "ltrim", "rtrim", "ucfirst", "lcfirst", "htmlspecialchars", "base64_encode", "base64_decode", "rawurldecode", "urldecode", "number_format", "round", "floor", "ceil", "abs", "max", "min", "in_array", "array_keys", "array_values", "array_sum", "str_contains",
             "str_starts_with", "str_ends_with", "str_repeat", "strtolower", "strtoupper", "trim", "intval",
             "strval", "json_encode", "isset", "array_key_exists", "unset", "serve", "http_status",
             "wrapping_add", "wrapping_sub", "wrapping_mul", "explode", "implode", "sort", "rsort",
             "url_path", "query_param", "form_param", "query_has", "form_has", "floatval", "json_has",
             "db_open", "db_exec", "db_query", "db_json", "db_next", "db_int", "db_float", "db_string",
-            "db_is_null", "db_last_id", "db_error", "json_string", "json_int", "json_float",
+            "db_is_null", "db_last_id", "db_error", "db_pool", "db_all", "db_one", "hash", "hash_hmac", "hash_equals", "random_token",
+            "random_int", "password_hash", "password_verify", "env", "time", "request_deadline", "ord", "chr", "rawurlencode", "json_decode", "__jd_doc", "__jd_object", "__jd_field",
+            "__jd_int", "__jd_float", "__jd_bool", "__jd_string", "__jd_first", "__jd_next", "__jd_mfirst",
+            "__jd_key", "__jd_val", "__jd_mnext", "__jd_has", "__jd_null", "json_string", "json_int", "json_float",
             "json_bool"}
 
 RUNTIME_DECLS = """
@@ -1006,6 +1245,111 @@ declare ptr @pn_query_param(ptr, ptr)
 declare ptr @pn_form_param(ptr, ptr)
 declare i64 @pn_jget_has(ptr, ptr)
 declare ptr @pn_db_open(ptr)
+declare { i64, ptr } @pn_jd_doc(ptr)
+declare { i64, ptr } @pn_jd_object(ptr, i64, ptr)
+declare { i64, ptr } @pn_jd_field(ptr, i64, ptr)
+declare { i64, ptr } @pn_jd_int(ptr, i64)
+declare { i64, ptr } @pn_jd_float(ptr, i64)
+declare { i64, ptr } @pn_jd_bool(ptr, i64)
+declare { ptr, ptr } @pn_jd_string(ptr, i64)
+declare { i64, ptr } @pn_jd_first(ptr, i64)
+declare i64 @pn_jd_next(ptr, i64)
+declare void @pn_db_row_panic(ptr, ptr)
+declare { i64, ptr } @pn_jd_mfirst(ptr, i64)
+declare ptr @pn_jd_key(ptr, i64)
+declare i64 @pn_jd_val(ptr, i64)
+declare i64 @pn_jd_mnext(ptr, i64)
+declare i64 @pn_jd_has(ptr, i64, ptr)
+declare i64 @pn_jd_null(ptr, i64)
+declare ptr @pn_hash_sha256(ptr)
+declare ptr @pn_env(ptr)
+declare ptr @pn_list_push_slot(ptr, i64)
+declare ptr @pn_request_ip()
+declare i64 @pn_mb_strlen(ptr)
+declare i64 @pn_grapheme_strlen(ptr)
+declare ptr @pn_mb_substr(ptr, i64, i64, i64)
+declare ptr @pn_grapheme_substr(ptr, i64, i64, i64)
+declare i64 @pn_mb_strpos(ptr, ptr)
+declare ptr @pn_mb_chr(i64)
+declare i64 @pn_mb_ord(ptr)
+declare ptr @pn_mb_case(ptr, i64)
+declare ptr @pn_str_replace(ptr, ptr, ptr)
+declare ptr @pn_fmt(ptr, i64, i64, i64, i64, i64)
+declare ptr @pn_list_slice(ptr, i64, i64, i64, i64, ptr)
+declare ptr @pn_list_merge(ptr, ptr, i64, ptr)
+declare ptr @pn_list_reverse(ptr, i64, ptr)
+declare i64 @pn_list_index(ptr, i64, i64)
+declare ptr @pn_list_unique(ptr, i64)
+declare i64 @pn_is_numeric(ptr)
+declare ptr @pn_str_pad(ptr, i64, ptr, i64)
+declare ptr @pn_mb_str_pad(ptr, i64, ptr, i64)
+declare ptr @pn_ucwords(ptr)
+declare ptr @pn_strrev(ptr)
+declare ptr @pn_json_pretty(ptr)
+declare void @pn_badshift(i32)
+declare void @pn_list_usort(ptr, ptr)
+declare void @pn_list_usort_ctx(ptr, ptr, ptr)
+declare void @pn_map_sort(ptr, i64, i64)
+declare i64 @pn_filter_email(ptr)
+declare i64 @pn_filter_ip(ptr)
+declare i64 @pn_filter_url(ptr)
+declare i64 @pn_filter_int(ptr, ptr)
+declare double @pn_filter_float(ptr, ptr)
+declare i64 @pn_filter_bool(ptr)
+declare i64 @pn_ctype(ptr, i64)
+declare ptr @pn_nl2br(ptr)
+declare i64 @pn_json_validate(ptr)
+declare i64 @pn_map_end_pos(ptr, i64)
+declare ptr @pn_range(i64, i64, i64)
+declare ptr @pn_count_values(ptr, i64)
+declare ptr @pn_map_flip(ptr)
+declare ptr @pn_map_combine(ptr, ptr, i64, i64)
+declare ptr @pn_mb_str_split(ptr, i64)
+declare i64 @pn_ipow(i64, i64, i32)
+declare double @llvm.pow.f64(double, double)
+declare double @llvm.exp.f64(double)
+declare double @llvm.log.f64(double)
+declare double @llvm.log10.f64(double)
+declare double @llvm.sin.f64(double)
+declare double @llvm.cos.f64(double)
+declare double @tan(double)
+declare double @asin(double)
+declare double @acos(double)
+declare double @atan(double)
+declare double @atan2(double, double)
+declare double @fmod(double, double)
+declare void @pn_list_drop_first(ptr, i64)
+declare ptr @pn_date(ptr, i64)
+declare ptr @pn_str_trim_side(ptr, i64)
+declare ptr @pn_ucfirst(ptr, i64)
+declare ptr @pn_htmlspecialchars(ptr)
+declare ptr @pn_base64_encode(ptr)
+declare { ptr, ptr } @pn_base64_decode(ptr)
+declare ptr @pn_urldecode(ptr, i64)
+declare ptr @pn_number_format(double, i64, ptr, ptr)
+declare double @pn_round(double, i64)
+declare double @llvm.floor.f64(double)
+declare double @llvm.ceil.f64(double)
+declare double @llvm.fabs.f64(double)
+declare i64 @pn_list_contains(ptr, i64, i64)
+declare ptr @pn_map_keys(ptr)
+declare ptr @pn_map_values(ptr, ptr)
+declare i64 @pn_list_sum_int(ptr)
+declare double @pn_list_sum_float(ptr)
+declare i64 @pn_list_extreme(ptr, i64, i64)
+declare ptr @pn_normalize(ptr, i64)
+declare i64 @pn_time()
+declare void @pn_request_deadline(i64)
+declare i64 @pn_ord(ptr)
+declare ptr @pn_chr(i64)
+declare ptr @pn_rawurlencode(ptr)
+declare ptr @pn_hash_hmac_sha256(ptr, ptr)
+declare i64 @pn_hash_equals(ptr, ptr)
+declare ptr @pn_random_token(i64)
+declare i64 @pn_random_int(i64, i64)
+declare ptr @pn_password_hash(ptr)
+declare i64 @pn_password_verify(ptr, ptr)
+declare void @pn_db_pool(ptr, i64, i64)
 declare void @pn_db_close(ptr)
 declare void @pn_rows_free(ptr)
 declare i64 @pn_db_exec(ptr, ptr, ptr, i64)
@@ -1104,6 +1448,9 @@ declare i64 @pn_request_has_header(ptr)
 declare void @pn_response_header(ptr, ptr)
 declare ptr @pn_handler_error(ptr)
 declare void @pn_obj_free(ptr)
+declare void @pn_fn_free(ptr)
+declare ptr @pn_fn_copy(ptr)
+declare ptr @pn_fn_nocopy(ptr)
 declare void @pn_list_free_with(ptr, ptr)
 declare ptr @pn_list_copy_with(ptr, ptr)
 declare ptr @pn_json_add_list(ptr, ptr, i64)
@@ -1126,10 +1473,12 @@ class Module:
         self.funcs = {}         # key ("name" in the main file, "module::name" elsewhere) -> (param types, ret)
         self.exported = {}      # key -> bool
         self.params = {}        # key -> [(type, name, ref)]
+        self.defaults = {}      # key -> [default expression or None] per parameter
         self.throws = {}        # key -> declared `throws`
         self.handler = None
         self.inferring = False  # compiling methods only to find out which ones change $this (R6)
         self.go_funcs = []      # IR of the functions that run a `go` call inside its task
+        self.wrappers = set()   # fn-value wrappers and closure trampolines already written
         self.ngo = 0
         self.changed = False
 
@@ -1141,8 +1490,9 @@ class Module:
             return name
         L = [f"define internal void {name}(ptr %f) {{", "entry:"]
         args = []
+        offs, rest = task_frame(argtys, ret)
         for i, ty in enumerate(argtys):
-            L += [f"  %p{i} = getelementptr inbounds i8, ptr %f, i64 {16 + 8 * i}", f"  %a{i} = load {ty}, ptr %p{i}"]
+            L += [f"  %p{i} = getelementptr inbounds i8, ptr %f, i64 {offs[i]}", f"  %a{i} = load {ty}, ptr %p{i}"]
             args.append(f"{ty} %a{i}")
         rt = fn_llret(ret, throws)
         call = f"call {rt} @\"f.{key}\"({', '.join(args)})"
@@ -1152,15 +1502,122 @@ class Module:
                 L += ["  %ep = getelementptr inbounds i8, ptr %f, i64 8", "  store ptr %r, ptr %ep"]
             else:
                 L += [f"  %v = extractvalue {rt} %r, 0", f"  %e = extractvalue {rt} %r, 1",
-                      "  %ep = getelementptr inbounds i8, ptr %f, i64 8", "  store ptr %e, ptr %ep",
-                      f"  store {llty(ret)} %v, ptr %f"]
-        elif ret != "void":
-            L.append(f"  store {llty(ret)} %r, ptr %f")
+                      "  %ep = getelementptr inbounds i8, ptr %f, i64 8", "  store ptr %e, ptr %ep"]
+        if ret != "void":
+            v = "%v" if throws else "%r"
+            if is_opt_scalar(ret):              # the value at 0, the flag at 16 (8 holds the error)
+                L += [f"  %rv = extractvalue {llty(ret)} {v}, 0", f"  %rf = extractvalue {llty(ret)} {v}, 1",
+                      f"  store {llty(ret[1:])} %rv, ptr %f", "  %fp = getelementptr inbounds i8, ptr %f, i64 16",
+                      "  store i1 %rf, ptr %fp"]
+            else:
+                L.append(f"  store {llty(ret)} {v}, ptr %f")
         for j, t in enumerate(owned):
-            off = 16 + 8 * (len(argtys) + j)
+            off = rest + 8 * j
             L += [f"  %o{j}p = getelementptr inbounds i8, ptr %f, i64 {off}", f"  %o{j} = load ptr, ptr %o{j}p",
                   f"  call void {free_fn(t)}(ptr %o{j})"]
         L += ["  ret void", "}"]
+        self.go_funcs += L
+        return name
+
+    def fn_wrapper(self, key, ps, ret, throws):
+        """A named function as an fn value: a constant block whose code is (ptr env, args) -> the function's
+        result, env unused. Returns the block."""
+        name, blk = f'@"fnv.{key}"', f'@"fnb.{key}"'
+        if self.inferring or name in self.wrappers:
+            return blk
+        self.wrappers.add(name)
+        self.go_funcs.append(f"{blk} = internal constant {{ ptr, ptr, ptr }} {{ ptr {name}, ptr null, ptr null }}")
+        rt = fn_llret(ret, throws)
+        args = [f"{llty(t)} %a{i}" for i, t in enumerate(ps)]
+        call = f'call {rt} @"f.{key}"({", ".join(args)})'
+        self.go_funcs += [f"define internal {rt} {name}(ptr %env{''.join(', ' + a for a in args)}) {{", "entry:",
+                          f"  %r = {call}" if rt != "void" else f"  {call}", "  ret void" if rt == "void" else f"  ret {rt} %r", "}"]
+        return blk
+
+    def closure_code(self, llname, cname, capts, ps, ret, throws, ir):
+        """The trampoline of a closure (ptr env, args): load the captured values, call the body's function."""
+        name = f'@"clo.{cname}"'
+        if self.inferring or name in self.wrappers:
+            return name
+        self.wrappers.add(name)
+        rt = fn_llret(ret, throws)
+        st = closure_block(capts)                       # capts: the LLVM types of the captured values
+        L = [f"define internal {rt} {name}(ptr %env{''.join(f', {llty(t)} %a{i}' for i, t in enumerate(ps))}) {{", "entry:"]
+        cargs = []
+        for i, ct in enumerate(capts):
+            L += [f"  %cp{i} = getelementptr inbounds {st}, ptr %env, i32 0, i32 {3 + i}", f"  %c{i} = load {ct}, ptr %cp{i}"]
+            cargs.append(f"{ct} %c{i}")
+        cargs += [f"{llty(t)} %a{i}" for i, t in enumerate(ps)]
+        call = f"call {rt} {llname}({', '.join(cargs)})"
+        L += [f"  %r = {call}" if rt != "void" else f"  {call}", "  ret void" if rt == "void" else f"  ret {rt} %r", "}"]
+        self.go_funcs += ir + L
+        return name
+
+    def closure_helpers(self, cname, tramp, ctypes):
+        """The free and copy functions of a closure's block (C6): free what it owns, then the block; copy makes a
+        new owned block with copies of the captured values (lists, maps and objects copied deeply, as copy())."""
+        fr, cp = f'@"clofree.{cname}"', f'@"clocopy.{cname}"'
+        if self.inferring or fr in self.wrappers:
+            return fr, cp
+        self.wrappers.add(fr)
+        st = closure_block([llty(t) for t in ctypes])
+        size = f"ptrtoint (ptr getelementptr ({st}, ptr null, i32 1) to i64)"
+        L = [f"define internal void {fr}(ptr %p) {{", "entry:"]
+        for i, t in enumerate(ctypes):
+            if is_heap(t):
+                L += [f"  %q{i} = getelementptr inbounds {st}, ptr %p, i32 0, i32 {3 + i}", f"  %v{i} = load ptr, ptr %q{i}",
+                      f"  call void {free_fn(t)}(ptr %v{i})"]
+        L += ["  call void @pn_obj_free(ptr %p)", "  ret void", "}",
+              f"define internal ptr {cp}(ptr %p) {{", "entry:", f"  %r = call ptr @pn_obj_new(i64 {size})",
+              f"  store ptr {tramp}, ptr %r", "  %h1 = getelementptr inbounds ptr, ptr %r, i64 1",
+              f"  store ptr {fr}, ptr %h1", "  %h2 = getelementptr inbounds ptr, ptr %r, i64 2", f"  store ptr {cp}, ptr %h2"]
+        for i, t in enumerate(ctypes):
+            ty = llty(t)
+            L += [f"  %q{i} = getelementptr inbounds {st}, ptr %p, i32 0, i32 {3 + i}", f"  %v{i} = load {ty}, ptr %q{i}"]
+            v = f"%v{i}"
+            if is_heap(t):
+                L.append(f"  %c{i} = call ptr {copy_fn(t)}(ptr %v{i})")
+                v = f"%c{i}"
+            L += [f"  %d{i} = getelementptr inbounds {st}, ptr %r, i32 0, i32 {3 + i}", f"  store {ty} {v}, ptr %d{i}"]
+        L += ["  ret ptr %r", "}"]
+        self.go_funcs += L
+        return fr, cp
+
+    def cmp_adapter(self, et):
+        """usort with an fn value: (ptr ctx, i64 a, i64 b) -> i64, ctx being the fn value's block."""
+        name = f'@"cmpv.{et}"'
+        if self.inferring or name in self.wrappers:
+            return name
+        self.wrappers.add(name)
+        ty = llty(et)
+        L = [f"define internal i64 {name}(ptr %env, i64 %a, i64 %b) {{", "entry:", "  %code = load ptr, ptr %env, !invariant.load !15"]
+        for x in ("a", "b"):
+            if ty == "i64":
+                L.append(f"  %{x}v = add i64 %{x}, 0")
+            elif ty == "double":
+                L.append(f"  %{x}v = bitcast i64 %{x} to double")
+            else:
+                L.append(f"  %{x}v = inttoptr i64 %{x} to ptr")
+        L += [f"  %r = call i64 %code(ptr %env, {ty} %av, {ty} %bv)", "  ret i64 %r", "}"]
+        self.go_funcs += L
+        return name
+
+    def cmp_trampoline(self, key, et):
+        """usort's comparison: (i64, i64) -> i64 around the program's function (T $a, T $b): int."""
+        self.ngo += 1
+        name = f'@"cmp.{self.ngo}"'
+        if self.inferring:
+            return name
+        ty = llty(et)
+        L = [f"define internal i64 {name}(i64 %a, i64 %b) {{", "entry:"]
+        for x in ("a", "b"):
+            if ty == "i64":
+                L.append(f"  %{x}v = add i64 %{x}, 0")
+            elif ty == "double":
+                L.append(f"  %{x}v = bitcast i64 %{x} to double")
+            else:
+                L.append(f"  %{x}v = inttoptr i64 %{x} to ptr")
+        L += [f"  %r = call i64 @\"f.{key}\"({ty} %av, {ty} %bv)", "  ret i64 %r", "}"]
         self.go_funcs += L
         return name
 
@@ -1220,10 +1677,11 @@ class ClassInfo:
         self.exported = node.exported or not mid
         self.fields = {}        # name (without $) -> Field, in declaration order (the JSON order)
         self.methods = {}       # name -> Method
+        self.slots = 0          # 8-byte slots the fields take (?int and ?float take two)
 
     @property
     def size(self):
-        return 8 * max(1, len(self.fields))
+        return 8 * max(1, self.slots, len(self.fields))
 
 
 def gen_helper(mod, name, kind, t):
@@ -1249,6 +1707,26 @@ def gen_helper(mod, name, kind, t):
         return v
 
     def json_value(d, v, ft):
+        if is_opt_scalar(ft):               # null, or the value
+            x, f, b = tmp(), tmp(), tmp()
+            has, none, end = (tmp()[1:] + w for w in ("has", "none", "end"))
+            emit(f"{x} = extractvalue {llty(ft)} {v}, 0")
+            emit(f"{f} = extractvalue {llty(ft)} {v}, 1")
+            emit(f"br i1 {f}, label %{has}, label %{none}")
+            out.append(f"{has}:")
+            if ft == "?bool":
+                emit(f"{b} = zext i1 {x} to i8")
+                x = b
+            r1 = json_value(d, x, ft[1:])
+            emit(f"br label %{end}")
+            out.append(f"{none}:")
+            r2 = tmp()
+            emit(f"{r2} = call ptr @pn_str_add_str(ptr {d}, ptr {mod.lit('null')})")
+            emit(f"br label %{end}")
+            out.append(f"{end}:")
+            r = tmp()
+            emit(f"{r} = phi ptr [ {r1}, %{has} ], [ {r2}, %{none} ]")
+            return r
         r = tmp()
         if ft == "int":
             emit(f"{r} = call ptr @pn_str_add_int(ptr {d}, i64 {v})")
@@ -1265,6 +1743,29 @@ def gen_helper(mod, name, kind, t):
             emit(f"{r} = call ptr {json_fn(ft)}(ptr {d}, ptr {v})")
         return r
 
+    if is_fn(t):                            # an item callback around the runtime's fn functions
+        if kind == "free":
+            return out + [f"define internal void {name}(ptr %p) {{", "entry:", "  call void @pn_fn_free(ptr %p)",
+                          "  ret void", "}"]
+        return out + [f"define internal ptr {name}(ptr %p) {{", "entry:", "  %r = call ptr @pn_fn_copy(ptr %p)",
+                      "  ret ptr %r", "}"]
+    if is_opt(t):                          # free / copy / json of a value that may be null
+        inner = t[1:]
+        if kind == "free":                  # an item callback: every free function accepts null
+            return out + [f"define internal void {name}(ptr %p) {{", "entry:", f"  call void {free_fn(inner)}(ptr %p)",
+                          "  ret void", "}"]
+        if kind == "copy":
+            out += [f"define internal ptr {name}(ptr %p) {{", "entry:", "  %z = icmp eq ptr %p, null",
+                    "  br i1 %z, label %done, label %go", "go:", f"  %r = call ptr {copy_fn(inner)}(ptr %p)",
+                    "  br label %done", "done:", "  %v = phi ptr [ null, %entry ], [ %r, %go ]", "  ret ptr %v", "}"]
+        else:
+            out += [f"define internal ptr {name}(ptr %d, ptr %p) {{", "entry:", "  %z = icmp eq ptr %p, null",
+                    "  br i1 %z, label %none, label %go", "none:",
+                    f"  %a = call ptr @pn_str_add_str(ptr %d, ptr {mod.lit('null')})", "  br label %done", "go:"]
+            r = json_value("%d", "%p", inner)
+            out += ["  br label %done", "done:", f"  %v = phi ptr [ %a, %none ], [ {r}, %go ]",
+                             "  ret ptr %v", "}"]
+        return out
     if kind == "free" and is_task(t):
         # a task dropped without await (only on an error or panic path): wait for it, discard what it gave
         rt = t[5:-1]
@@ -1279,7 +1780,7 @@ def gen_helper(mod, name, kind, t):
     if kind == "free":
         out.append(f"define internal void {name}(ptr %p) {{")
         out.append("entry:")
-        if t == "string" or (is_list(t) and not owns_ptr(elem_of(t))) or (is_map(t) and not owns_ptr(map_kv(t)[1])):
+        if t == "string" or (is_list(t) and not per_item(elem_of(t))) or (is_map(t) and not per_item(map_kv(t)[1])):
             emit(f"call void {free_fn(t)}(ptr %p)")        # a wrapper with a (ptr) signature, see item_fn
         elif is_list(t):
             emit(f"call void @pn_list_free_with(ptr %p, ptr {item_fn('free', elem_of(t))})")
@@ -1299,11 +1800,11 @@ def gen_helper(mod, name, kind, t):
     elif kind == "copy":
         out.append(f"define internal ptr {name}(ptr %p) {{")
         out.append("entry:")
-        if t == "string" or (is_list(t) and elem_of(t) == "string") or (is_map(t) and not owns_ptr(map_kv(t)[1])):
+        if t == "string" or (is_list(t) and elem_of(t) == "string") or (is_map(t) and not per_item(map_kv(t)[1])):
             emit(f"%r = call ptr {copy_fn(t)}(ptr %p)")
         elif is_list(t):
             e = elem_of(t)
-            if owns_ptr(e):
+            if per_item(e):
                 emit(f"%r = call ptr @pn_list_copy_with(ptr %p, ptr {item_fn('copy', e)})")
             else:
                 emit(f"%r = call ptr @pn_list_copy(ptr %p, i64 {esize(e)})")
@@ -1327,15 +1828,15 @@ def gen_helper(mod, name, kind, t):
         if is_list(t):
             e = elem_of(t)
             r = tmp()
-            if owns_ptr(e):
+            if per_item(e):
                 emit(f"{r} = call ptr @pn_json_add_list_with(ptr %d, ptr %p, ptr {json_fn(e)})")
             else:
-                emit(f"{r} = call ptr @pn_json_add_list(ptr %d, ptr %p, i64 {KIND[e]})")
+                emit(f"{r} = call ptr @pn_json_add_list(ptr %d, ptr %p, i64 {kind_of(e)})")
             d = r
         elif is_map(t):
             v = map_kv(t)[1]
             r = tmp()
-            if owns_ptr(v):
+            if per_item(v):
                 emit(f"{r} = call ptr @pn_json_add_map_with(ptr %d, ptr %p, ptr {json_fn(v)})")
             else:
                 emit(f"{r} = call ptr @pn_json_add_map(ptr %d, ptr %p)")
@@ -1366,7 +1867,8 @@ def json_string_literal(s):
 
 def unjsonable(t, seen=()):
     """The part of type t that json_encode() cannot write, or None. Private properties are left out."""
-    if t in ("db", "rows", "sub", "stream") or is_task(t):
+    t = strip_opt(t)
+    if t in ("db", "rows", "sub", "stream") or is_task(t) or is_fn(t):
         return t
     if is_list(t):
         return unjsonable(elem_of(t), seen)
@@ -1386,7 +1888,7 @@ def path_root(e):
     while True:
         if e.kind == "var":
             return e.name, tuple(reversed(fields))
-        if e.kind == "field":
+        if e.kind in ("field", "nsfield"):
             fields.append(e.name)
             e = e.obj
         elif e.kind in ("index", "append"):
@@ -1422,7 +1924,192 @@ def show(e):
         return f"{show(e.obj)}->{e.name}(...)"
     if k == "new":
         return f"new {e.cls}(...)"
+    if k == "nsfield":
+        return f"{show(e.obj)}?->{e.name}"
+    if k == "nsmcall":
+        return f"{show(e.obj)}?->{e.name}(...)"
+    if k == "null":
+        return "null"
+    if k == "coalesce":
+        return f"{show(e.l)} ?? ..."
     return "the value"
+
+
+def lent_names(node):
+    """Variables lent with & somewhere inside node (their value may change there)."""
+    out = set()
+
+    def walk(x):
+        if isinstance(x, Node):
+            if x.kind == "ref":
+                root, _ = path_root(x.e)
+                if root:
+                    out.add(root)
+            for k, v in x.__dict__.items():
+                if k not in ("kind", "line"):
+                    walk(v)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+    walk(node)
+    return out
+
+
+def fn_branches(e):
+    """The expressions whose value an expression can be: both sides of ?: and ??."""
+    if e.kind == "ternary":
+        return [x for x in (e.a or e.c, e.b) for x in fn_branches(x)]
+    if e.kind == "coalesce":
+        return fn_branches(e.l) + fn_branches(e.r)
+    return [e]
+
+
+def mark_escaping(nodes):
+    """C6: a closure that is returned, stored in a property, list or map, or given to go -- written there, or kept
+    in a variable that goes there -- owns what it captures. Marks those closure nodes .escaping. (A closure's own
+    body is marked when it is compiled.)"""
+    places, assigns, slots = [], [], set()
+
+    def walk(x):
+        if isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+            return
+        if not isinstance(x, Node) or x.kind == "closure":
+            return
+        k = x.kind
+        if k == "return" and x.val is not None:
+            places.append(x.val)
+        elif k == "assign":
+            if x.target.kind == "var" and x.op == "=":
+                assigns.append((x.target.name, x.val))
+            else:
+                places.append(x.val)
+        elif k == "decl" and x.val is not None:
+            assigns.append((x.name, x.val))
+        elif k == "listlit":
+            places.extend(x.items)
+        elif k == "maplit":
+            places.extend(v for _, v in x.pairs)
+        elif k == "go":
+            places.extend(x.call.args)
+        elif k == "foreach" and getattr(x, "ref", False):
+            slots.add(x.var)                    # foreach (... as &$f): $f is an item of the list / map
+        for kk, v in x.__dict__.items():
+            if kk not in ("kind", "line"):
+                walk(v)
+    walk(nodes)
+    out = set()
+
+    def mark(e):
+        new = False
+        for b in fn_branches(e) if isinstance(e, Node) else ():
+            if b.kind == "closure":
+                b.escaping = True
+            elif b.kind == "var" and b.name not in out:
+                out.add(b.name)
+                new = True
+        return new
+    places += [v for n, v in assigns if n in slots]
+    for e in places:
+        mark(e)
+    changed = True
+    while changed:
+        changed = False
+        for n, v in assigns:
+            if n in out and mark(v):
+                changed = True
+
+
+def free_vars(node):
+    """Every $variable read or written inside node (a closure body: what it may capture)."""
+    out = set()
+
+    def walk(x):
+        if isinstance(x, Node):
+            if x.kind == "var":
+                out.add(x.name)
+            for k, v in x.__dict__.items():
+                if k not in ("kind", "line"):
+                    walk(v)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+    walk(node)
+    return out
+
+
+def rename_var(node, old, new):
+    """A copy of node with the variable old named new (a closure's $this becomes one of its parameters)."""
+    import copy as _copy
+    node = _copy.deepcopy(node)
+
+    def walk(x):
+        if isinstance(x, Node):
+            if x.kind == "var" and x.name == old:
+                x.name = new
+            for k, v in x.__dict__.items():
+                if k not in ("kind", "line"):
+                    walk(v)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+    walk(node)
+    return node
+
+
+def changed_roots(node):
+    """Variables whose objects code inside node may change: targets of assignments into paths, the objects of
+    method calls (any method: kept simple), and what unset() / sort() / foreach with & work on. Checks on their
+    properties do not hold across such code (null.md N2)."""
+    out = set()
+
+    def root_of(e):
+        r, _ = path_root(e) if isinstance(e, Node) else (None, ())
+        if r:
+            out.add(r)
+
+    def walk(x):
+        if isinstance(x, Node):
+            if x.kind == "assign":
+                root_of(x.target)
+            elif x.kind in ("mcall", "nsmcall"):
+                root_of(x.obj)
+            elif x.kind == "call" and x.name in ("unset", "sort", "rsort") and x.args:
+                root_of(x.args[0])
+            elif x.kind == "foreach" and getattr(x, "ref", False):
+                root_of(x.seq)
+            for k, v in x.__dict__.items():
+                if k not in ("kind", "line"):
+                    walk(v)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+    walk(node)
+    return out
+
+
+def written_names(node):
+    """Variables a piece of code may give a new value: assigned, declared, a foreach or catch variable, or lent
+    with &. A loop that writes $u cannot keep $u checked-not-null from before the loop (null.md N2)."""
+    out = lent_names(node)
+
+    def walk(x):
+        if isinstance(x, Node):
+            if x.kind in ("assign",) and x.target.kind == "var":
+                out.add(x.target.name)
+            if x.kind == "decl":
+                out.add(x.name)
+            if x.kind == "foreach":
+                out.update(n for n in (getattr(x, "var", None), getattr(x, "key", None)) if isinstance(n, str))
+            for k, v in x.__dict__.items():
+                if k not in ("kind", "line"):
+                    walk(v)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+    walk(node)
+    return out
 
 
 class Loop:
@@ -1437,12 +2124,13 @@ class Flow:
     its own copy; where paths meet the copies are merged, so a variable counts as assigned only if it
     is assigned on every path that gets there, and as moved if it was moved on any of them."""
 
-    def __init__(self, assigned=(), moved=None, live=True, maybe=()):
+    def __init__(self, assigned=(), moved=None, live=True, maybe=(), nonnull=()):
         self.assigned, self.moved, self.live = set(assigned), dict(moved or {}), live
         self.maybe = set(maybe)            # moved on some paths only (for a clearer message)
+        self.nonnull = set(nonnull)        # ?T variables checked not null on every path here (null.md N2)
 
     def copy(self):
-        return Flow(self.assigned, self.moved, self.live, self.maybe)
+        return Flow(self.assigned, self.moved, self.live, self.maybe, self.nonnull)
 
     @staticmethod
     def merge(flows, fallback):
@@ -1454,6 +2142,7 @@ class Flow:
         r = live[0].copy()
         for f in live[1:]:
             r.assigned &= f.assigned
+            r.nonnull &= f.nonnull
             r.maybe |= f.maybe
             for n, ln in f.moved.items():
                 r.moved.setdefault(n, ln)
@@ -1481,6 +2170,13 @@ class FuncGen:
         self.borrowed = set()   # heap vars this function does not own (parameters, foreach variables)
         self.flow = Flow()      # assigned / moved state at the current point (see Flow)
         self.iterating = []     # vars a foreach is currently walking over
+        self.frozen = {}        # variable -> (closure variable, line): read by a closure kept in a variable (C4)
+        self.frozen_by = {}     # closure variable -> the variables it keeps read-only
+        self.closure_target = None
+        self.ref_caps = {}      # fn variable -> the variables it changes through use (&$x) (C5)
+        self.has_ref_closures = False
+        self.local_fn = set()   # fn variables holding a local closure (a block in this frame: never stored, C4)
+        self.depth, self.top_expr = 0, None     # the outermost expression being evaluated (C5 checks)
         self.loops = []         # Loop: labels + the flows that leave by break / continue
         self.temps = []         # owned temporaries (value, type) freed at the end of the statement
         self.pending = []       # temporaries that must live until a foreach ends
@@ -1508,7 +2204,8 @@ class FuncGen:
             self.flow.assigned.add("$this")
             self.inits.append(f"  store ptr %arg.this, ptr {self.slot('$this')}")
             if self.is_ctor:
-                self.ctor_need = {f.name for f in self.cls.fields.values() if f.default is None}
+                self.ctor_need = {f.name for f in self.cls.fields.values()     # ?T ones start as null (N5)
+                                  if f.default is None and not is_opt(f.type)}
         for ptype, pname, ref in params:
             if ref:
                 self.vars[pname] = ptype
@@ -1518,6 +2215,11 @@ class FuncGen:
                 self.declare(pname, ptype, borrowed=is_heap(ptype))
                 self.inits.append(f"  store {llty(ptype)} %arg.{pname[1:]}, ptr {self.slot(pname)}")
             self.flow.assigned.add(pname)
+
+    @property
+    def shown(self):
+        """How messages name this function."""
+        return f"the closure in {self.closure_of}()" if getattr(self, "closure_of", None) else f"{self.name}()"
 
     @property
     def moved(self):
@@ -1564,6 +2266,8 @@ class FuncGen:
         used again later (ownership-v2.md R2); these numbers say what "later" is."""
         count = [0]
         self.uses = {}
+        self.writes = {}        # variable -> [(order, line)] of the places that replace it (loop check, C4)
+        mark_escaping(nodes)
 
         def walk(x, target=False):
             if isinstance(x, (list, tuple)):
@@ -1582,8 +2286,23 @@ class FuncGen:
                         walk(v)
             count[0] += 1
             x.order = count[0]
+            if x.kind == "closure" and any(r for _, r in x.uses):
+                self.has_ref_closures = True
+            for a in getattr(x, "args", None) or ():
+                if isinstance(a, Node) and a.kind == "closure":
+                    a.as_arg = True             # lives only as long as the call (C4)
             if x.kind == "var" and not target:
                 self.uses.setdefault(x.name, []).append((x.order, x.line))
+            if x.kind == "assign" and x.target.kind == "var":
+                self.writes.setdefault(x.target.name, []).append((x.order, x.line))
+            elif x.kind == "decl":
+                self.writes.setdefault(x.name, []).append((x.order, x.line))
+            elif x.kind == "ref" and x.e.kind == "var":
+                self.writes.setdefault(x.e.name, []).append((x.order, x.line))
+            elif x.kind == "closure":
+                for n, r in x.uses:
+                    if r:               # a call it is given may replace n: counted where the closure is
+                        self.writes.setdefault(n, []).append((x.order, x.line))
             if x.kind in ("while", "for", "foreach"):
                 x.first = first
                 body = x.body.body if x.body.kind == "block" else [x.body]
@@ -1594,6 +2313,7 @@ class FuncGen:
                     elif st.kind == "decl":
                         x.kills.setdefault(st.name, []).append(st.order)
         walk(nodes)
+        self.trusted_sql = trusted_sql_vars(nodes, [n for _, n, _ in self.params])
 
     def live_use(self, name, at):
         """Line of a read of `name` that can happen after point `at`, or None."""
@@ -1614,6 +2334,8 @@ class FuncGen:
         """Every change goes through here: `root` is the variable the changed data hangs from, `props` the
         properties on the way ($o->items[] = ...: "$o", ("items",))."""
         at = self.at if at is None else at
+        self.check_frozen(root, line)
+        self.drop_paths([root], props)
         if root == "$this" and self.method:
             if not self.method.changing:
                 if not self.mod.inferring:
@@ -1677,7 +2399,8 @@ class FuncGen:
 
     def free_temps(self, temps):
         for v, t in temps:
-            self.call("void", free_fn(t), f"ptr {v}")
+            if v != "null":
+                self.call("void", free_fn(t), f"ptr {v}")
 
     def flush_temps(self, since=0):
         self.free_temps(self.temps[since:])
@@ -1700,6 +2423,184 @@ class FuncGen:
                                    f"{amp or ''}{'work' if amp else 'Work'} on {fix}", line)
             raise CompileError(f"{name} is a foreach variable lent read-only, so it cannot be {what}. Use "
                                f"foreach (... as &{name}) to change the items, or work on {fix}", line)
+
+    # --- null (null.md): ?T variables, narrowed by checks
+    def vtype(self, name):
+        """The type of a variable here: ?T counts as T where every path has checked it is not null."""
+        t = self.vars[name]
+        return t[1:] if is_opt(t) and name in self.flow.nonnull else t
+
+    def not_null(self, e, t, line):
+        if is_opt(t):
+            w = show(e) if e is not None and show(e) != "the value" else "this value"
+            if e is not None and e.kind == "var":
+                raise CompileError(f"{w} may be null ({t}). Check it first with if ({w} !== null) {{ ... }}, or give "
+                                   f"a default with {w} ?? ...", line)
+            if e is not None and e.kind == "field" and self.path_key(e):
+                root = self.path_key(e).split("->")[0]
+                raise CompileError(f"{w} may be null ({t}). Check it first with if ({w} !== null) {{ ... }} (the "
+                                   f"check holds until {root} is changed), or give a default with {w} ?? ...", line)
+            raise CompileError(f"{w} may be null ({t}). Put it in a variable and check that: $x = {w}; if ($x !== "
+                               f"null) {{ ... }}, or give a default with {w} ?? ... (a check on a property or "
+                               f"call result does not carry over to the next use)", line)
+
+    def null_facts(self, e):
+        """(variables and property paths not null when e is true, ... when e is false)"""
+        t, f = self._facts(e)
+        gone = lent_names(e) | changed_roots(e)       # changed inside the condition itself
+        keep = lambda ks: {k for k in ks if k.split("->")[0] not in gone}
+        return keep(t), keep(f)
+
+    def checkable_path(self, e):
+        """The key of a property path of ?T type ($u->email), or None."""
+        if e.kind != "field":
+            return None
+        key = self.path_key(e)
+        if key is None:
+            return None
+        ot = self.static_type(e.obj)
+        f = CLASSES[ot].fields.get(e.name) if ot and is_class(ot) else None
+        return key if f and is_opt(f.type) else None
+
+    def _facts(self, e):
+        k = e.kind
+        if k == "bin" and e.op in ("==", "!=") and (e.l.kind == "null") != (e.r.kind == "null"):
+            o = e.r if e.l.kind == "null" else e.l
+            if o.kind == "var" and is_opt(self.vars.get(o.name, "")):
+                return ({o.name}, set()) if e.op == "!=" else (set(), {o.name})
+            key = self.checkable_path(o)
+            if key:
+                return ({key}, set()) if e.op == "!=" else (set(), {key})
+        if k == "call" and e.name == "isset" and len(e.args) == 1 and e.args[0].kind == "var" \
+                and is_opt(self.vars.get(e.args[0].name, "")):
+            return {e.args[0].name}, set()
+        if k == "call" and e.name == "isset" and len(e.args) == 1 and self.checkable_path(e.args[0]):
+            return {self.checkable_path(e.args[0])}, set()
+        if k == "unary" and e.op == "!":
+            t, f = self._facts(e.e)
+            return f, t
+        if k == "bin" and e.op in ("&&", "||"):
+            tl, fl = self._facts(e.l)
+            added = self.narrow(tl if e.op == "&&" else fl)     # $u->a !== null && $u->a->b !== null
+            tr, fr = self._facts(e.r)
+            self.flow.nonnull -= added
+            return (tl | tr, fl & fr) if e.op == "&&" else (tl & tr, fl | fr)
+        return set(), set()
+
+    def forget_written(self, node):
+        """Before a loop: forget the checks the loop body may undo (variables it writes, paths of objects it
+        changes) — the next round may see null again."""
+        names = written_names(node)
+        self.flow.nonnull -= names
+        self.drop_paths(names | changed_roots(node))
+
+    def narrow(self, names):
+        """Count `names` as not null until undo(); returns what to undo."""
+        added = set(names) - self.flow.nonnull
+        self.flow.nonnull |= added
+        return added
+
+    def own_copy(self, v, t):
+        """An owned copy of a borrowed string (?string: null stays null)."""
+        if t == "string":
+            return self.dup_str(v)
+        if v == "null":
+            return v
+        return self.call("ptr", copy_fn(t), f"ptr {v}")
+
+    def null_compare(self, e):
+        """$u === null / $u !== null"""
+        o = e.r if e.l.kind == "null" else e.l
+        if o.kind == "null":
+            raise CompileError("null === null is always true; compare a value with null", e.line)
+        if o.kind == "var" and o.name in self.vars and is_opt(self.vars[o.name]):
+            v, _ = self.use_var(o.name, e.line)
+            t = self.vars[o.name]
+            if is_opt_scalar(t):                # use_var loaded only the value if it is checked already
+                v = self.tmp()
+                self.emit(f"{v} = load {llty(t)}, ptr {self.slot(o.name)}")
+        else:
+            key = self.path_key(o) if o.kind == "field" else None
+            again = key in self.flow.nonnull    # a checked property compared again: read its real ?T value
+            if again:
+                self.flow.nonnull.discard(key)
+            try:
+                v, t = self.borrow(o)
+            finally:
+                if again:
+                    self.flow.nonnull.add(key)
+        if not is_opt(t):
+            raise CompileError(f"{show(o)} is {t}, which is never null, so this check is always "
+                               f"{'false' if e.op == '==' else 'true'}. Remove it (only ?T values can be null)", e.line)
+        r = self.tmp()
+        if is_opt_scalar(t):
+            f = self.tmp()
+            self.emit(f"{f} = extractvalue {llty(t)} {v}, 1")
+            if e.op == "!=":
+                return f, "bool", False
+            self.emit(f"{r} = xor i1 {f}, true")
+            return r, "bool", False
+        self.emit(f"{r} = icmp {'eq' if e.op == '==' else 'ne'} ptr {v}, null")
+        return r, "bool", False
+
+    def nullsafe(self, e):
+        """$u?->name  /  $u?->method(...): null when $u is null (null.md N3)."""
+        if e.obj.kind == "var" and e.obj.name in self.vars:
+            o, ot = self.use_var(e.obj.name, e.line, raw=True)
+        else:
+            o, ot = self.borrow(e.obj)
+        arrow = "?->" + e.name + ("()" if e.kind == "nsmcall" else "")
+        if not is_opt(ot):
+            raise CompileError(f"{show(e.obj)} is {ot}, which is never null: write -> instead of ?->", e.line)
+        inner = ot[1:]
+        ci = self.class_of(inner, e.line, arrow)
+        on_var = e.obj.kind == "var"            # $u?->m(): $u counts as checked inside, so -> keeps every check
+        if e.kind == "nsmcall" and not on_var:
+            m = ci.methods.get(e.name)
+            if m is not None and m.changing:
+                raise CompileError(f"{e.name}() changes the object, so it cannot be called through ?-> on "
+                                   f"{show(e.obj)}. Put it in a variable first: $x = {show(e.obj)}; then "
+                                   f"if ($x !== null) {{ $x->{e.name}(...); }}", e.line)
+        start, has, end = self.label, self.newlabel("nsok"), self.newlabel("nsend")
+        c = self.tmp()
+        self.emit(f"{c} = icmp ne ptr {o}, null")
+        self.emit(f"br i1 {c}, label %{has}, label %{end}")
+        self.place_label(has)
+        mark = len(self.temps)
+        obj = e.obj if on_var else Node("val", e.line, v=o, t=inner)
+        added = self.narrow([e.obj.name]) if on_var else set()
+        if e.kind == "nsfield":
+            r, rt, owned = self.field_read(Node("field", e.line, obj=obj, name=e.name))
+        else:
+            r, rt, owned = self.method_call(Node("mcall", e.line, obj=obj, name=e.name, args=e.args,
+                                                 order=getattr(e, "order", 0)))
+        self.flow.nonnull -= added
+        if rt == "void":                        # $u?->log(): a statement; nothing to give
+            self.flush_temps(mark)
+            self.emit(f"br label %{end}")
+            self.place_label(end)
+            return None, "void", False
+        if strip_opt(rt) in ("int", "float", "bool"):     # $u?->age: ?int
+            res_t = "?" + strip_opt(rt)
+            if rt != res_t:
+                r = self.wrap_opt(r, res_t)
+            self.flush_temps(mark)
+            done = self.label
+            self.emit(f"br label %{end}")
+            self.place_label(end)
+            p = self.tmp()
+            self.emit(f"{p} = phi {llty(res_t)} [ zeroinitializer, %{start} ], [ {r}, %{done} ]")
+            return p, res_t, False
+        if strip_opt(rt) in ("db", "rows", "sub", "stream"):
+            raise CompileError(f"{show(e)} gives {rt}, which cannot be null. Write if ({show(e.obj)} !== null) "
+                               f"{{ ... }}", e.line)
+        self.flush_temps(mark)
+        done = self.label
+        self.emit(f"br label %{end}")
+        self.place_label(end)
+        p = self.tmp()
+        self.emit(f"{p} = phi ptr [ null, %{start} ], [ {r}, %{done} ]")
+        return p, rt if is_opt(rt) else "?" + rt, owned
 
     # --- expressions: return (llvm value, type, owned)
     def require_assigned(self, name, line):
@@ -1736,19 +2637,38 @@ class FuncGen:
                                    f"{where}; a task gives its result once — keep the result in a variable", line)
             raise CompileError(
                 f"{name} {how} on line {self.moved[name]}{where} and can no longer be used here. {fix}", line)
-        t = self.vars[name]
+        t = self.vtype(name)
         r = self.tmp()
         self.emit(f"{r} = load {llty(t)}, ptr {self.slot(name)}")
         return r, t
 
     def coerce(self, val, t, want, line, what):
-        if t == want:
+        if is_opt_scalar(want) and t in ("int", "float", "bool"):     # 5 where ?int goes: the pair (5, has)
+            return self.wrap_opt(self.coerce(val, t, want[1:], line, what), want)
+        if t == want or (is_opt(want) and t == want[1:]):      # a T fits where ?T is wanted
             return val
+        if is_opt(t) and t[1:] == want:
+            raise CompileError(f"{what}: this value may be null ({t}) but {want} cannot be. Check it first with "
+                               f"!== null, or give a default with ??", line)
         if t == "int" and want == "float":
             r = self.tmp()
             self.emit(f"{r} = sitofp i64 {val} to double")
             return r
         raise CompileError(f"{what}: expected {want} but got {t}", line)
+
+    def wrap_opt(self, v, t, has="true"):
+        """A ?int / ?float / ?bool that holds v (null when has is false)."""
+        a, b = self.tmp(), self.tmp()
+        self.emit(f"{a} = insertvalue {llty(t)} undef, {llty(t[1:])} {v}, 0")
+        self.emit(f"{b} = insertvalue {llty(t)} {a}, i1 {has}, 1")
+        return b
+
+    def opt_parts(self, v, t):
+        """(value, has a value) of a ?int / ?float / ?bool."""
+        x, f = self.tmp(), self.tmp()
+        self.emit(f"{x} = extractvalue {llty(t)} {v}, 0")
+        self.emit(f"{f} = extractvalue {llty(t)} {v}, 1")
+        return x, f
 
     def borrow(self, e, hint=None):
         """Evaluate an expression for reading only; owned results are freed after the statement."""
@@ -1765,23 +2685,27 @@ class FuncGen:
     def owned_value(self, e, hint, line, may_move_string=False, into=None):
         """Evaluate an expression whose result will be stored somewhere: the result must be owned.
         `into`: the variable the result is stored under (it cannot be stored inside itself)."""
+        if self.local_fn and e.kind == "var" and e.name in self.local_fn:
+            raise CompileError(f"{e.name} holds a closure that reads values of this function (a loan), so it can "
+                               f"only be called or passed to a function here. To keep it, store copy({e.name}): the "
+                               f"copy has its own values", line)
         if e.kind == "var" and e.name in self.vars and is_heap(self.vars[e.name]):
-            if into == e.name and self.vars[e.name] != "string":
+            if into == e.name and strip_opt(self.vars[e.name]) != "string":
                 raise CompileError(f"cannot store {e.name} inside itself; store copy({e.name})", line)
             v, t = self.use_var(e.name, line)
-            if t == "string":
+            if strip_opt(t) == "string":
                 if may_move_string and e.name not in self.borrowed:
                     self.emit(f"store ptr {self.mod.lit('')}, ptr {self.slot(e.name)}")
                     return v, t
-                return self.dup_str(v), t
+                return self.own_copy(v, t), t
             self.move_out(e.name, line)
             return v, t
         v, t, owned = self.expr(e, hint)
         if is_heap(t) and not owned:
-            if t != "string":
+            if strip_opt(t) != "string":
                 raise CompileError(f"{show(e)} belongs to the value it is part of and cannot be moved out of it. "
                                    f"Store copy({show(e)}) to have your own", line)
-            v = self.dup_str(v)
+            v = self.own_copy(v, t)
         return v, t
 
     def move_out(self, src, line):
@@ -1795,10 +2719,25 @@ class FuncGen:
         if self.walked(src):
             raise CompileError(f"cannot move {src} while a foreach is looping over it", line)
         self.mutating(src, (), line, what="moved")
+        for f, roots in self.ref_caps.items():
+            ln = self.live_use(f, self.at) if src in roots else None
+            if ln:
+                raise CompileError(f"{src} is changed by the closure in {f} (use (&{src})), which can still be "
+                                   f"called (line {ln}), so it cannot be moved. Use copy({src})", line)
         self.moved[src] = line
+        self.flow.nonnull.discard(src)
         self.emit(f"store ptr null, ptr {self.slot(src)}")
 
     def expr(self, e, hint=None):
+        if self.depth == 0:
+            self.top_expr = e
+        self.depth += 1
+        try:
+            return self.expr_(e, hint)
+        finally:
+            self.depth -= 1
+
+    def expr_(self, e, hint=None):
         k = e.kind
         if k == "int":
             return str(e.val), "int", False
@@ -1809,6 +2748,29 @@ class FuncGen:
             return ("true" if e.val else "false"), "bool", False
         if k == "str":
             return self.mod.lit(e.val), "string", False
+        if k == "null":
+            if hint and is_opt_scalar(hint):
+                return "zeroinitializer", hint, False
+            if hint and is_opt(hint):
+                return "null", hint, True
+            raise CompileError("null can only go where a ?T type is expected (a ?T variable, parameter, property or "
+                               "return value)" + (f"; here a {hint} is expected" if hint else
+                                                  ". For a new variable write its type: ?User $u = null;"), e.line)
+        if k == "fnref":
+            return self.fn_ref(e)
+        if k == "closure":
+            return self.closure_value(e, hint)
+        if k == "callv":
+            if self.ref_caps_seen:
+                self.lend_fns(e)
+            return self.call_value(e)
+        if k == "val":                          # a value computed already (inside ?->)
+            return e.v, e.t, False
+        if k in ("nsfield", "nsmcall"):
+            return self.nullsafe(e)
+        if k == "throwexpr":
+            raise CompileError("throw goes after ?? on a value that may be null ($u = find($id) ?? throw "
+                               "error(404, \"not found\");), or on its own line", e.line)
         if k == "interp" or (k == "bin" and e.op == "."):
             return self.concat(flatten_concat(e), e.line)
         if k == "var":
@@ -1820,10 +2782,16 @@ class FuncGen:
             v, t = self.borrow(e.e)
             r = self.tmp()
             if e.op == "!":
+                self.not_null(e.e, t, e.line)
                 if t != "bool":
                     raise CompileError(f"'!' needs a bool but got {t}", e.line)
                 self.emit(f"{r} = xor i1 {v}, true")
                 return r, "bool", False
+            if e.op == "~":
+                if t != "int":
+                    raise CompileError(f"'~' works on ints, not {t}", e.line)
+                self.emit(f"{r} = xor i64 {v}, -1")
+                return r, "int", False
             if t == "int":
                 self.emit(f"{r} = sub i64 0, {v}")
             elif t == "float":
@@ -1845,6 +2813,8 @@ class FuncGen:
             return self.listlit(e, hint)
         if k == "maplit":
             return self.maplit(e, hint)
+        if k in ("call", "mcall", "new") and self.ref_caps_seen:
+            self.lend_fns(e)
         if k == "call":
             return self.call_expr(e, hint)
         if k == "field":
@@ -1913,19 +2883,64 @@ class FuncGen:
     def field_read(self, e):
         self.ctor_check_read(e)
         o, ot = self.obj_value(e.obj)
+        self.not_null(e.obj, ot, e.line)
         f = self.field_info(ot, e.name, e.line)
-        return self.load_at(self.field_ptr(o, f), f.type, "elem"), f.type, False
+        v, t = self.load_at(self.field_ptr(o, f), f.type, "elem"), f.type
+        if self.path_checked(e, t):             # checked not null and unchanged since (null.md N2)
+            if is_opt_scalar(t):
+                x = self.tmp()
+                self.emit(f"{x} = extractvalue {llty(t)} {v}, 0")
+                v = x
+            t = t[1:]
+        return v, t, False
+
+    # property paths ($u->email, $this->a->b) checked not null: kept in Flow.nonnull as "$u->email" until
+    # anything changes $u (every change goes through mutating(), and loops forget what their body changes)
+    def path_key(self, e):
+        if e.kind == "var":
+            return e.name if e.name in self.vars else None
+        if e.kind == "field":
+            k = self.path_key(e.obj)
+            return k and f"{k}->{e.name}"
+        return None
+
+    def path_checked(self, e, t):
+        if not is_opt(t):
+            return False
+        k = self.path_key(e)
+        return k is not None and "->" in k and k in self.flow.nonnull
+
+    def drop_paths(self, roots, props=()):
+        """Forget checked paths of these variables; with props, only those that overlap the changed property
+        ($u->addr = ... keeps $u->email checked)."""
+        roots = set(roots)
+        gone = set()
+        for k in self.flow.nonnull:
+            if "->" in k:
+                r, *p = k.split("->")
+                if r in roots and overlaps(tuple(p), tuple(props)):
+                    gone.add(k)
+        self.flow.nonnull -= gone
 
     def static_type(self, e):
         """The type of a path or call without generating code, or None when it cannot be told this way."""
         k = e.kind
         if k == "var":
-            return self.vars.get(e.name)
+            return self.vtype(e.name) if e.name in self.vars else None
         if k == "field":
             ot = self.static_type(e.obj)
             if ot and is_class(ot):
                 f = CLASSES[ot].fields.get(e.name)
+                if f and self.path_checked(e, f.type):
+                    return f.type[1:]
                 return f.type if f else None
+            return None
+        if k == "nsfield":
+            ot = self.static_type(e.obj)
+            if ot and is_opt(ot) and is_class(ot[1:]):
+                f = CLASSES[ot[1:]].fields.get(e.name)
+                return ("?" + strip_opt(f.type)) if f and (is_heap(f.type) or strip_opt(f.type) in
+                                                           ("int", "float", "bool")) else None
             return None
         if k in ("index", "append"):
             st = self.static_type(e.seq)
@@ -1980,6 +2995,7 @@ class FuncGen:
             return self.slot(e.name), self.vars[e.name], "var"
         if k == "field":
             o, ot = self.base_value(e.obj, line)
+            self.not_null(e.obj, ot, line)
             f = self.field_info(ot, e.name, line)
             return self.field_ptr(o, f), f.type, "elem"
         if k == "index":
@@ -1998,6 +3014,7 @@ class FuncGen:
                 if not create:
                     self.missing_check(p, line)
                 return p, vt, "slot"
+            self.not_null(e.seq, bt, line)
             raise CompileError(f"cannot index a value of type {bt}", line)
         raise CompileError("can only change a value stored in a variable, a list item, a map entry or a property",
                            line)
@@ -2033,10 +3050,21 @@ class FuncGen:
                     raise CompileError(f"{what}, so the other arguments cannot use {n} at the same time. "
                                        f"Pass copy(...) of what they need, or read it into a variable first", line)
 
-    def args_for(self, e, params, who):
+    def with_defaults(self, e, params, defaults, who):
+        """The call's arguments, with the defaults of the parameters it leaves out at the end."""
+        need = sum(1 for d in defaults if d is None) if defaults else len(params)
+        if len(e.args) > len(params) or len(e.args) < need:
+            want = f"{need} to {len(params)}" if need != len(params) else f"{len(params)}"
+            raise CompileError(f"{who}() takes {want} argument(s) but got {len(e.args)}", e.line)
+        if len(e.args) == len(params):
+            return e
+        kw = {k: v for k, v in e.__dict__.items() if k not in ("kind", "line")}
+        kw["args"] = list(e.args) + [copy.deepcopy(d) for d in defaults[len(e.args):]]   # literals, fresh per call
+        return Node(e.kind, e.line, **kw)
+
+    def args_for(self, e, params, who, defaults=None):
         """Evaluate call arguments: read-only borrows, and &-arguments as the address of the caller's value."""
-        if len(e.args) != len(params):
-            raise CompileError(f"{who}() takes {len(params)} argument(s) but got {len(e.args)}", e.line)
+        e = self.with_defaults(e, params, defaults, who)
         vals = []
         for i, (a, (pt, pn, ref)) in enumerate(zip(e.args, params)):
             if ref:
@@ -2063,8 +3091,14 @@ class FuncGen:
         t = self.static_type(a)
         if t is None:
             self.require_assigned(root, call.line)
+        if t != want and a.kind == "var" and self.vars.get(root) == want:
+            t = want                            # a checked ?T variable lent as ?T: it may come back null
+        if t != want and a.kind == "field" and self.path_key(a) in self.flow.nonnull and "?" + t == want:
+            t = want                            # the same for a checked property (mutating() forgets the check)
         if t != want:
             raise CompileError(f"{who}() needs {want} for &{show(a)}, but it is {t}", call.line)
+        if a.kind == "var" and is_opt(want):
+            self.flow.nonnull.discard(root)
         if t == "bool" and a.kind != "var":
             raise CompileError("a bool inside a list, map or object cannot be lent with &; use a variable", call.line)
         self.mutating(root, props, call.line, at=call.order)
@@ -2078,6 +3112,7 @@ class FuncGen:
         if ot is None or root is None:
             o, ot = self.borrow(e.obj)              # a function result: a temporary that may be changed
             root = None
+        self.not_null(e.obj, ot, e.line)
         ci = self.class_of(ot, e.line, f"->{e.name}()")
         m = ci.methods.get(e.name)
         if m is None:
@@ -2092,7 +3127,7 @@ class FuncGen:
                 self.exclusive(root, e.args, e.line, f"{e.name}() changes {show(e.obj)}")
             o, _ = self.obj_value(e.obj) if e.obj.kind != "var" or e.obj.name != "$this" else \
                 self.use_var("$this", e.line)
-        vals = self.args_for(e, m.params, f"{ci.name}::{e.name}")
+        vals = self.args_for(e, m.params, f"{ci.name}::{e.name}", getattr(m.node, "defaults", None))
         if m.throws:
             how = f"{show(e.obj)}->{e.name}(...)"
             return self.failing_call(m.ret, m.llname, [f"ptr {o}"] + vals, e.line, how), m.ret, is_heap(m.ret)
@@ -2110,11 +3145,14 @@ class FuncGen:
         if key is None:
             raise CompileError(f"unknown function {c.name}()", e.line)
         params, (_, ret), throws = self.mod.params[key], self.mod.funcs[key], self.mod.throws.get(key, False)
-        if len(c.args) != len(params):
-            raise CompileError(f"{c.name}() takes {len(params)} argument(s) but got {len(c.args)}", e.line)
+        c = self.with_defaults(c, params, self.mod.defaults.get(key), c.name)
         mark = len(self.temps)
         slots, roots, lent = [], set(), set()
         for i, (a, (pt, pn, ref)) in enumerate(zip(c.args, params)):
+            if pt in ("db", "rows"):
+                raise CompileError(f"go {c.name}(): a task cannot use the caller's {pt} (one connection serves one "
+                                   f"task at a time). Open its own inside the task: $db = db_open(...); it comes "
+                                   f"from the pool, so it is cheap", e.line)
             if ref:
                 if a.kind != "ref":
                     raise CompileError(f"{c.name}() can change its argument {pn}, so write go {c.name}(&...)", e.line)
@@ -2132,10 +3170,12 @@ class FuncGen:
                     roots |= self.task_roots(a)
         owned = self.temps[mark:]                   # temporaries made for the arguments: the task frees them
         del self.temps[mark:]
-        frame = self.call("ptr", "@pn_obj_new", f"i64 {16 + 8 * (len(slots) + len(owned))}")
-        for i, (ty, v) in enumerate(slots + [("ptr", v) for v, _ in owned]):
+        offs, rest = task_frame([ty for ty, _ in slots], ret)
+        frame = self.call("ptr", "@pn_obj_new", f"i64 {rest + 8 * len(owned)}")
+        for off, (ty, v) in zip(offs + [rest + 8 * j for j in range(len(owned))],
+                                slots + [("ptr", v) for v, _ in owned]):
             p = self.tmp()
-            self.emit(f"{p} = getelementptr inbounds i8, ptr {frame}, i64 {16 + 8 * i}")
+            self.emit(f"{p} = getelementptr inbounds i8, ptr {frame}, i64 {off}")
             self.emit(f"store {ty} {v}, ptr {p}")
         tramp = self.mod.go_trampoline(key, [ty for ty, _ in slots], ret, throws, [t for _, t in owned])
         task = self.call("ptr", "@pn_go", f"ptr {tramp}", f"ptr {frame}")
@@ -2175,10 +3215,21 @@ class FuncGen:
         if ret == "void":
             self.call("void", "@pn_obj_free", f"ptr {frame}")
             return None, "void", False
-        v = self.tmp()
-        self.emit(f"{v} = load {llty(ret)}, ptr {frame}")
+        v = self.frame_result(frame, ret)
         self.call("void", "@pn_obj_free", f"ptr {frame}")
         return v, ret, is_heap(ret)
+
+    def frame_result(self, frame, ret):
+        """What a finished task gave, from its frame (see task_frame)."""
+        v = self.tmp()
+        if is_opt_scalar(ret):                  # the value at 0, the flag at 16
+            fp, fl = self.tmp(), self.tmp()
+            self.emit(f"{v} = load {llty(ret[1:])}, ptr {frame}")
+            self.emit(f"{fp} = getelementptr inbounds i8, ptr {frame}, i64 16")
+            self.emit(f"{fl} = load i1, ptr {fp}")
+            return self.wrap_opt(v, ret, fl)
+        self.emit(f"{v} = load {llty(ret)}, ptr {frame}")
+        return v
 
     def tasks_done(self, line):
         """C1: a task started in this function is awaited before it returns (on every path)."""
@@ -2209,7 +3260,7 @@ class FuncGen:
             raise CompileError(f"class {ci.name} has no __construct(), so new {ci.name}() takes no arguments", e.line)
         if ctor:
             self.visible(ci, "__construct()", ctor.vis, e.line, "method")
-            vals = self.args_for(e, ctor.params, f"new {ci.name}")
+            vals = self.args_for(e, ctor.params, f"new {ci.name}", getattr(ctor.node, "defaults", None))
         o = self.call("ptr", "@pn_obj_new", f"i64 {ci.size}")
         if any(f.default is not None for f in ci.fields.values()):
             self.call("void", f'@"init.{key}"', f"ptr {o}")
@@ -2239,6 +3290,7 @@ class FuncGen:
             return self.call("ptr", "@pn_str_add_float", f"ptr {s}", f"double {v}")
         if t == "bool":
             return self.call("ptr", "@pn_str_add_str", f"ptr {s}", f"ptr {self.bool_str(v)}")
+        self.not_null(p, t, line)
         raise CompileError(f"cannot join a {t} into a string (use json_encode())", line)
 
     def bool_str(self, v):
@@ -2265,6 +3317,9 @@ class FuncGen:
             return self.call("ptr", "@pn_str_from_float", f"double {v}"), "string", True
         if t == "bool":
             return self.bool_str(v), "string", False
+        if is_opt(t):
+            raise CompileError(f"this value may be null ({t}). Check it first with !== null, or give a default "
+                               f"with ?? (json_encode() writes null as null)", line)
         raise CompileError(f"cannot turn a {t} into a string (use json_encode())", line)
 
     def to_int(self, v, t, line):
@@ -2286,6 +3341,9 @@ class FuncGen:
             self.emit(f"{r} = zext i1 {v} to i64")
         elif t == "string":
             return self.call("i64", "@pn_str_to_int", f"ptr {v}")
+        elif is_opt(t):
+            raise CompileError(f"this value may be null ({t}). Check it first with !== null, or give a default "
+                               f"with ??", line)
         else:
             raise CompileError(f"cannot turn a {t} into an int", line)
         return r
@@ -2297,25 +3355,56 @@ class FuncGen:
 
     # --- lists
     def listlit(self, e, hint):
+        hint = strip_opt(hint) if hint else hint        # [] where a ?list<T> goes
         if hint and is_map(hint) and not e.items:
             return self.maplit(Node("maplit", e.line, pairs=[]), hint)
         et = None
         vals = []
         if e.items:
             ih = elem_of(hint) if hint and is_list(hint) else None
+            taken = []          # owned items: temporaries until the list exists, so a later item's error frees them
             for i in e.items:
                 probe = self.static_type(i) if i.kind in ("var", "field", "index") else None
+                if i.kind == "null" and not ih:
+                    vals.append((None, "null", False))      # typed below, from the other items: [1, null] is list<?int>
+                    continue
                 if (probe and is_heap(probe)) or i.kind in ("listlit", "maplit", "new", "call", "mcall"):
-                    vals.append(self.owned_value(i, ih, e.line) + (True,))     # the list owns what it holds
+                    v, t = self.owned_value(i, ih, e.line)  # the list owns what it holds
+                    owned = True
                 else:
-                    vals.append(self.borrow(i, ih) + (False,))
-            types = {t for _, t, _ in vals}
+                    v, t, owned = self.expr(i, ih)          # an owned result (try f(), await, ?:) is taken as it is
+                    owned = owned and is_heap(t)
+                    if not owned and is_heap(t) and strip_opt(t) != "string":   # borrowed ($maybe ?? [7]): a copy
+                        bad = uncopyable(t)
+                        if bad:
+                            raise CompileError(f"this list item holds {bad}, which cannot be copied into a list",
+                                               e.line)
+                        v, owned = self.call("ptr", copy_fn(t), f"ptr {v}"), True
+                if owned and is_heap(t):
+                    entry = (v, t)
+                    self.temps.append(entry)
+                    taken.append(entry)
+                vals.append((v, t, owned))
+            for entry in taken:                         # every item is there: the list takes them over
+                self.temps.remove(entry)
+            types = {t for _, t, _ in vals} - {"null"}
+            nulls = any(t == "null" for _, t, _ in vals)
+            if ih and is_opt(ih) and types <= {ih, ih[1:]} | ({"int"} if ih == "?float" else set()):
+                types = {ih}                            # T and null items where a ?T goes
+            elif any(is_opt(t) for t in types):         # [$maybe, "x"]: the list holds ?string
+                nulls, types = True, {strip_opt(t) for t in types}
             et = "float" if types == {"int", "float"} else (types.pop() if len(types) == 1 else None)
+            if et is None and not types:
+                raise CompileError("[null] needs a type, e.g.  list<?string> $a = [null];", e.line)
             if et is None:
                 raise CompileError("list items must all have the same type "
                                    f"(got {', '.join(sorted({t for _, t, _ in vals}))})", e.line)
             if et in ("void", "db", "rows"):
                 raise CompileError(f"a list cannot hold {et} values", e.line)
+            if nulls and not is_opt(et):
+                et = "?" + et
+            vals = [("zeroinitializer" if is_opt_scalar(et) else "null", et, False) if t == "null" else (v, t, o)
+                    for v, t, o in vals]
         elif hint and is_list(hint):
             et = elem_of(hint)
         else:
@@ -2323,12 +3412,16 @@ class FuncGen:
         r = self.call("ptr", "@pn_list_new", f"i64 {esize(et)}")
         for v, t, owned in vals:
             v = self.coerce(v, t, et, e.line, "list item")
-            if et == "string" and not owned:
+            if t == "string" and strip_opt(et) == "string" and not owned:
                 v = self.dup_str(v)             # the list owns its strings
+            if is_opt_scalar(et):               # 16 or 2 bytes: more than pn_list_push takes
+                self.store_elem(self.call("ptr", "@pn_list_push_slot", f"ptr {r}", f"i64 {esize(et)}"), v, et)
+                continue
             self.call("void", "@pn_list_push", f"ptr {r}", f"i64 {esize(et)}", f"i64 {self.to_bits(v, et)}")
         return r, f"list<{et}>", True
 
     def to_bits(self, v, et):
+        assert not is_opt_scalar(et), et        # 16 / 2 bytes: use pn_list_push_slot
         if et == "int":
             return v
         r = self.tmp()
@@ -2360,6 +3453,9 @@ class FuncGen:
 
     def load_elem(self, p, et):
         r = self.tmp()
+        if is_opt_scalar(et):                   # a property: stored as the pair itself
+            self.emit(f"{r} = load {llty(et)}, ptr {p}")
+            return r
         tb = f", !tbaa {ELEM_TBAA[et]}" if et in ELEM_TBAA else ""
         self.emit(f"{r} = load {ell(et)}, ptr {p}{tb}")
         if et == "bool":
@@ -2369,6 +3465,9 @@ class FuncGen:
         return r
 
     def store_elem(self, p, v, et):
+        if is_opt_scalar(et):
+            self.emit(f"store {llty(et)} {v}, ptr {p}")
+            return
         tb = f", !tbaa {ELEM_TBAA[et]}" if et in ELEM_TBAA else ""
         if et == "bool":
             z = self.tmp()
@@ -2388,8 +3487,27 @@ class FuncGen:
             return r
         return kv
 
+    def opt_alive(self, p):
+        a = self.tmp()
+        self.emit(f"{a} = getelementptr inbounds i8, ptr {p}, i64 8")      # Entry.alive, after the value slot
+        return a
+
     def load_slot(self, p, vt):
         r = self.tmp()
+        if is_opt_scalar(vt):                   # the value, and null as bit 2 of the entry's alive word (OPT_KIND)
+            x, a, nb, has = self.tmp(), self.tmp(), self.tmp(), self.tmp()
+            inner = vt[1:]
+            self.emit(f"{x} = load i64, ptr {p}")
+            self.emit(f"{a} = load i64, ptr {self.opt_alive(p)}")
+            self.emit(f"{nb} = and i64 {a}, 2")
+            self.emit(f"{has} = icmp eq i64 {nb}, 0")
+            if inner == "float":
+                y = self.tmp()
+                self.emit(f"{y} = bitcast i64 {x} to double")
+                x = y
+            elif inner == "bool":
+                x = self.i64_to_bool(x)
+            return self.wrap_opt(x, vt, has)
         if vt == "bool":
             self.emit(f"{r} = load i64, ptr {p}")
             return self.i64_to_bool(r)
@@ -2397,6 +3515,13 @@ class FuncGen:
         return r
 
     def store_slot(self, p, v, vt):
+        if is_opt_scalar(vt):
+            x, has = self.opt_parts(v, vt)
+            self.store_slot(p, x, vt[1:])
+            a = self.tmp()
+            self.emit(f"{a} = select i1 {has}, i64 1, i64 3")
+            self.emit(f"store i64 {a}, ptr {self.opt_alive(p)}")
+            return
         if vt == "bool":
             z = self.tmp()
             self.emit(f"{z} = zext i1 {v} to i64")
@@ -2404,6 +3529,7 @@ class FuncGen:
         self.emit(f"store {llty(vt) if vt != 'bool' else 'i64'} {v}, ptr {p}")
 
     def maplit(self, e, hint):
+        hint = strip_opt(hint) if hint else hint
         if e.pairs:
             kt, vt = None, None
             if hint and is_map(hint):
@@ -2421,6 +3547,13 @@ class FuncGen:
                 probes = {self.expr_type_probe(ve) for _, ve in entries}
                 if "float" in probes and probes <= {"int", "float", None}:
                     vt = "float"
+            if vt is None and "null" in probes:     # ["a" => 1, "b" => null] is map<string,?int>
+                lits = {"int": "int", "float": "float", "str": "string", "bool": "bool", "interp": "string"}
+                known = {lits.get(ve.kind) for _, ve in entries if ve.kind != "null"}
+                if len(known) != 1 or None in known:
+                    raise CompileError("a map literal with null values needs its type, e.g.  "
+                                       "map<string,?int> $m = [\"a\" => 1, \"b\" => null];", e.line)
+                vt = "?" + known.pop()
             m = None
             for i, (ke, ve) in enumerate(entries):
                 v, t = self.owned_value(ve, vt, e.line)
@@ -2428,12 +3561,12 @@ class FuncGen:
                     vt = t
                     if vt in ("void", "db", "rows"):
                         raise CompileError(f"a map cannot hold {vt} values", e.line)
+                if m is None:
                     mt = f"map<{kt},{vt}>"
                     m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {kind_of(vt)}")
-                elif m is None:
-                    mt = f"map<{kt},{vt}>"
-                    m = self.call("ptr", "@pn_map_new", f"i64 {KIND[kt]}", f"i64 {kind_of(vt)}")
-                if t != vt and not (t == "int" and vt == "float"):
+                    building = (m, mt)              # a temporary until done: a later value's error frees it
+                    self.temps.append(building)
+                if t != vt and not (t == "int" and strip_opt(vt) == "float") and t != strip_opt(vt):
                     raise CompileError(
                         f"a map holds one value type: this literal is {mt} (from its first value), but a value "
                         f"here is {t}. For a JSON object with values of different types, declare a class with those "
@@ -2445,6 +3578,7 @@ class FuncGen:
                     old = self.load_slot(p, vt)
                     self.call("void", free_fn(vt), f"ptr {old}")
                 self.store_slot(p, v, vt)
+            self.temps.remove(building)
             return m, mt, True
         if not (hint and is_map(hint)):
             raise CompileError("an empty [] needs a type, e.g.  map<string,int> $m = [];", e.line)
@@ -2469,10 +3603,14 @@ class FuncGen:
         if e.kind == "unary" and e.op == "-":
             return self.expr_type_probe(e.e)
         if e.kind == "var" and e.name in self.vars:
-            return self.vars[e.name]
+            return self.vtype(e.name)
+        if e.kind in ("field", "index", "mcall") and self.static_type(e):     # $u->name, $ks[0], $u->key()
+            return strip_opt(self.static_type(e))
+        if e.kind == "null":
+            return "null"
         if e.kind == "call" and self.fkey(e, quiet=True):
             return self.mod.funcs[self.fkey(e, quiet=True)][1]
-        if e.kind == "call" and e.name in ("strval", "substr", "trim", "strtolower", "strtoupper", "json_encode",
+        if e.kind == "call" and e.name in ("strval", "substr", "mb_substr", "grapheme_substr", "mb_chr", "mb_strtolower", "mb_strtoupper", "normalizer_normalize", "trim", "strtolower", "strtoupper", "json_encode",
                                            "implode", "url_path", "query_param", "form_param", "json_string",
                                            "db_json", "db_string", "db_error"):
             return "string"
@@ -2485,6 +3623,7 @@ class FuncGen:
 
     def index_read(self, e):
         seq, st = self.seq_of(e.seq, e.line)
+        self.not_null(e.seq, st, e.line)
         if is_list(st):
             iv, it = self.borrow(e.idx)
             if it != "int":
@@ -2503,10 +3642,173 @@ class FuncGen:
             raise CompileError("use substr($s, $i, 1) to read one character", e.line)
         raise CompileError(f"cannot index a value of type {st}", e.line)
 
+    def coalesce_null(self, e):
+        """$u ?? default  /  $u ?? throw error(...): the left side is a ?T value (null.md N3)."""
+        lv, lt, lowned = self.expr(e.l)
+        if not is_opt(lt):
+            checked = (e.l.kind == "var" and is_opt(self.vars.get(e.l.name, ""))) or \
+                (e.l.kind == "field" and self.path_key(e.l) in self.flow.nonnull)
+            if checked:
+                raise CompileError(f"{show(e.l)} cannot be null here (it was checked or given a value above), so ?? "
+                                   f"has nothing to do: use {show(e.l)} as it is", e.line)
+            raise CompileError(f"{show(e.l)} is {lt}, which is never null, so ?? has nothing to do. (?? also works "
+                               f"on a list item or map entry, e.g. $m[$k] ?? 0)", e.line)
+        inner = lt[1:]
+        if is_opt_scalar(lt):
+            return self.coalesce_scalar(e, lv, lt)
+        has, dflt, merge = self.newlabel("nn"), self.newlabel("isnull"), self.newlabel("coal")
+        c = self.tmp()
+        self.emit(f"{c} = icmp ne ptr {lv}, null")
+        self.emit(f"br i1 {c}, label %{has}, label %{dflt}")
+        self.place_label(has)
+        if e.r.kind == "throwexpr":             # null leaves through the error path; the rest is T
+            self.emit(f"br label %{merge}")
+            self.place_label(dflt)
+            mark = len(self.temps)
+            v, t = self.owned_value(e.r.val, "Error", e.r.line)
+            if t != "Error":
+                raise CompileError(f'throw needs an Error, e.g. ?? throw error(404, "not found") — not {t}', e.line)
+            self.fail_count += 1
+            self.can_propagate(e.line, "?? throw is not allowed here")
+            self.route_error(v, e.line)
+            del self.temps[mark:]               # freed by route_error on this path; never made on the other
+            self.place_label(merge)
+            return lv, inner, lowned
+        str_like = inner == "string"
+        v1 = self.own_copy(lv, lt) if str_like and not lowned else lv
+        end1 = self.label
+        self.emit(f"br label %{merge}")
+        self.place_label(dflt)
+        mark = len(self.temps)
+        rv, rt, rowned = self.expr(e.r, lt)
+        if strip_opt(rt) != inner:
+            raise CompileError(f"both sides of ?? must have the same type: {show(e.l)} is {lt} but the default is "
+                               f"{rt}", e.line)
+        if str_like and not rowned:
+            rv, rowned = self.own_copy(rv, rt), True
+        if not str_like and not rowned and len(self.temps) > mark:
+            raise CompileError("the default after ?? is part of a temporary value; store it in a variable first",
+                               e.line)
+        if not str_like and lowned and not rowned:      # findUser() ?? $guest: the result owns a copy
+            bad = uncopyable(rt)
+            if bad:
+                raise CompileError(f"the default after ?? would have to be copied, and {bad} cannot be", e.line)
+            rv, rowned = self.call("ptr", copy_fn(rt), f"ptr {rv}"), True
+        self.flush_temps(mark)
+        end2 = self.label
+        self.emit(f"br label %{merge}")
+        self.place_label(merge)
+        res_t = rt if is_opt(rt) else inner
+        r = self.tmp()
+        self.emit(f"{r} = phi ptr [ {v1}, %{end1} ], [ {rv}, %{end2} ]")
+        owned = str_like or lowned
+        if not owned and rowned:                # $o->child ?? new Child(): borrowed result, the default dies
+            keep = self.tmp()                   # with the statement (null on the other path)
+            self.emit(f"{keep} = phi ptr [ null, %{end1} ], [ {rv}, %{end2} ]")
+            self.temps.append((keep, res_t))
+        return r, res_t, owned
+
+    def json_opt_scalar(self, v, t):
+        """json_encode() of a ?int / ?float / ?bool: an owned string ("null" is a literal, never freed)."""
+        x, c = self.opt_parts(v, t)
+        has, none, end = self.newlabel("jhas"), self.newlabel("jnull"), self.newlabel("jend")
+        self.emit(f"br i1 {c}, label %{has}, label %{none}")
+        self.place_label(has)
+        if t == "?int":
+            r1 = self.call("ptr", "@pn_str_from_int", f"i64 {x}")
+        elif t == "?float":
+            r1 = self.call("ptr", "@pn_json_float", f"double {x}")
+        else:
+            r1 = self.tmp()
+            self.emit(f"{r1} = select i1 {x}, ptr {self.mod.lit('true')}, ptr {self.mod.lit('false')}")
+        self.emit(f"br label %{end}")
+        self.place_label(none)
+        self.emit(f"br label %{end}")
+        self.place_label(end)
+        r = self.tmp()
+        self.emit(f"{r} = phi ptr [ {r1}, %{has} ], [ {self.mod.lit('null')}, %{none} ]")
+        return r
+
+    def coalesce_scalar(self, e, lv, lt):
+        """$n ?? 0 on a ?int / ?float / ?bool; the default is evaluated only when $n is null."""
+        inner = lt[1:]
+        x, c = self.opt_parts(lv, lt)
+        has, dflt, merge = self.newlabel("nn"), self.newlabel("isnull"), self.newlabel("coal")
+        self.emit(f"br i1 {c}, label %{has}, label %{dflt}")
+        self.place_label(has)
+        if e.r.kind == "throwexpr":
+            self.emit(f"br label %{merge}")
+            self.place_label(dflt)
+            mark = len(self.temps)
+            v, t = self.owned_value(e.r.val, "Error", e.r.line)
+            if t != "Error":
+                raise CompileError(f'throw needs an Error, e.g. ?? throw error(404, "not found") — not {t}', e.line)
+            self.fail_count += 1
+            self.can_propagate(e.line, "?? throw is not allowed here")
+            self.route_error(v, e.line)
+            del self.temps[mark:]
+            self.place_label(merge)
+            return x, inner, False
+        end1 = self.label
+        self.emit(f"br label %{merge}")
+        self.place_label(dflt)
+        mark = len(self.temps)
+        rv, rt, _ = self.expr(e.r, lt)
+        if rt == lt:
+            res_t = lt                          # $a ?? $b with both ?int: still ?int
+        elif rt == inner or (rt == "int" and inner == "float"):
+            res_t = inner
+            rv = self.coerce(rv, rt, inner, e.line, "the default after ??")
+        else:
+            raise CompileError(f"both sides of ?? must have the same type: {show(e.l)} is {lt} but the default is "
+                               f"{rt}", e.line)
+        self.flush_temps(mark)
+        end2 = self.label
+        self.emit(f"br label %{merge}")
+        self.place_label(merge)
+        r = self.tmp()
+        self.emit(f"{r} = phi {llty(res_t)} [ {lv if res_t == lt else x}, %{end1} ], [ {rv}, %{end2} ]")
+        return r, res_t, False
+
+    def isset_opt(self, seq, st, item, key_e, line):
+        """isset($m[$k]) / isset($list[$i]) on ?T items: there and not null, as in PHP (array_key_exists() is
+        true for a null value)."""
+        if is_map(st):
+            key = self.map_key(st, key_e, line)
+            p = self.call("ptr", "@pn_map_slot", f"ptr {seq}", f"i64 {key}", "i64 0")
+            c = self.tmp()
+            self.emit(f"{c} = icmp ne ptr {p}, null")
+        else:
+            iv, it = self.borrow(key_e)
+            if it != "int":
+                raise CompileError(f"list index must be int but got {it}", line)
+            ln, c = self.tmp(), self.tmp()
+            self.emit(f"{ln} = load i64, ptr {seq}, !tbaa !1")
+            self.emit(f"{c} = icmp ult i64 {iv}, {ln}")
+        there, end = self.newlabel("there"), self.newlabel("isset")
+        start = self.label
+        self.emit(f"br i1 {c}, label %{there}, label %{end}")
+        self.place_label(there)
+        v = self.load_slot(p, item) if is_map(st) else self.load_elem(self.list_elem_ptr(seq, item, iv), item)
+        if is_opt_scalar(item):
+            _, f = self.opt_parts(v, item)
+        else:
+            f = self.tmp()
+            self.emit(f"{f} = icmp ne ptr {v}, null")
+        there_end = self.label
+        self.emit(f"br label %{end}")
+        self.place_label(end)
+        r = self.tmp()
+        self.emit(f"{r} = phi i1 [ false, %{start} ], [ {f}, %{there_end} ]")
+        return r
+
     def coalesce(self, e):
         """$m[$k] ?? default   /   $list[$i] ?? default"""
         if e.l.kind != "index":
-            raise CompileError("?? needs a list item or map entry on the left, e.g. $m[$k] ?? 0", e.line)
+            return self.coalesce_null(e)
+        if e.r.kind == "throwexpr":
+            raise CompileError("?? throw works on a value that may be null; for a map entry check "
+                               "isset($m[$k]) first", e.line)
         seq, st = self.seq_of(e.l.seq, e.line)
         has, dflt, merge = self.newlabel("has"), self.newlabel("dflt"), self.newlabel("coal")
         if is_map(st):
@@ -2529,9 +3831,20 @@ class FuncGen:
         if owns_ptr(vt):
             raise CompileError(f"?? works on items that are numbers, bools or strings; these are {vt}. Check with "
                                f"isset() first", e.line)
+        item = vt
+        vt = strip_opt(vt)             # a missing item and a null item both give the default (as in PHP)
         self.emit(f"br i1 {c}, label %{has}, label %{dflt}")
         self.place_label(has)
-        v1 = self.load_slot(p, vt) if is_map(st) else self.load_elem(self.list_elem_ptr(seq, vt, iv), vt)
+        v1 = self.load_slot(p, item) if is_map(st) else self.load_elem(self.list_elem_ptr(seq, item, iv), item)
+        if is_opt(item):
+            if is_opt_scalar(item):
+                v1, f = self.opt_parts(v1, item)
+            else:
+                f = self.tmp()
+                self.emit(f"{f} = icmp ne ptr {v1}, null")
+            notnull = self.newlabel("notnull")
+            self.emit(f"br i1 {f}, label %{notnull}, label %{dflt}")
+            self.place_label(notnull)
         if vt == "string":
             v1 = self.dup_str(v1)      # result is owned on both paths
         end1 = self.label
@@ -2554,20 +3867,21 @@ class FuncGen:
         """Evaluate one arm of ?: / ?? inside its own block; strings come out owned."""
         mark = len(self.temps)
         v, t, owned = self.expr(e, want)
-        if want is not None:
+        if want is not None and strip_opt(t) != strip_opt(want):
             if t != want and not (t == "int" and want == "float"):
                 raise CompileError(f"both sides of ?: / ?? must have the same type (got {want} and {t}). "
                                    f"Convert one side, e.g. strval($n) or intval($s)", line)
             v = self.coerce(v, t, want, line, "value")
             t = want
-        if t == "string" and not owned:
-            v = self.dup_str(v)
+        if strip_opt(t) == "string" and not owned:
+            v = self.own_copy(v, t)
         elif is_heap(t) and not owned:
             raise CompileError("?: cannot hand out a borrowed list or map; use copy()", line)
         self.flush_temps(mark)
         return v, t
 
     def ternary(self, e):
+        yes, no = self.null_facts(e.c)
         c = self.cond_value(e.c)
         a_l, b_l, merge = self.newlabel("ta"), self.newlabel("tb"), self.newlabel("tend")
         self.emit(f"br i1 {c}, label %{a_l}, label %{b_l}")
@@ -2575,14 +3889,51 @@ class FuncGen:
         # numbers: int and float mix to float; probe both arm types first
         ta, tb = self.expr_type_probe(e.a), self.expr_type_probe(e.b)
         want = "float" if {ta, tb} == {"int", "float"} else None
-        va, ta = self.branch_value(e.a, want, e.line)
-        end_a = self.label
+        if e.a.kind == "null" and e.b.kind == "null":
+            raise CompileError("both sides of ?: are null", e.line)
+        added = self.narrow(yes)
+        if e.a.kind == "null":
+            va, ta = "null", None               # typed by the other side
+        else:
+            va, ta = self.branch_value(e.a, want, e.line)
+        self.flow.nonnull -= added
+        end_a, pos_a = self.label, len(self.body)
         self.emit(f"br label %{merge}")
         self.place_label(b_l)
-        vb, tb = self.branch_value(e.b, want or ta, e.line)
-        end_b = self.label
+        added = self.narrow(no)
+        if e.b.kind == "null":
+            vb, tb = "null", None
+        else:
+            vb, tb = self.branch_value(e.b, want or ta, e.line)
+        self.flow.nonnull -= added
+        end_b, pos_b = self.label, len(self.body)
         self.emit(f"br label %{merge}")
         self.place_label(merge)
+        arm_a, arm_b = ta, tb
+        if ta is None or tb is None:            # $ok ? $user : null  ->  ?User
+            base = strip_opt(ta or tb)
+            if base not in ("int", "float", "bool") and (not is_heap(base) or base in ("db", "rows", "sub", "stream")):
+                raise CompileError(f"?: with null on one side needs a value that can be null on the other (got "
+                                   f"{base})", e.line)
+            ta = tb = "?" + base
+        elif (is_opt(ta) or is_opt(tb)) and strip_opt(ta) == strip_opt(tb):
+            ta = tb = "?" + strip_opt(ta)
+        if is_opt_scalar(ta):                   # $ok ? 5 : null: make the pair at the end of each arm
+            for pos, arm, which in sorted([(pos_b, arm_b, "b"), (pos_a, arm_a, "a")], reverse=True):
+                if arm is None:
+                    if which == "a":
+                        va = "zeroinitializer"
+                    else:
+                        vb = "zeroinitializer"
+                elif arm != ta:
+                    x, y = self.tmp(), self.tmp()
+                    old = va if which == "a" else vb
+                    self.body[pos:pos] = [f"  {x} = insertvalue {llty(ta)} undef, {llty(arm)} {old}, 0",
+                                          f"  {y} = insertvalue {llty(ta)} {x}, i1 true, 1"]
+                    if which == "a":
+                        va = y
+                    else:
+                        vb = y
         if ta != tb:
             raise CompileError(f"both sides of ?: must have the same type (got {ta} and {tb}). "
                                f"Convert one side, e.g. strval($n) or intval($s)", e.line)
@@ -2595,6 +3946,7 @@ class FuncGen:
     def cond_value(self, e):
         mark = len(self.temps)
         v, t = self.borrow(e)
+        self.not_null(e, t, e.line)
         if t != "bool":
             raise CompileError(f"condition must be bool but got {t}", e.line)
         self.flush_temps(mark)
@@ -2603,10 +3955,24 @@ class FuncGen:
     # --- operators
     def binary(self, e):
         op = e.op
+        if op == "<=>":                         # -1, 0 or 1 (PHP's spaceship), for usort comparisons
+            lv, lt = self.borrow(e.l)
+            rv, rt = self.borrow(e.r)              # each side once; the comparisons reuse the values
+            l, r = Node("val", e.line, v=lv, t=lt), Node("val", e.line, v=rv, t=rt)
+            lt_, gt_ = (self.binary(Node("bin", e.line, op=o, l=l, r=r))[0] for o in ("<", ">"))
+            a, b, r = self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{a} = zext i1 {gt_} to i64")
+            self.emit(f"{b} = zext i1 {lt_} to i64")
+            self.emit(f"{r} = sub i64 {a}, {b}")
+            return r, "int", False
+        if op in ("==", "!=") and "null" in (e.l.kind, e.r.kind):
+            return self.null_compare(e)
         if op in ("&&", "||"):
             lv, lt = self.borrow(e.l)
+            self.not_null(e.l, lt, e.line)
             if lt != "bool":
                 raise CompileError(f"'{op}' needs bool values but got {lt}", e.line)
+            tl, fl = self.null_facts(e.l)       # $u !== null && $u->ok: the right side sees $u checked
             start = self.label
             rhs, end = self.newlabel("rhs"), self.newlabel("sc")
             if op == "&&":
@@ -2615,7 +3981,10 @@ class FuncGen:
                 self.emit(f"br i1 {lv}, label %{end}, label %{rhs}")
             self.place_label(rhs)
             mark = len(self.temps)
+            added = self.narrow(tl if op == "&&" else fl)
             rv, rt = self.borrow(e.r)
+            self.flow.nonnull -= added
+            self.not_null(e.r, rt, e.line)
             if rt != "bool":
                 raise CompileError(f"'{op}' needs bool values but got {rt}", e.line)
             self.flush_temps(mark)
@@ -2627,6 +3996,8 @@ class FuncGen:
             return r, "bool", False
         lv, lt = self.borrow(e.l)
         rv, rt = self.borrow(e.r)
+        self.not_null(e.l, lt, e.line)
+        self.not_null(e.r, rt, e.line)
         if lt == "string" or rt == "string":
             if lt != rt:
                 raise CompileError(f"'{op}' cannot combine {lt} and {rt}"
@@ -2650,6 +4021,31 @@ class FuncGen:
             r = self.tmp()
             self.emit(f"{r} = icmp {'eq' if op == '==' else 'ne'} i1 {lv}, {rv}")
             return r, "bool", False
+        if op == "**":
+            if lt not in ("int", "float") or rt not in ("int", "float"):
+                raise CompileError(f"'**' works on numbers, not {lt} and {rt}", e.line)
+            if (lt, rt) == ("int", "int"):
+                return self.call("i64", "@pn_ipow", f"i64 {lv}", f"i64 {rv}", f"i32 {e.line}"), "int", False
+            a, b = self.coerce(lv, lt, "float", e.line, op), self.coerce(rv, rt, "float", e.line, op)
+            return self.call("double", "@llvm.pow.f64", f"double {a}", f"double {b}"), "float", False
+        if op in ("|", "&", "^", "<<", ">>"):          # bitwise: ints only (PHP 8)
+            if (lt, rt) != ("int", "int"):
+                raise CompileError(f"'{op}' works on ints, not {lt} and {rt}", e.line)
+            r = self.tmp()
+            if op in ("|", "&", "^"):
+                self.emit(f"{r} = {dict(zip('|&^', ('or', 'and', 'xor')))[op]} i64 {lv}, {rv}")
+                return r, "int", False
+            neg, big, amt, raw = self.tmp(), self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{neg} = icmp slt i64 {rv}, 0")
+            self.panic_if(neg, "@pn_badshift", e.line)          # PHP throws ArithmeticError
+            self.emit(f"{big} = icmp sge i64 {rv}, 64")         # 64 or more: 0 (or the sign for >>), as PHP
+            self.emit(f"{amt} = select i1 {big}, i64 63, i64 {rv}")
+            if op == "<<":
+                self.emit(f"{raw} = shl i64 {lv}, {amt}")
+                self.emit(f"{r} = select i1 {big}, i64 0, i64 {raw}")
+            else:
+                self.emit(f"{r} = ashr i64 {lv}, {amt}")      # by 63 when 64 or more: all sign bits
+            return r, "int", False
         if lt not in ("int", "float") or rt not in ("int", "float"):
             raise CompileError(f"'{op}' cannot combine {lt} and {rt}", e.line)
         if op == "%div" and (lt, rt) != ("int", "int"):
@@ -2704,6 +4100,7 @@ class FuncGen:
 
     def str_arg(self, e, i):
         v, t = self.borrow(e.args[i])
+        self.not_null(e.args[i], t, e.line)
         if t != "string":
             raise CompileError(f"{e.name}() argument {i + 1} must be a string but got {t}", e.line)
         return v
@@ -2718,6 +4115,7 @@ class FuncGen:
 
     def typed_arg(self, e, i, want):
         v, t = self.borrow(e.args[i])
+        self.not_null(e.args[i], t, e.line)
         if t != want:
             raise CompileError(f"{e.name}() argument {i + 1} must be {want} but got {t}"
                                + (" — open one with $db = db_open(\"app.db\");" if want == "db" else ""), e.line)
@@ -2726,13 +4124,33 @@ class FuncGen:
     def sql_arg(self, e):
         """The SQL must be written in the program; values go through ? placeholders. That rules out SQL
         injection: nothing a client sends can become part of the SQL text."""
+        trusted = getattr(self, "trusted_sql", set())
+
         def literal(n):
-            return n.kind == "str" or (n.kind == "bin" and n.op == "." and literal(n.l) and literal(n.r))
+            return n.kind == "str" or (n.kind == "var" and n.name in trusted) or \
+                (n.kind == "bin" and n.op == "." and literal(n.l) and literal(n.r))
         if not literal(e.args[1]):
             raise CompileError(
-                f"{e.name}(): write the SQL as a string literal in the code and pass values with ? placeholders, "
-                f'e.g. {e.name}($db, "SELECT * FROM t WHERE id = ?", [strval($id)]). SQL built from variables could '
-                f"let a client inject SQL", e.line)
+                f"{e.name}(): write the SQL as string literals in the code and pass values with ? placeholders, "
+                f'e.g. {e.name}($db, "SELECT * FROM t WHERE id = ?", [strval($id)]). A variable works too when it is '
+                f'built only from literals: $sql = "SELECT ..."; if ($sort == "qty") {{ $sql .= " ORDER BY qty"; }}. '
+                f"SQL built from other values could let a client inject SQL", e.line)
+
+        def text(n):                            # the literal text; a variable's pieces are checked one by one below
+            if n.kind == "str":
+                return n.val
+            if n.kind == "var":
+                return ""
+            return text(n.l) + text(n.r)
+
+        def var_pieces(n):
+            if n.kind == "var":
+                return trusted[n.name]
+            return var_pieces(n.l) + var_pieces(n.r) if n.kind == "bin" else []
+        why = session_sql(text(e.args[1])) or next(filter(None, map(session_sql, var_pieces(e.args[1]))), None)
+        if why:
+            raise CompileError(f"{e.name}(): {why[0]} changes the connection itself, and connections are reused by "
+                               f"later requests (design/pool.md K4). {why[1]}", e.line)
         return self.str_arg(e, 1)
 
     def params_arg(self, e, i):
@@ -2742,8 +4160,95 @@ class FuncGen:
                                f'(list<string>, list<int> or list<float>), e.g. ["tea", "2"]; got {t}', e.line)
         return v, KIND[elem_of(t)]
 
+    def db_rows_into(self, e, hint):
+        """db_all($db, $sql, $params) -> list<C>, db_one(...) -> ?C: the rows as objects of the class where the
+        value goes, read through db_json() and the class's json_decode() reader (T7). A row that does not fit the
+        class is a bug in the program, so it panics (500), not a 400."""
+        name = e.name
+        want = elem_of(hint) if hint and name == "db_all" and is_list(hint) else \
+            hint[1:] if hint and name == "db_one" and is_opt(hint) else None
+        if not (want and is_class(want) and not getattr(CLASSES[want], "builtin", False)):
+            shape = "list<User> $users = db_all($db, ...);" if name == "db_all" else "?User $u = db_one($db, ...);"
+            raise CompileError(f"{name}() needs to know the class of the rows: write it where the type is known, "
+                               f"e.g. {shape} (or return it from a function declared : "
+                               f"{'list<User>' if name == 'db_all' else '?User'})", e.line)
+        ci = CLASSES[want]
+        why = decodable(want)
+        if why:
+            raise CompileError(f"{name}() cannot build a {ci.name}: {why}", e.line)
+        key = f"__jd_C_{ci.name}" if not ci.mid else f"{ci.mid}::__jd_C_{ci.name}"
+        if key not in self.mod.funcs:
+            raise CompileError(f"{name}() cannot build a {ci.name} here: one of its fields names a class its "
+                               f"module does not import", e.line)
+        j, _, _ = self.db_builtin(Node("call", e.line, name="db_json", args=e.args))   # same SQL rules
+        what = self.mod.lit(f"{name}() into {ci.name}")
+
+        def checked(ret, fn, args):              # a reader's error: the row does not fit, a panic
+            r, v, err = self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{r} = call {fn_llret(ret, True)} {fn}({', '.join(args)})")
+            self.emit(f"{v} = extractvalue {fn_llret(ret, True)} {r}, 0")
+            self.emit(f"{err} = extractvalue {fn_llret(ret, True)} {r}, 1")
+            c, ok, bad = self.tmp(), self.newlabel("rowok"), self.newlabel("rowbad")
+            self.emit(f"{c} = icmp ne ptr {err}, null")
+            self.emit(f"br i1 {c}, label %{bad}, label %{ok}, !prof !11")
+            self.place_label(bad)
+            self.call("void", "@pn_db_row_panic", f"ptr {err}", f"ptr {what}")
+            self.emit("unreachable")
+            self.place_label(ok)
+            return v
+
+        doc = checked("int", "@pn_jd_doc", [f"ptr {j}"])
+        q0 = checked("int", "@pn_jd_first", [f"ptr {j}", f"i64 {doc}"])
+        dec = f'@"f.{key}"'
+        if name == "db_one":                     # the first row, or null when there is none
+            start, has, end = self.label, self.newlabel("row"), self.newlabel("rows")
+            c = self.tmp()
+            self.emit(f"{c} = icmp sge i64 {q0}, 0")
+            self.emit(f"br i1 {c}, label %{has}, label %{end}")
+            self.place_label(has)
+            o = checked(want, dec, [f"ptr {j}", f"i64 {q0}"])
+            got = self.label
+            self.emit(f"br label %{end}")
+            self.place_label(end)
+            r = self.tmp()
+            self.emit(f"{r} = phi ptr [ null, %{start} ], [ {o}, %{got} ]")
+            self.call("void", "@pn_str_free", f"ptr {j}")
+            return r, "?" + want, True
+        lst = self.call("ptr", "@pn_list_new", "i64 8")
+        pre, head, body, done = self.label, self.newlabel("rowhead"), self.newlabel("rowbody"), self.newlabel("rowend")
+        self.emit(f"br label %{head}")
+        self.place_label(head)
+        q, qn, c = self.tmp(), self.tmp(), self.tmp()
+        phi_at = len(self.body)
+        self.emit("")                            # the phi, filled in below once the loop's last block is known
+        self.emit(f"{c} = icmp sge i64 {q}, 0")
+        self.emit(f"br i1 {c}, label %{body}, label %{done}")
+        self.place_label(body)
+        o = checked(want, dec, [f"ptr {j}", f"i64 {q}"])
+        self.call("void", "@pn_list_push", f"ptr {lst}", "i64 8", f"i64 {self.to_bits(o, want)}")
+        self.emit(f"{qn} = call i64 @pn_jd_next(ptr {j}, i64 {q})")
+        back = self.label
+        self.emit(f"br label %{head}")
+        self.body[phi_at] = f"  {q} = phi i64 [ {q0}, %{pre} ], [ {qn}, %{back} ]"
+        self.place_label(done)
+        self.call("void", "@pn_str_free", f"ptr {j}")
+        return lst, f"list<{want}>", True
+
     def db_builtin(self, e):
         name = e.name
+        if name in ("db_open", "db_pool") and e.args and e.args[0].kind == "str" and \
+                re.match(r"postgres(ql)?://", e.args[0].val):
+            raise CompileError(f'{name}(): read a PostgreSQL URL from the environment, e.g. {name}(env("DATABASE_URL")'
+                               f'{", 8, 60000" if name == "db_pool" else ""}), so the password does not end up in the '
+                               f"source and in git (design/postgres.md G7)", e.line)
+        if name == "db_pool":
+            self.argc(e, 3)
+            if not self.is_main:
+                raise CompileError("db_pool() sets up the runtime's connections: call it at the top level of the "
+                                   "program, before serve(), not inside a function", e.line)
+            self.call("void", "@pn_db_pool", f"ptr {self.str_arg(e, 0)}", f"i64 {self.int_arg(e, 1)}",
+                      f"i64 {self.int_arg(e, 2)}")
+            return None, "void", False
         if name == "db_open":
             self.argc(e, 1)
             return self.call("ptr", "@pn_db_open", f"ptr {self.str_arg(e, 0)}"), "db", True
@@ -2778,6 +4283,72 @@ class FuncGen:
                 return self.call("i64", "@pn_db_last_id", f"ptr {d}"), "int", False
             return self.call("ptr", "@pn_db_error", f"ptr {d}"), "string", True
         raise CompileError(f"unknown function {name}()", e.line)
+
+    def sprintf(self, e, name):
+        """sprintf("%05.2f %s", $x, $s): the format must be a literal, so each conversion's type is checked here
+        and the call becomes a chain of pn_fmt (no varargs at run time)."""
+        if not e.args or e.args[0].kind != "str":
+            raise CompileError(f"{name}() needs its format as a string literal, e.g. {name}(\"%s costs %.2f\", "
+                               f"$item, $price)", e.line)
+        fmt, vals = e.args[0].val, e.args[1:]
+        d = self.call("ptr", "@pn_str_new", "i64 32")
+        i, k, lit = 0, 0, ""
+        spec_re = re.compile(r"%([-+ 0]*)(\d*)(?:\.(\d+))?([sdufFexXobc%])")
+        while i < len(fmt):
+            if fmt[i] != "%":
+                lit += fmt[i]
+                i += 1
+                continue
+            m = spec_re.match(fmt, i)
+            if not m:
+                raise CompileError(f"{name}(): unknown conversion at \"{fmt[i:i + 4]}\" (Pin has %s %d %u %f %F %e %x %X "
+                                   f"%o %b %c %%, with - + 0 space, width and .precision)", e.line)
+            i = m.end()
+            if m.group(4) == "%":
+                lit += "%"
+                continue
+            if lit:
+                d = self.call("ptr", "@pn_str_add_str", f"ptr {d}", f"ptr {self.mod.lit(lit)}")
+                lit = ""
+            if k >= len(vals):
+                raise CompileError(f"{name}(): the format has more conversions than values (%{m.group(4)} is number {k + 1})",
+                                   e.line)
+            flags = sum({"-": 1, "0": 2, "+": 4, " ": 8}[c] for c in set(m.group(1)))
+            width = int(m.group(2) or 0)
+            prec = int(m.group(3)) if m.group(3) is not None else -1
+            if prec >= 0:
+                flags |= 16
+            conv = m.group(4)
+            v, t = self.borrow(vals[k])
+            k += 1
+            if conv == "s":
+                if t != "string":
+                    v, _, owned = self.to_string(v, t, e.line)
+                    if owned:
+                        self.temps.append((v, "string"))
+                bits = self.to_bits(v, "string")
+            elif conv in "fFe":
+                if t not in ("int", "float"):
+                    raise CompileError(f"{name}(): %{conv} needs a number, the value is {t}", e.line)
+                bits = self.to_bits(self.coerce(v, t, "float", e.line, name), "float")
+            else:
+                if t != "int":
+                    raise CompileError(f"{name}(): %{conv} needs an int, the value is {t}"
+                                       + (" (use %f for a float, or intval())" if t == "float" else ""), e.line)
+                bits = v
+            d = self.call("ptr", "@pn_fmt", f"ptr {d}", f"i64 {ord(conv)}", f"i64 {flags}", f"i64 {width}",
+                          f"i64 {prec}", f"i64 {bits}")
+        if lit:
+            d = self.call("ptr", "@pn_str_add_str", f"ptr {d}", f"ptr {self.mod.lit(lit)}")
+        if k < len(vals):
+            raise CompileError(f"{name}(): {len(vals)} values but the format uses {k}", e.line)
+        return d
+
+    def num_arg(self, e, i, what):
+        v, t = self.borrow(e.args[i])
+        if t not in ("int", "float"):
+            raise CompileError(f"{what} needs a number, not {t}", e.line)
+        return self.coerce(v, t, "float", e.line, what)
 
     def int_arg(self, e, i):
         v, t = self.borrow(e.args[i])
@@ -2816,7 +4387,7 @@ class FuncGen:
             raise CompileError(f"unknown function {name}()" + (f": {hint}" if hint else
                                ". See the built-in list in the AI guide, github.com/pin-language/docs"), e.line)
         _, ret = self.mod.funcs[key]
-        vals = self.args_for(e, self.mod.params[key], name)   # heap values are lent to the callee
+        vals = self.args_for(e, self.mod.params[key], name, self.mod.defaults.get(key))   # heap values are lent
         if self.mod.throws.get(key):
             return self.failing_call(ret, f'@"f.{key}"', vals, e.line, f"{name}(...)"), ret, is_heap(ret)
         r = self.call(llty(ret), f'@"f.{key}"', *vals)
@@ -2879,7 +4450,7 @@ class FuncGen:
             self.emit("unreachable")
             return
         if not self.throws:
-            raise CompileError(f"{self.name}() is not declared throws, so an error cannot leave it. Add throws "
+            raise CompileError(f"{self.shown} is not declared throws, so an error cannot leave it. Add throws "
                                f"after the return type (: {self.ret} throws), or handle it with catch", line)
         self.free_temps(self.temps)
         for group, _ in self.temp_stack:
@@ -2925,7 +4496,7 @@ class FuncGen:
 
     def can_propagate(self, line, what):
         if not (self.try_stack or self.throws or self.is_main):
-            raise CompileError(f"{self.name}() is not declared throws, so {what}. Add throws after the return "
+            raise CompileError(f"{self.shown} is not declared throws, so {what}. Add throws after the return "
                                f"type (: {self.ret} throws), or handle the error: try ... catch ($e) {{ ... }}", line)
 
     def try_expr(self, e, hint):
@@ -3028,6 +4599,108 @@ class FuncGen:
             r = self.tmp()
             self.emit(f"{r} = load i64, ptr {v}" + (", !tbaa !1" if is_list(t) else ""))
             return r, "int", False
+        if name == "json_decode":
+            self.argc(e, 1)
+            if not (hint and is_class(hint) and hint in CLASSES and not getattr(CLASSES[hint], "builtin", False)):
+                raise CompileError("json_decode() needs to know the class to build: write it where the type is "
+                                   "known, e.g. Order $o = try json_decode($body);  or return try json_decode($body); "
+                                   "from a function declared : Order throws", e.line)
+            why = decodable(hint)
+            if why:
+                raise CompileError(f"json_decode() cannot build a {CLASSES[hint].name}: {why}", e.line)
+            ci = CLASSES[hint]
+            key = f"__jd_C_{ci.name}" if not ci.mid else f"{ci.mid}::__jd_C_{ci.name}"
+            if key not in self.mod.funcs:
+                raise CompileError(f"json_decode() cannot build a {ci.name} here: one of its fields names a class "
+                                   f"its module does not import", e.line)
+            j = self.str_arg(e, 0)
+            pos = self.failing_call("int", "@pn_jd_doc", [f"ptr {j}"], e.line, "json_decode(...)")
+            v = self.failing_call(hint, f'@"f.{key}"', [f"ptr {j}", f"i64 {pos}"], e.line, "json_decode(...)")
+            return v, hint, True
+        if name.startswith("__jd_"):
+            if not self.name.startswith("__jd_"):
+                raise CompileError(f"{name}() is internal to json_decode(): use json_decode()", e.line)
+            spec = {"doc": ("int", ["s"], True), "object": ("int", ["s", "i", "l"], True),
+                    "field": ("int", ["s", "i", "s"], True), "int": ("int", ["s", "i"], True),
+                    "float": ("float", ["s", "i"], True), "bool": ("bool", ["s", "i"], True),
+                    "string": ("string", ["s", "i"], True), "first": ("int", ["s", "i"], True),
+                    "next": ("int", ["s", "i"], False), "mfirst": ("int", ["s", "i"], True),
+                    "key": ("string", ["s", "i"], False), "val": ("int", ["s", "i"], False),
+                    "mnext": ("int", ["s", "i"], False), "has": ("bool", ["s", "i", "s"], False),
+                    "null": ("bool", ["s", "i"], False)}
+            ret, kinds, throws = spec[name[5:]]
+            self.argc(e, len(kinds))
+            vals = []
+            for i, k in enumerate(kinds):
+                if k == "s":
+                    vals.append(f"ptr {self.str_arg(e, i)}")
+                elif k == "i":
+                    vals.append(f"i64 {self.int_arg(e, i)}")
+                else:
+                    v, t = self.borrow(e.args[i], "list<string>")
+                    vals.append(f"ptr {v}")
+            fn = f"@pn_jd_{name[5:]}"
+            if throws:
+                r = self.failing_call("int" if ret in ("bool", "float") else ret, fn, vals, e.line, f"{name}(...)")
+                if ret == "float":                  # the bits of the double (see pn_jd_float)
+                    f = self.tmp()
+                    self.emit(f"{f} = bitcast i64 {r} to double")
+                    return f, "float", False
+                return (self.i64_to_bool(r) if ret == "bool" else r), ret, ret == "string"
+            if ret == "bool":
+                return self.i64_to_bool(self.call("i64", fn, *vals)), "bool", False
+            return self.call(llty(ret), fn, *vals), ret, ret == "string"
+        if name in ("hash", "hash_hmac"):
+            self.argc(e, 2 if name == "hash" else 3)
+            if args[0].kind != "str" or args[0].val != "sha256":
+                raise CompileError(f'{name}(): Pin has only "sha256" (MD5 and SHA-1 are broken): '
+                                   f'{name}("sha256", ...)', e.line)
+            if name == "hash":
+                return self.call("ptr", "@pn_hash_sha256", f"ptr {self.str_arg(e, 1)}"), "string", True
+            return self.call("ptr", "@pn_hash_hmac_sha256", f"ptr {self.str_arg(e, 1)}",
+                             f"ptr {self.str_arg(e, 2)}"), "string", True
+        if name == "request_deadline":
+            self.argc(e, 1)
+            self.call("void", "@pn_request_deadline", f"i64 {self.int_arg(e, 0)}")
+            return None, "void", False
+        if name == "ord":
+            self.argc(e, 1)
+            return self.call("i64", "@pn_ord", f"ptr {self.str_arg(e, 0)}"), "int", False
+        if name == "chr":
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_chr", f"i64 {self.int_arg(e, 0)}"), "string", True
+        if name == "rawurlencode":
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_rawurlencode", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "request_ip":
+            self.argc(e, 0)
+            return self.call("ptr", "@pn_request_ip"), "string", True
+        if name == "env":
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_env", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "time":
+            self.argc(e, 0)
+            return self.call("i64", "@pn_time"), "int", False
+        if name == "hash_equals":
+            self.argc(e, 2)
+            return self.i64_to_bool(self.call("i64", "@pn_hash_equals", f"ptr {self.str_arg(e, 0)}",
+                                              f"ptr {self.str_arg(e, 1)}")), "bool", False
+        if name == "random_token":
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_random_token", f"i64 {self.int_arg(e, 0)}"), "string", True
+        if name == "random_int":
+            self.argc(e, 2)
+            return self.call("i64", "@pn_random_int", f"i64 {self.int_arg(e, 0)}", f"i64 {self.int_arg(e, 1)}"), "int", False
+        if name == "password_hash":
+            if len(args) == 2:
+                raise CompileError("password_hash($password) takes one argument in Pin: the algorithm is always "
+                                   "PBKDF2-SHA256 (no PASSWORD_DEFAULT needed)", e.line)
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_password_hash", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "password_verify":
+            self.argc(e, 2)
+            return self.i64_to_bool(self.call("i64", "@pn_password_verify", f"ptr {self.str_arg(e, 0)}",
+                                              f"ptr {self.str_arg(e, 1)}")), "bool", False
         if name == "strlen":
             self.argc(e, 1)
             v = self.str_arg(e, 0)
@@ -3051,6 +4724,11 @@ class FuncGen:
         if name == "fill":
             self.argc(e, 2)
             n = self.int_arg(e, 0)
+            if args[1].kind == "null":          # fill(3, null) where a list<?T> goes: all null (zero bytes)
+                if not (hint and is_list(hint) and is_opt(elem_of(hint))):
+                    raise CompileError("fill($n, null) needs a list of ?T: list<?int> $a = fill(3, null);", e.line)
+                et = elem_of(hint)
+                return self.call("ptr", "@pn_list_fill", f"i64 {n}", f"i64 {esize(et)}", "i64 0"), hint, True
             v, vt = self.borrow(args[1])
             if hint and is_list(hint) and elem_of(hint) == "float":
                 v, vt = self.coerce(v, vt, "float", e.line, "fill()"), "float"
@@ -3062,10 +4740,14 @@ class FuncGen:
             return r, f"list<{vt}>", True
         if name == "copy":
             self.argc(e, 1)
+            if self.ref_caps_seen and self.fn_lends(args[0]):
+                r = sorted(self.fn_lends(args[0]))[0]
+                raise CompileError(f"copy() cannot copy a closure with use (&{r}): it changes {r} of this function, "
+                                   f"and a copy could outlive it. Return the new value from the closure instead", e.line)
             v, t = self.borrow(args[0])
             if t == "string":
                 return self.dup_str(v), t, not v.startswith("@.L")
-            if is_list(t) and not owns_ptr(elem_of(t)) and elem_of(t) != "string":
+            if is_list(t) and not per_item(elem_of(t)) and elem_of(t) != "string":
                 return self.call("ptr", "@pn_list_copy", f"ptr {v}", f"i64 {esize(elem_of(t))}"), t, True
             if owns_ptr(t):
                 bad = uncopyable(t)
@@ -3088,6 +4770,569 @@ class FuncGen:
             ln = self.int_arg(e, 2) if len(args) == 3 else "0"
             r = self.call("ptr", "@pn_substr", f"ptr {s}", f"i64 {start}", f"i64 {ln}", f"i64 {int(len(args) == 3)}")
             return r, "string", True
+        if name in ("mb_strlen", "grapheme_strlen"):
+            self.argc(e, 1)
+            return self.call("i64", f"@pn_{name}", f"ptr {self.str_arg(e, 0)}"), "int", False
+        if name in ("mb_substr", "grapheme_substr"):
+            self.argc(e, 2, 3)
+            s = self.str_arg(e, 0)
+            start = self.int_arg(e, 1)
+            ln = self.int_arg(e, 2) if len(args) == 3 else "0"
+            return self.call("ptr", f"@pn_{name}", f"ptr {s}", f"i64 {start}", f"i64 {ln}",
+                             f"i64 {int(len(args) == 3)}"), "string", True
+        if name == "mb_strpos":
+            self.argc(e, 2)
+            h, n = self.str_arg(e, 0), self.str_arg(e, 1)
+            return self.call("i64", "@pn_mb_strpos", f"ptr {h}", f"ptr {n}"), "int", False
+        if name in ("mb_strtolower", "mb_strtoupper"):
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_mb_case", f"ptr {self.str_arg(e, 0)}", f"i64 {int(name == 'mb_strtoupper')}"), \
+                "string", True
+        if name == "normalizer_normalize":
+            self.argc(e, 1, 2)
+            s = self.str_arg(e, 0)
+            form = self.int_arg(e, 1) if len(args) == 2 else "16"      # Normalizer::FORM_C, as in PHP
+            return self.call("ptr", "@pn_normalize", f"ptr {s}", f"i64 {form}"), "string", True
+        if name in ("sprintf", "printf"):
+            r = self.sprintf(e, name)
+            if name == "sprintf":
+                return r, "string", True
+            self.call("void", "@pn_print_str", f"ptr {r}")
+            n = self.tmp()
+            self.emit(f"{n} = load i64, ptr {r}")
+            self.call("void", "@pn_str_free", f"ptr {r}")
+            return n, "int", False
+        if name == "filter_var":
+            self.argc(e, 2)
+            if args[1].kind != "int":
+                raise CompileError("filter_var($value, FILTER_VALIDATE_...) needs the filter written as a constant: "
+                                   "FILTER_VALIDATE_EMAIL, _URL, _IP, _INT, _FLOAT or _BOOL", e.line)
+            f = args[1].val
+            sv = self.str_arg(e, 0)
+            if f in (273, 274, 275):            # the string itself, or null
+                ok = self.call("i64", {274: "@pn_filter_email", 273: "@pn_filter_url", 275: "@pn_filter_ip"}[f], f"ptr {sv}")
+                c = self.i64_to_bool(ok)
+                start, yes, end = self.label, self.newlabel("valid"), self.newlabel("filtered")
+                self.emit(f"br i1 {c}, label %{yes}, label %{end}")
+                self.place_label(yes)
+                d = self.dup_str(sv)
+                got = self.label
+                self.emit(f"br label %{end}")
+                self.place_label(end)
+                r = self.tmp()
+                self.emit(f"{r} = phi ptr [ null, %{start} ], [ {d}, %{got} ]")
+                return r, "?string", True
+            if f in (257, 259):
+                okp = f"%v.__ok{self.n}"
+                self.n += 1
+                self.allocas.append(f"  {okp} = alloca i64")
+                t = "int" if f == 257 else "float"
+                v = self.call(llty(t), "@pn_filter_int" if f == 257 else "@pn_filter_float", f"ptr {sv}", f"ptr {okp}")
+                ok = self.tmp()
+                self.emit(f"{ok} = load i64, ptr {okp}")
+                return self.wrap_opt(v, "?" + t, self.i64_to_bool(ok)), "?" + t, False
+            if f == 258:
+                b = self.call("i64", "@pn_filter_bool", f"ptr {sv}")
+                v, has = self.tmp(), self.tmp()
+                self.emit(f"{v} = icmp eq i64 {b}, 1")
+                self.emit(f"{has} = icmp ne i64 {b}, 2")
+                return self.wrap_opt(v, "?bool", has), "?bool", False
+            raise CompileError("filter_var() knows FILTER_VALIDATE_EMAIL, _URL, _IP, _INT, _FLOAT and _BOOL", e.line)
+        if name.startswith("ctype_"):
+            self.argc(e, 1)
+            cls = ["ctype_digit", "ctype_alpha", "ctype_alnum", "ctype_space", "ctype_upper", "ctype_lower",
+                   "ctype_xdigit"].index(name)
+            return self.i64_to_bool(self.call("i64", "@pn_ctype", f"ptr {self.str_arg(e, 0)}", f"i64 {cls}")), "bool", False
+        if name in ("nl2br",):
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_nl2br", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "json_validate":
+            self.argc(e, 1)
+            return self.i64_to_bool(self.call("i64", "@pn_json_validate", f"ptr {self.str_arg(e, 0)}")), "bool", False
+        if name in ("array_key_first", "array_key_last"):
+            self.argc(e, 1)
+            mv, mt = self.borrow(args[0])
+            if not is_map(mt):
+                raise CompileError(f"{name}() needs a map, not {mt}" + (" (a list's keys are 0 to count - 1)" if is_list(mt) else ""), e.line)
+            kt = map_kv(mt)[0]
+            pos = self.call("i64", "@pn_map_end_pos", f"ptr {mv}", f"i64 {int(name == 'array_key_last')}")
+            c = self.tmp()
+            self.emit(f"{c} = icmp sge i64 {pos}, 0")
+            start, yes, end = self.label, self.newlabel("key"), self.newlabel("keyed")
+            self.emit(f"br i1 {c}, label %{yes}, label %{end}")
+            self.place_label(yes)
+            ent = self.call("ptr", "@pn_map_entry", f"ptr {mv}", f"i64 {pos}")
+            kp = self.tmp()
+            self.emit(f"{kp} = getelementptr inbounds i8, ptr {ent}, i64 8")
+            k = self.load_slot(kp, kt)
+            if kt == "string":
+                k = self.dup_str(k)
+            else:
+                k = self.wrap_opt(k, "?int")
+            got = self.label
+            self.emit(f"br label %{end}")
+            self.place_label(end)
+            r = self.tmp()
+            ot = "?" + kt
+            self.emit(f"{r} = phi {llty(ot)} [ {'null' if kt == 'string' else 'zeroinitializer'}, %{start} ], [ {k}, %{got} ]")
+            return r, ot, kt == "string"
+        if name in ("ksort", "krsort", "asort", "arsort"):
+            self.argc(e, 1)
+            a = args[0]
+            root, props = path_root(a)
+            if root is None or a.kind not in ("var", "field", "index"):
+                raise CompileError(f"{name}() sorts a map variable in place, e.g. {name}($m);", e.line)
+            t = self.static_type(a) or self.use_var(root, e.line)[1]
+            if not is_map(t):
+                raise CompileError(f"{name}() needs a map but {show(a)} is {t}" +
+                                   (" (sort() / rsort() sort lists)" if is_list(t) else ""), e.line)
+            by_value = name in ("asort", "arsort")
+            if by_value and map_kv(t)[1] not in KIND:
+                raise CompileError(f"{name}() sorts by values of int, float, bool or string; {show(a)} is {t}", e.line)
+            self.mutating(root, props, e.line, at=e.order, what="sorted")
+            v, _ = self.base_value(a, e.line)
+            self.call("void", "@pn_map_sort", f"ptr {v}", f"i64 {int(by_value)}", f"i64 {int(name in ('krsort', 'arsort'))}")
+            return None, "void", False
+        if name == "range":
+            self.argc(e, 2, 3)
+            for i in range(len(args)):
+                if self.static_type(args[i]) == "float" or args[i].kind == "float":
+                    raise CompileError("range() of floats is not in Pin yet: use a for loop", e.line)
+            a, b = self.int_arg(e, 0), self.int_arg(e, 1)
+            st = self.int_arg(e, 2) if len(args) == 3 else "1"
+            return self.call("ptr", "@pn_range", f"i64 {a}", f"i64 {b}", f"i64 {st}"), "list<int>", True
+        if name == "array_count_values":
+            self.argc(e, 1)
+            v, t = self.borrow(args[0])
+            if t not in ("list<int>", "list<string>"):
+                raise CompileError(f"array_count_values() counts a list<int> or list<string>, not {t}", e.line)
+            et = elem_of(t)
+            return self.call("ptr", "@pn_count_values", f"ptr {v}", f"i64 {KIND[et]}"), f"map<{et},int>", True
+        if name == "array_flip":
+            self.argc(e, 1)
+            v, t = self.borrow(args[0])
+            if not is_map(t) or map_kv(t)[1] not in ("int", "string"):
+                raise CompileError(f"array_flip() needs a map whose values are int or string, not {t}", e.line)
+            k, vt = map_kv(t)
+            return self.call("ptr", "@pn_map_flip", f"ptr {v}"), f"map<{vt},{k}>", True
+        if name == "array_combine":
+            self.argc(e, 2)
+            kv, kt = self.borrow(args[0])
+            vv, vt = self.borrow(args[1])
+            if kt not in ("list<int>", "list<string>") or not is_list(vt) or elem_of(vt) not in KIND:
+                raise CompileError(f"array_combine() takes a list<int|string> of keys and a list of int, float, bool "
+                                   f"or string values, not {kt} and {vt}", e.line)
+            k, val = elem_of(kt), elem_of(vt)
+            return self.call("ptr", "@pn_map_combine", f"ptr {kv}", f"ptr {vv}", f"i64 {KIND[k]}", f"i64 {KIND[val]}"), \
+                f"map<{k},{val}>", True
+        if name == "mb_str_split":
+            self.argc(e, 1, 2)
+            sv = self.str_arg(e, 0)
+            n = self.int_arg(e, 1) if len(args) == 2 else "1"
+            return self.call("ptr", "@pn_mb_str_split", f"ptr {sv}", f"i64 {n}"), "list<string>", True
+        if name == "pow":
+            self.argc(e, 2)
+            return self.binary(Node("bin", e.line, op="**", l=args[0], r=args[1]))
+        if name == "pi":
+            self.argc(e, 0)
+            return "0x400921FB54442D18", "float", False
+        if name in ("is_nan", "is_finite", "is_infinite"):
+            self.argc(e, 1)
+            x = self.num_arg(e, 0, name + "()")
+            r, a, c = self.tmp(), self.tmp(), self.tmp()
+            if name == "is_nan":
+                self.emit(f"{r} = fcmp uno double {x}, {x}")
+            else:
+                self.emit(f"{a} = call double @llvm.fabs.f64(double {x})")
+                self.emit(f"{r} = fcmp {'one' if name == 'is_finite' else 'oeq'} double {a}, 0x7FF0000000000000")
+                if name == "is_finite":
+                    self.emit(f"{c} = fcmp ord double {x}, {x}")
+                    r2 = self.tmp()
+                    self.emit(f"{r2} = and i1 {r}, {c}")
+                    r = r2
+            return r, "bool", False
+        if name in ("fmod", "atan2"):
+            self.argc(e, 2)
+            a, b = self.num_arg(e, 0, name + "()"), self.num_arg(e, 1, name + "()")
+            return self.call("double", f"@{name}", f"double {a}", f"double {b}"), "float", False
+        if name == "log":
+            self.argc(e, 1, 2)
+            x = self.call("double", "@llvm.log.f64", f"double {self.num_arg(e, 0, 'log()')}")
+            if len(args) == 2:
+                b = self.call("double", "@llvm.log.f64", f"double {self.num_arg(e, 1, 'log()')}")
+                r = self.tmp()
+                self.emit(f"{r} = fdiv double {x}, {b}")
+                x = r
+            return x, "float", False
+        if name in ("log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan"):
+            self.argc(e, 1)
+            fn = f"@llvm.{name}.f64" if name in ("log10", "exp", "sin", "cos") else f"@{name}"
+            return self.call("double", fn, f"double {self.num_arg(e, 0, name + '()')}"), "float", False
+        if name in ("array_map", "array_filter"):
+            self.argc(e, 2)
+            fe, le = (args[0], args[1]) if name == "array_map" else (args[1], args[0])
+            lv, lt = self.borrow(le)
+            if not is_list(lt):
+                raise CompileError(f"{name}() works on a list, not {lt}", e.line)
+            et = elem_of(lt)
+            fnv = None
+            if fe.kind != "str":                    # a closure or another fn value (closures.md)
+                fnv, ft = self.borrow(fe, fn_type([et], "bool" if name == "array_filter" else "?"))
+                if not is_fn(ft):
+                    raise CompileError(f"{name}() takes a function: a closure fn($x) => ..., a name like \"label\", or "
+                                       f"label(...); not {ft}", e.line)
+                fps, fret, fth = fn_parts(ft)
+                if fth:
+                    raise CompileError(f"the function given to {name}() cannot be throws", e.line)
+                code = self.tmp()
+                self.emit(f"{code} = load ptr, ptr {fnv}, !invariant.load !15")      # once, before the loop
+                key, sig = ("value", fnv, code), (fps, fret)
+            key = key if fnv is not None else (self.fkey(Node("call", e.line, name=fe.val, args=[]), quiet=True) if fe.kind == "str" else None)
+            sig = sig if fnv is not None else (self.mod.funcs.get(key) if key else None)
+            if sig is None and fe.kind == "str" and fe.val in ONE_ARG_BUILTINS:     # array_map("strtoupper", $xs)
+                bt = ONE_ARG_BUILTINS[fe.val]
+                sig = ([et], bt(et) if callable(bt) else bt)
+                key = ("builtin", fe.val)
+            want = "bool" if name == "array_filter" else None
+            shape = (f'array_map("name", $xs) needs a function of this file taking one {et}: function name({et} $x): T'
+                     if name == "array_map" else
+                     f'array_filter($xs, "name") needs a function of this file declared as function name({et} $x): bool')
+            if fnv is not None and (sig[0] != [et] or (want and sig[1] != want) or sig[1] == "void"):
+                raise CompileError(f"{name}() over a list<{et}> needs an fn({et}): {want or 'T'}, and this is {ft}", e.line)
+            if not sig or sig[0] != [et] or (want and sig[1] != want) or sig[1] == "void" or \
+                    (not isinstance(key, tuple) and self.mod.throws.get(key, False)):
+                raise CompileError(shape + " (it cannot throw)", e.line)
+            rt = sig[1] if name == "array_map" else et
+            if name == "array_filter" and uncopyable(et):
+                raise CompileError(f"array_filter() copies the items it keeps, and {uncopyable(et)} cannot be copied",
+                                   e.line)
+            out = self.call("ptr", "@pn_list_new", f"i64 {esize(rt)}")
+            n = self.tmp()
+            self.emit(f"{n} = load i64, ptr {lv}, !tbaa !1")
+            pre, head, body, done = self.label, self.newlabel("maph"), self.newlabel("mapb"), self.newlabel("mape")
+            self.emit(f"br label %{head}")
+            self.place_label(head)
+            i, i2, c = self.tmp(), self.tmp(), self.tmp()
+            phi_at = len(self.body)
+            self.emit("")
+            self.emit(f"{c} = icmp slt i64 {i}, {n}")
+            self.emit(f"br i1 {c}, label %{body}, label %{done}")
+            self.place_label(body)
+            x = self.load_elem(self.list_elem_ptr(lv, et, i), et)
+            if isinstance(key, tuple) and key[0] == "value":
+                r = self.call(llty(sig[1]), key[2], f"ptr {key[1]}", f"{llty(et)} {x}")
+            elif isinstance(key, tuple):              # a built-in: its own code, on the item
+                mark = len(self.temps)
+                r, rtt, rowned = self.builtin(Node("call", e.line, name=key[1], args=[Node("val", e.line, v=x, t=et)]), None)
+                if rtt != sig[1]:
+                    raise CompileError(f"internal: {key[1]}() gave {rtt}", e.line)
+                if is_heap(rtt) and not rowned:
+                    r = self.call("ptr", copy_fn(rtt), f"ptr {r}") if rtt != "string" else self.dup_str(r)
+                self.flush_temps(mark)
+            else:
+                r = self.call(llty(sig[1]), f'@"f.{key}"', f"{llty(et)} {x}")
+            if name == "array_map":                 # the result is new (a returned value is owned)
+                v = r
+            else:
+                keep, skip = self.newlabel("keep"), self.newlabel("skip")
+                self.emit(f"br i1 {r}, label %{keep}, label %{skip}")
+                self.place_label(keep)
+                v = x
+                if is_heap(et):
+                    v = self.call("ptr", copy_fn(et), f"ptr {x}")
+            if is_opt_scalar(rt):
+                self.store_elem(self.call("ptr", "@pn_list_push_slot", f"ptr {out}", f"i64 {esize(rt)}"), v, rt)
+            else:
+                self.call("void", "@pn_list_push", f"ptr {out}", f"i64 {esize(rt)}", f"i64 {self.to_bits(v, rt)}")
+            if name == "array_filter":
+                self.emit(f"br label %{skip}")
+                self.place_label(skip)
+            self.emit(f"{i2} = add i64 {i}, 1")
+            back = self.label
+            self.emit(f"br label %{head}")
+            self.body[phi_at] = f"  {i} = phi i64 [ 0, %{pre} ], [ {i2}, %{back} ]"
+            self.place_label(done)
+            return out, f"list<{rt}>", True
+        if name == "array_reduce":
+            self.argc(e, 3)
+            lv, lt = self.borrow(args[0])
+            if not is_list(lt):
+                raise CompileError(f"array_reduce() works on a list, not {lt}", e.line)
+            et = elem_of(lt)
+            cv, ct = self.owned_value(args[2], None, e.line)        # the carry starts as the initial value
+            want = fn_type([ct, et], ct)
+            if args[1].kind == "str":
+                key = self.fkey(Node("call", e.line, name=args[1].val, args=[]), quiet=True)
+                if key is None or self.mod.funcs[key] != ([ct, et], ct) or self.mod.throws.get(key, False):
+                    raise CompileError(f'array_reduce($xs, "name", $initial) needs a function declared as '
+                                       f'function name({ct} $carry, {et} $item): {ct}', e.line)
+                fv = self.mod.fn_wrapper(key, [ct, et], ct, False)
+            else:
+                fv, ft = self.borrow(args[1], want)
+                if ft != want:
+                    raise CompileError(f"array_reduce() needs an {want} here, not {ft}", e.line)
+            slot = f"%v.__carry{self.n}"
+            self.n += 1
+            self.allocas.append(f"  {slot} = alloca {llty(ct)}")
+            self.emit(f"store {llty(ct)} {cv}, ptr {slot}")
+            code, env, n = self.tmp(), fv, self.tmp()
+            self.emit(f"{code} = load ptr, ptr {fv}, !invariant.load !15")
+            self.emit(f"{n} = load i64, ptr {lv}, !tbaa !1")
+            pre, head, body, done = self.label, self.newlabel("redh"), self.newlabel("redb"), self.newlabel("rede")
+            self.emit(f"br label %{head}")
+            self.place_label(head)
+            i, i2, c = self.tmp(), self.tmp(), self.tmp()
+            phi_at = len(self.body)
+            self.emit("")
+            self.emit(f"{c} = icmp slt i64 {i}, {n}")
+            self.emit(f"br i1 {c}, label %{body}, label %{done}")
+            self.place_label(body)
+            x = self.load_elem(self.list_elem_ptr(lv, et, i), et)
+            old = self.tmp()
+            self.emit(f"{old} = load {llty(ct)}, ptr {slot}")
+            r = self.call(llty(ct), code, f"ptr {env}", f"{llty(ct)} {old}", f"{llty(et)} {x}")
+            if is_heap(ct):                         # the function gave a new carry; the old one is done
+                self.call("void", free_fn(ct), f"ptr {old}")
+            self.emit(f"store {llty(ct)} {r}, ptr {slot}")
+            self.emit(f"{i2} = add i64 {i}, 1")
+            back = self.label
+            self.emit(f"br label %{head}")
+            self.body[phi_at] = f"  {i} = phi i64 [ 0, %{pre} ], [ {i2}, %{back} ]"
+            self.place_label(done)
+            res = self.tmp()
+            self.emit(f"{res} = load {llty(ct)}, ptr {slot}")
+            return res, ct, is_heap(ct)
+        if name == "usort":
+            self.argc(e, 2)
+            a, h = args
+            root, props = path_root(a)
+            if root is None or a.kind not in ("var", "field", "index"):
+                raise CompileError('usort() sorts a list variable in place: usort($xs, "compare");', e.line)
+            t = self.static_type(a) or self.use_var(root, e.line)[1]
+            if not is_list(t):
+                raise CompileError(f"usort() needs a list but {show(a)} is {t}", e.line)
+            et = elem_of(t)
+            if esize(et) != 8 or is_task(et):
+                raise CompileError(f"usort() sorts lists of int, float, string, objects, lists or maps; not {t} "
+                                   f"(for bools, sort() puts false first)", e.line)
+            if h.kind != "str":                     # a closure / fn value: through an adapter with the value as context
+                fv, ft = self.borrow(h, fn_type([et, et], "int"))
+                if ft != fn_type([et, et], "int"):
+                    raise CompileError(f"usort() needs an fn({et}, {et}): int, not {ft}", e.line)
+                self.mutating(root, props, e.line, at=e.order, what="sorted")
+                v, _ = self.base_value(a, e.line)
+                self.call("void", "@pn_list_usort_ctx", f"ptr {v}", f"ptr {self.mod.cmp_adapter(et)}", f"ptr {fv}")
+                return None, "void", False
+            key = self.fkey(Node("call", e.line, name=h.val, args=[]), quiet=True) if h.kind == "str" else None
+            want = f"function {h.val if h.kind == 'str' else 'compare'}({et} $a, {et} $b): int"
+            if key is None or self.mod.funcs[key] != ([et, et], "int") or self.mod.throws.get(key, False):
+                raise CompileError(f'usort($xs, "name") needs the name of a function in this file declared as {want} '
+                                   f"(negative: $a first, 0: keep their order, positive: $b first; it cannot throw)",
+                                   e.line)
+            self.mutating(root, props, e.line, at=e.order, what="sorted")
+            v, _ = self.base_value(a, e.line)
+            self.call("void", "@pn_list_usort", f"ptr {v}", f"ptr {self.mod.cmp_trampoline(key, et)}")
+            return None, "void", False
+        if name in ("array_pop", "array_shift"):
+            self.argc(e, 1)
+            a = args[0]
+            root, props = path_root(a)
+            if root is None or a.kind not in ("var", "field", "index"):
+                raise CompileError(f"{name}() takes the item out of a list variable, e.g. $x = {name}($xs);", e.line)
+            t = self.static_type(a) or self.use_var(root, e.line)[1]
+            if not is_list(t):
+                raise CompileError(f"{name}() needs a list but {show(a)} is {t}", e.line)
+            et = elem_of(t)
+            if is_task(et) or et in ("db", "rows", "sub", "stream"):
+                raise CompileError(f"{name}() cannot take a {et} out of a list", e.line)
+            ot = et if is_opt(et) else "?" + et        # null when the list is empty, as in PHP
+            self.mutating(root, props, e.line, at=e.order, what="changed")
+            lst, _ = self.base_value(a, e.line)
+            ln, c = self.tmp(), self.tmp()
+            self.emit(f"{ln} = load i64, ptr {lst}, !tbaa !1")
+            self.emit(f"{c} = icmp eq i64 {ln}, 0")
+            start, take, end = self.label, self.newlabel("take"), self.newlabel("taken")
+            self.emit(f"br i1 {c}, label %{end}, label %{take}")
+            self.place_label(take)
+            idx = "0"
+            if name == "array_pop":
+                idx = self.tmp()
+                self.emit(f"{idx} = sub i64 {ln}, 1")
+            v = self.load_elem(self.list_elem_ptr(lst, et, idx), et)   # moved out: the list no longer has it
+            if name == "array_pop":
+                self.emit(f"store i64 {idx}, ptr {lst}, !tbaa !1")
+            else:
+                self.call("void", "@pn_list_drop_first", f"ptr {lst}", f"i64 {esize(et)}")
+            if is_opt_scalar(ot) and not is_opt(et):
+                v = self.wrap_opt(v, ot)
+            got = self.label
+            self.emit(f"br label %{end}")
+            self.place_label(end)
+            r = self.tmp()
+            none = "zeroinitializer" if is_opt_scalar(ot) else "null"
+            self.emit(f"{r} = phi {llty(ot)} [ {none}, %{start} ], [ {v}, %{got} ]")
+            return r, ot, is_heap(ot)
+        if name in ("array_slice", "array_merge", "array_reverse"):
+            self.argc(e, *{"array_slice": (2, 3), "array_merge": (2, 2), "array_reverse": (1, 1)}[name])
+            v, t = self.borrow(args[0])
+            if not is_list(t):
+                raise CompileError(f"{name}() works on lists, not {t}", e.line)
+            et = elem_of(t)
+            bad = uncopyable(et)
+            if bad:
+                raise CompileError(f"{name}() would copy the items, and {bad} cannot be copied", e.line)
+            cp = item_fn("copy", et) if (is_heap(et)) else "null"
+            if name == "array_slice":
+                off = self.int_arg(e, 1)
+                ln = self.int_arg(e, 2) if len(args) == 3 else "0"
+                return self.call("ptr", "@pn_list_slice", f"ptr {v}", f"i64 {esize(et)}", f"i64 {off}", f"i64 {ln}",
+                                 f"i64 {int(len(args) == 3)}", f"ptr {cp}"), t, True
+            if name == "array_merge":
+                w, t2 = self.borrow(args[1])
+                if t2 != t:
+                    raise CompileError(f"array_merge() joins two lists of one type: {t} and {t2}", e.line)
+                return self.call("ptr", "@pn_list_merge", f"ptr {v}", f"ptr {w}", f"i64 {esize(et)}", f"ptr {cp}"), t, True
+            return self.call("ptr", "@pn_list_reverse", f"ptr {v}", f"i64 {esize(et)}", f"ptr {cp}"), t, True
+        if name in ("array_search", "array_unique"):
+            self.argc(e, 2 if name == "array_search" else 1)
+            lv, lt = self.borrow(args[-1] if name == "array_search" else args[0])
+            if not (is_list(lt) and elem_of(lt) in KIND):
+                raise CompileError(f"{name}() works on a list of int, float, bool or string, not {lt}", e.line)
+            et = elem_of(lt)
+            if name == "array_unique":
+                return self.call("ptr", "@pn_list_unique", f"ptr {lv}", f"i64 {KIND[et]}"), lt, True
+            v, t = self.borrow(args[0], et)
+            v = self.coerce(v, t, et, e.line, "array_search()")
+            return self.call("i64", "@pn_list_index", f"ptr {lv}", f"i64 {self.to_bits(v, et)}", f"i64 {KIND[et]}"), \
+                "int", False
+        if name == "is_numeric":
+            self.argc(e, 1)
+            return self.i64_to_bool(self.call("i64", "@pn_is_numeric", f"ptr {self.str_arg(e, 0)}")), "bool", False
+        if name in ("str_pad", "mb_str_pad"):
+            self.argc(e, 2, 4)
+            sv, n = self.str_arg(e, 0), self.int_arg(e, 1)
+            pad = self.str_arg(e, 2) if len(args) > 2 else self.mod.lit(" ")
+            ty = self.int_arg(e, 3) if len(args) > 3 else "1"
+            return self.call("ptr", f"@pn_{name}", f"ptr {sv}", f"i64 {n}", f"ptr {pad}", f"i64 {ty}"), "string", True
+        if name in ("ucwords", "strrev"):
+            self.argc(e, 1)
+            return self.call("ptr", f"@pn_{name}", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "date":
+            self.argc(e, 1, 2)
+            f = self.str_arg(e, 0)
+            ts = self.int_arg(e, 1) if len(args) == 2 else self.call("i64", "@pn_time")
+            return self.call("ptr", "@pn_date", f"ptr {f}", f"i64 {ts}"), "string", True
+        if name == "str_replace":
+            self.argc(e, 3)
+            a, b, c = self.str_arg(e, 0), self.str_arg(e, 1), self.str_arg(e, 2)
+            return self.call("ptr", "@pn_str_replace", f"ptr {a}", f"ptr {b}", f"ptr {c}"), "string", True
+        if name in ("ltrim", "rtrim"):
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_str_trim_side", f"ptr {self.str_arg(e, 0)}", f"i64 {1 if name == 'ltrim' else 2}"), \
+                "string", True
+        if name in ("ucfirst", "lcfirst"):
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_ucfirst", f"ptr {self.str_arg(e, 0)}", f"i64 {int(name == 'ucfirst')}"), "string", True
+        if name in ("htmlspecialchars", "base64_encode"):
+            self.argc(e, 1)
+            return self.call("ptr", f"@pn_{name}", f"ptr {self.str_arg(e, 0)}"), "string", True
+        if name == "base64_decode":
+            self.argc(e, 1)
+            return self.failing_call("string", "@pn_base64_decode", [f"ptr {self.str_arg(e, 0)}"], e.line,
+                                     "base64_decode(...)"), "string", True
+        if name in ("rawurldecode", "urldecode"):
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_urldecode", f"ptr {self.str_arg(e, 0)}", f"i64 {int(name == 'urldecode')}"), \
+                "string", True
+        if name == "number_format":
+            self.argc(e, 1, 4)
+            x = self.num_arg(e, 0, "number_format()")
+            d = self.int_arg(e, 1) if len(args) > 1 else "0"
+            pt = self.str_arg(e, 2) if len(args) > 2 else self.mod.lit(".")
+            sp = self.str_arg(e, 3) if len(args) > 3 else self.mod.lit(",")
+            return self.call("ptr", "@pn_number_format", f"double {x}", f"i64 {d}", f"ptr {pt}", f"ptr {sp}"), "string", True
+        if name == "round":
+            self.argc(e, 1, 2)
+            x = self.num_arg(e, 0, "round()")
+            d = self.int_arg(e, 1) if len(args) > 1 else "0"
+            return self.call("double", "@pn_round", f"double {x}", f"i64 {d}"), "float", False
+        if name in ("floor", "ceil"):
+            self.argc(e, 1)
+            return self.call("double", f"@llvm.{name}.f64", f"double {self.num_arg(e, 0, name + '()')}"), "float", False
+        if name == "abs":
+            self.argc(e, 1)
+            v, t = self.borrow(args[0])
+            if t == "int":
+                n, c, r = self.tmp(), self.tmp(), self.tmp()
+                self.emit(f"{n} = sub i64 0, {v}")
+                self.emit(f"{c} = icmp slt i64 {v}, 0")
+                self.emit(f"{r} = select i1 {c}, i64 {n}, i64 {v}")
+                return r, "int", False
+            if t != "float":
+                raise CompileError(f"abs() needs an int or a float, not {t}", e.line)
+            return self.call("double", "@llvm.fabs.f64", f"double {v}"), "float", False
+        if name in ("max", "min"):
+            self.argc(e, 1, 2)
+            if len(args) == 1:                  # max($list)
+                v, t = self.borrow(args[0])
+                if not (is_list(t) and elem_of(t) in ("int", "float")):
+                    raise CompileError(f"{name}() of one value needs a list<int> or list<float>, not {t}", e.line)
+                r = self.call("i64", "@pn_list_extreme", f"ptr {v}", f"i64 {KIND[elem_of(t)]}", f"i64 {int(name == 'max')}")
+                if elem_of(t) == "float":
+                    f = self.tmp()
+                    self.emit(f"{f} = bitcast i64 {r} to double")
+                    return f, "float", False
+                return r, "int", False
+            a, ta = self.borrow(args[0])
+            b, tb = self.borrow(args[1])
+            if ta not in ("int", "float") or tb not in ("int", "float"):
+                raise CompileError(f"{name}() compares numbers (int or float), not {ta} and {tb}", e.line)
+            tt = "float" if "float" in (ta, tb) else "int"
+            a, b = self.coerce(a, ta, tt, e.line, name), self.coerce(b, tb, tt, e.line, name)
+            c, r = self.tmp(), self.tmp()
+            cmp = ("fcmp ogt" if name == "max" else "fcmp olt") if tt == "float" else ("icmp sgt" if name == "max" else "icmp slt")
+            self.emit(f"{c} = {cmp} {llty(tt)} {a}, {b}")
+            self.emit(f"{r} = select i1 {c}, {llty(tt)} {a}, {llty(tt)} {b}")
+            return r, tt, False
+        if name == "in_array":
+            self.argc(e, 2)
+            lv, lt = self.borrow(args[1])
+            if not (is_list(lt) and elem_of(lt) in KIND):
+                raise CompileError(f"in_array() looks in a list of int, float, bool or string, not {lt}", e.line)
+            et = elem_of(lt)
+            v, t = self.borrow(args[0], et)
+            v = self.coerce(v, t, et, e.line, "in_array()")
+            bits = self.to_bits(v, et)
+            return self.i64_to_bool(self.call("i64", "@pn_list_contains", f"ptr {lv}", f"i64 {bits}", f"i64 {KIND[et]}")), \
+                "bool", False
+        if name in ("array_keys", "array_values"):
+            self.argc(e, 1)
+            mv, mt = self.borrow(args[0])
+            if not is_map(mt):
+                raise CompileError(f"{name}() needs a map, not {mt}", e.line)
+            kt, vt = map_kv(mt)
+            if name == "array_keys":
+                return self.call("ptr", "@pn_map_keys", f"ptr {mv}"), f"list<{kt}>", True
+            if is_opt_scalar(vt):
+                raise CompileError(f"array_values() of a map of {vt} is not in Pin yet: loop with foreach", e.line)
+            if not (vt in KIND or per_item(vt)):
+                raise CompileError(f"array_values() cannot copy {vt} values", e.line)
+            cp = item_fn("copy", vt) if per_item(vt) else "null"
+            return self.call("ptr", "@pn_map_values", f"ptr {mv}", f"ptr {cp}"), f"list<{vt}>", True
+        if name == "array_sum":
+            self.argc(e, 1)
+            v, t = self.borrow(args[0])
+            if t == "list<int>":
+                return self.call("i64", "@pn_list_sum_int", f"ptr {v}"), "int", False
+            if t == "list<float>":
+                return self.call("double", "@pn_list_sum_float", f"ptr {v}"), "float", False
+            raise CompileError(f"array_sum() adds a list<int> or list<float>, not {t}", e.line)
+        if name == "mb_chr":
+            self.argc(e, 1)
+            return self.call("ptr", "@pn_mb_chr", f"i64 {self.int_arg(e, 0)}"), "string", True
+        if name == "mb_ord":
+            self.argc(e, 1)
+            return self.call("i64", "@pn_mb_ord", f"ptr {self.str_arg(e, 0)}"), "int", False
         if name == "strpos":
             self.argc(e, 2)
             h, n = self.str_arg(e, 0), self.str_arg(e, 1)
@@ -3163,12 +5408,44 @@ class FuncGen:
             if name == "json_int":
                 return self.call("i64", fn, f"ptr {src}", f"ptr {key}"), "int", False
             return self.i64_to_bool(self.call("i64", fn, f"ptr {src}", f"ptr {key}")), "bool", False
+        if name in ("db_all", "db_one"):
+            return self.db_rows_into(e, hint)
         if name.startswith("db_"):
             return self.db_builtin(e)
+        if name == "json_encode" and len(args) == 2:          # json_encode($v, JSON_PRETTY_PRINT | ...)
+            fl, ft = self.borrow(args[1])
+            if ft != "int":
+                raise CompileError("json_encode()'s second argument is flags: JSON_PRETTY_PRINT (the other JSON_ "
+                                   "flags change nothing: Pin never escapes / or Unicode)", e.line)
+            j, _, _ = self.builtin(Node("call", e.line, name="json_encode", args=[args[0]]), None)
+            b, c = self.tmp(), self.tmp()
+            self.emit(f"{b} = and i64 {fl}, 128")
+            self.emit(f"{c} = icmp ne i64 {b}, 0")
+            start, pretty, end = self.label, self.newlabel("pretty"), self.newlabel("json")
+            self.emit(f"br i1 {c}, label %{pretty}, label %{end}")
+            self.place_label(pretty)
+            p = self.call("ptr", "@pn_json_pretty", f"ptr {j}")
+            self.call("void", "@pn_str_free", f"ptr {j}")
+            self.emit(f"br label %{end}")
+            self.place_label(end)
+            r = self.tmp()
+            self.emit(f"{r} = phi ptr [ {j}, %{start} ], [ {p}, %{pretty} ]")
+            return r, "string", True
         if name == "json_encode":
             self.argc(e, 1)
             v, t = self.borrow(args[0])
-            if owns_ptr(t) and (is_class(t) or owns_ptr(elem_of(t) if is_list(t) else map_kv(t)[1])):
+            if is_fn(t):
+                raise CompileError("json_encode() cannot write a function", e.line)
+            if is_opt_scalar(t):
+                return self.json_opt_scalar(v, t), "string", True
+            if is_opt(t):                       # null -> null (null.md N8)
+                bad = unjsonable(t)
+                if bad:
+                    raise CompileError(f"json_encode() cannot write {bad}; make that property private to leave "
+                                       f"it out", e.line)
+                d = self.call("ptr", "@pn_str_new", "i64 64")
+                return self.call("ptr", json_fn(t), f"ptr {d}", f"ptr {v}"), "string", True
+            if owns_ptr(t) and (is_class(t) or per_item(elem_of(t) if is_list(t) else map_kv(t)[1])):
                 bad = unjsonable(t)
                 if bad:
                     raise CompileError(f"json_encode() cannot write {bad}; make that property private to leave "
@@ -3176,7 +5453,7 @@ class FuncGen:
                 d = self.call("ptr", "@pn_str_new", "i64 64")
                 return self.call("ptr", json_fn(t), f"ptr {d}", f"ptr {v}"), "string", True
             if is_list(t):
-                return self.call("ptr", "@pn_json_list", f"ptr {v}", f"i64 {KIND[elem_of(t)]}"), "string", True
+                return self.call("ptr", "@pn_json_list", f"ptr {v}", f"i64 {kind_of(elem_of(t))}"), "string", True
             if is_map(t):
                 return self.call("ptr", "@pn_json_map", f"ptr {v}"), "string", True
             if t == "string":
@@ -3192,13 +5469,19 @@ class FuncGen:
         if name in ("isset", "array_key_exists"):
             if name == "isset":
                 self.argc(e, 1)
+                if (args[0].kind == "var" and is_opt(self.vars.get(args[0].name, ""))) or self.checkable_path(args[0]):
+                    return self.null_compare(Node("bin", e.line, op="!=", l=args[0], r=Node("null", e.line)))   # not null
                 if args[0].kind != "index":
-                    raise CompileError("isset() needs a list item or map entry, e.g. isset($m[$k])", e.line)
+                    raise CompileError("isset() needs a list item or map entry, e.g. isset($m[$k]), or a ?T "
+                                       "variable", e.line)
                 seq_e, key_e = args[0].seq, args[0].idx
             else:
                 self.argc(e, 2)
                 key_e, seq_e = args
             seq, st = self.seq_of(seq_e, e.line)
+            item = elem_of(st) if is_list(st) else map_kv(st)[1] if is_map(st) else None
+            if name == "isset" and item and is_opt(item):
+                return self.isset_opt(seq, st, item, key_e, e.line), "bool", False
             if is_map(st):
                 key = self.map_key(st, key_e, e.line)
                 return self.i64_to_bool(self.call("i64", "@pn_map_has", f"ptr {seq}", f"i64 {key}")), "bool", False
@@ -3226,7 +5509,7 @@ class FuncGen:
             m, _ = self.base_value(a.seq, e.line)
             key = self.map_key(mt, a.idx, e.line)
             vt = map_kv(mt)[1]
-            if owns_ptr(vt):
+            if per_item(vt):
                 self.call("void", "@pn_map_del_with", f"ptr {m}", f"i64 {key}", f"ptr {item_fn('free', vt)}")
             else:
                 self.call("void", "@pn_map_del", f"ptr {m}", f"i64 {key}")
@@ -3364,8 +5647,7 @@ class FuncGen:
             if rt == "void":
                 self.call("void", "@pn_obj_free", f"ptr {frame}")
                 return None, "void", False
-            v = self.tmp()
-            self.emit(f"{v} = load {llty(rt)}, ptr {frame}")
+            v = self.frame_result(frame, rt)
             self.call("void", "@pn_obj_free", f"ptr {frame}")
             return v, rt, is_heap(rt)
         if name == "sleep_ms":
@@ -3413,7 +5695,8 @@ class FuncGen:
         if k == "decl":
             vt = self.rt(s.vtype, s.line)
             if s.name in self.vars and self.vars[s.name] != vt:
-                raise CompileError(f"{s.name} is already {self.vars[s.name]}; a variable keeps one type", s.line)
+                raise CompileError(f"{s.name} is already {self.vars[s.name]}; a variable keeps one type in the whole "
+                                   f"function (every branch too): use another name here", s.line)
             if not self.is_borrow(s.name, s.val):
                 self.declare(s.name, vt)
             self.assign_var(s.name, s.val, s.line, want=vt)
@@ -3436,6 +5719,7 @@ class FuncGen:
                     elif t == "bool":
                         self.call("void", "@pn_print_str", f"ptr {self.bool_str(v)}")
                     else:
+                        self.not_null(p, t, s.line)
                         raise CompileError(f"cannot echo {'an object ' + t if is_class(t) else 'a ' + t} (use json_encode())", s.line)
         elif k == "if":
             self.if_(s)
@@ -3492,7 +5776,7 @@ class FuncGen:
 
     def is_borrow(self, name, val_e):
         """$u = $users[0] / $items = $o->items: a list, map or object read through a path is borrowed (D2)."""
-        if val_e.kind not in ("field", "index"):
+        if val_e.kind not in ("field", "index", "nsfield"):
             return False
         vt = self.static_type(val_e)
         return bool(vt and owns_ptr(vt) and (name not in self.vars or name in self.borrow_vars))
@@ -3506,7 +5790,8 @@ class FuncGen:
         if want and vt != want:
             raise CompileError(f"{name} is declared {want} but {show(val_e)} is {vt}", line)
         if name in self.vars and self.vars[name] != vt:
-            raise CompileError(f"{name} is already {self.vars[name]}; a variable keeps one type", line)
+            raise CompileError(f"{name} is already {self.vars[name]}; a variable keeps one type in the whole "
+                               f"function (every branch too): use another name here", line)
         roots = set(self.borrow_vars[root]) if root in self.borrow_vars else {(root, props)}
         for r, _ in roots:
             if r in self.loop_scope and name in self.loop_scope[r]:
@@ -3520,6 +5805,7 @@ class FuncGen:
         self.moved.pop(name, None)
         self.flow.maybe.discard(name)
         self.flow.assigned.add(name)
+        self.flow.nonnull.discard(name)
 
     def task_roots(self, a):
         """What a task argument borrows: the owning variables behind it."""
@@ -3569,16 +5855,322 @@ class FuncGen:
         if want and t != want:
             raise CompileError(f"{name} is declared {want} but the task gives {t}", line)
         if name in self.vars and self.vars[name] != t:
-            raise CompileError(f"{name} is already {self.vars[name]}; a variable keeps one type", line)
+            raise CompileError(f"{name} is already {self.vars[name]}; a variable keeps one type in the whole "
+                               f"function (every branch too): use another name here", line)
         self.declare(name, t)
         self.emit(f"store ptr {v}, ptr {self.slot(name)}")      # the old one was awaited (moved): slot is null
         self.moved.pop(name, None)
         self.flow.maybe.discard(name)
         self.flow.assigned.add(name)
 
+    # --- closures (design/closures.md)
+    @property
+    def ref_caps_seen(self):
+        return self.has_ref_closures or bool(self.ref_caps)
+
+    def fn_lends(self, x):
+        """The variables a call of the functions in x can change: use (&$v) of a closure written there, and what the
+        fn variables named there change (C5)."""
+        out = set()
+
+        def walk(y):
+            if isinstance(y, Node):
+                if y.kind == "closure":
+                    out.update(n for n, r in y.uses if r)
+                    out.update(r for v in free_vars(y.body) for r in self.ref_caps.get(v, ()))
+                    return
+                if y.kind == "var" and y.name in self.ref_caps:
+                    out.update(self.ref_caps[y.name])
+                for k, v in y.__dict__.items():
+                    if k not in ("kind", "line"):
+                        walk(v)
+            elif isinstance(y, (list, tuple)):
+                for z in y:
+                    walk(z)
+        walk(x)
+        return out
+
+    def lend_fns(self, e):
+        """A call that is given (or is) a closure changing $v through use (&$v) changes $v while it runs: it is
+        a change of $v at this point (no foreach over it, no loan of it used later), and nothing else in the
+        expression may read $v (it could be freed under it)."""
+        parts = ([e.fn] if e.kind == "callv" else []) + list(e.args or ())
+        for a in parts:
+            roots = self.fn_lends(a)
+            for r in sorted(roots):
+                who = show(a) if a.kind == "var" else "the closure given here"
+                self.mutating(r, (), e.line, at=getattr(e, "order", self.at), what="changed")
+                if is_opt(self.vars.get(r, "")):
+                    self.flow.nonnull.discard(r)
+                if mentions_except(self.top_expr, r, a):
+                    raise CompileError(f"{who} changes {r} (use (&{r})), so nothing else in this expression can use "
+                                       f"{r}: read it in a statement of its own", e.line)
+                for b, broots in self.borrow_vars.items():
+                    if any(x == r for x, _ in broots) and mentions_except(self.top_expr, b, a):
+                        raise CompileError(f"{who} changes {r} (use (&{r})), and {b} borrows from {r}: they cannot "
+                                           f"be used in the same expression", e.line)
+
+    def no_lend_into(self, root, val, line):
+        if root and root in self.fn_lends(val):
+            raise CompileError(f"the closure called here changes {root} (use (&{root})), so its result cannot be "
+                               f"stored into {root} in the same statement: $r = ...; then store $r", line)
+
+    def fn_local(self, e):
+        """Does e give a local closure (a block in this function's frame)?"""
+        return any((b.kind == "closure" and not getattr(b, "escaping", False)) or
+                   (b.kind == "var" and b.name in self.local_fn) for b in fn_branches(e))
+
+    def check_frozen(self, name, line):
+        if name in self.frozen:
+            f, at = self.frozen[name]
+            raise CompileError(f"{name} is read by the closure in {f} (line {at}), so it cannot change while {f} can "
+                               f"still be called. Change it before making the closure, or give the closure its own "
+                               f"value: $copy = {name}; then use $copy in the closure", line)
+
+    def fn_ref(self, e):
+        """by_price(...): a function of this program as an fn value (C2)."""
+        key = self.fkey(Node("call", e.line, name=e.name, args=[], module=e.module))
+        if key is None:
+            raise CompileError(f"{e.name}(...) needs a function of this program; built-ins are not values yet", e.line)
+        params = self.mod.params[key]
+        if any(r for _, _, r in params):
+            raise CompileError(f"{e.name}() has & parameters, so it cannot be an fn value", e.line)
+        ps, ret, th = [t for t, _, _ in params], self.mod.funcs[key][1], self.mod.throws.get(key, False)
+        return self.mod.fn_wrapper(key, ps, ret, th), fn_type(ps, ret, th), True
+
+    def closure_value(self, e, hint):
+        """fn($x) => ... / function ($x) use ($a) { ... }: a local closure (C3, C4). Its body becomes a function of
+        its captures and its parameters; the value is a trampoline plus a block on this function's stack holding
+        the captured values (loans: nothing is copied)."""
+        hp = fn_parts(hint) if hint and is_fn(hint) else None
+        if hp and len(hp[0]) != len(e.params):
+            raise CompileError(f"this closure takes {len(e.params)} parameter(s), but one taking {len(hp[0])} "
+                               f"({', '.join(hp[0])}) is expected here", e.line)
+        ptypes = []
+        for i, (pt, pn) in enumerate(e.params):
+            t = self.rt(pt, e.line) if pt else (hp[0][i] if hp else None)
+            if t is None:
+                raise CompileError(f"fn({pn}) => ... needs the type of {pn} here: write fn(int {pn}): int => ..., or "
+                                   f"pass it where an fn(int): int is expected", e.line)
+            if hp and pt and t != hp[0][i]:
+                raise CompileError(f"{pn} is {t} here, but the closure is expected to take {hp[0][i]}", e.line)
+            ptypes.append(t)
+        ret = self.rt(e.ret, e.line) if e.ret else (hp[1] if hp and hp[1] != "?" else None)
+        if hp and e.ret and hp[1] != "?" and ret != hp[1]:
+            raise CompileError(f"this closure returns {ret}, but {hp[1]} is expected here", e.line)
+        throws = e.throws or bool(hp and hp[2])
+        if ret is None and not e.arrow:
+            raise CompileError("function (...) { ... } needs its result type here: function ($x): int { ... }", e.line)
+        pnames = {pn for _, pn in e.params}
+        refs = set()
+        if e.arrow:
+            names = sorted(n for n in free_vars(e.body) - pnames if n in self.vars or n == "$this")
+        else:
+            seen = set()
+            for n, ref in e.uses:
+                if n in seen:
+                    raise CompileError(f"use (...) names {n} twice", e.line)
+                seen.add(n)
+                if n == "$this":
+                    raise CompileError("use ($this) is not needed: a closure in a method can use $this", e.line)
+                if n in pnames:
+                    raise CompileError(f"{n} is a parameter of the closure and cannot also be in use (...)", e.line)
+                if n not in self.vars:
+                    raise CompileError(f"use ({'&' if ref else ''}{n}): there is no {n} here" +
+                                       (f"; give it a value first, e.g. {n} = 0;" if ref else ""), e.line)
+                if ref:
+                    refs.add(n)
+            names = [n for n, _ in e.uses]
+            if "$this" in free_vars(e.body) and self.method:
+                names.append("$this")
+        caps = []
+        for n in names:
+            if n == "$this":
+                if not self.method:
+                    raise CompileError("$this is only inside methods", e.line)
+                caps.append(("$__this", self.cls.key, "$this", False))
+            else:
+                self.require_assigned(n, e.line)
+                if n in self.moved:
+                    self.use_var(n, e.line)
+                t = self.vtype(n)
+                if is_task(t) or t in ("db", "rows", "sub", "stream"):
+                    raise CompileError(f"a closure cannot use {n} ({t})", e.line)
+                if n in refs:
+                    if is_fn(t):
+                        raise CompileError(f"use (&{n}): a function cannot be lent with &; use ({n})", e.line)
+                    if n in self.borrowed and n not in self.refs:
+                        self.check_writable(n, e.line, "changed by a closure (use (&...))")
+                caps.append((n, t, n, n in refs))
+        # what this closure changes (its own use (&) and the fn values it calls): nothing it reads may be or
+        # borrow from one of those, or a call could free what it reads
+        lends = refs | {r for n in names for r in self.ref_caps.get(n, ())}
+        for n, t, src, ref in caps:
+            if ref or src == "$this":
+                continue
+            under = {src} | {r for r, _ in self.borrow_vars.get(src, ())}
+            if self.foreach_root.get(src):
+                under.add(self.foreach_root[src][0])
+            hit = sorted(under & lends)
+            if hit:
+                raise CompileError(f"this closure changes {hit[0]} (use (&{hit[0]})" +
+                                   (f", through {', '.join(sorted(m for m in names if hit[0] in self.ref_caps.get(m, ())))}"
+                                    if hit[0] not in refs else "") +
+                                   f") and also reads {src}" + (f", which borrows from {hit[0]}" if src != hit[0] else "") +
+                                   ": use one of them, or give the closure its own copy()", e.line)
+        body = rename_var(e.body, "$this", "$__this") if any(c[0] == "$__this" for c in caps) else e.body
+        cname = f"__clo{e.order}_{self.key}".replace("::", "_").replace('"', "")
+        sub = FuncGen(self.mod, cname, [(t, n, ref) for n, t, _, ref in caps] + list(zip(ptypes, [pn for _, pn in e.params],
+                      [False] * len(ptypes))), ret or "?infer", e.line, modid=self.modid, imports=self.imports, throws=throws)
+        sub.closure_of = self.name
+        for n in names:                         # an fn value it calls changes what the closure has with &
+            if self.ref_caps.get(n):
+                sub.ref_caps[n] = self.ref_caps[n] & refs
+        sub.prepare(body)
+        sub.stmt(body)
+        ir = sub.finish()
+        ret = sub.ret
+        if ret == "?infer":
+            raise CompileError("this closure never returns a value", e.line)
+        ctys = ["ptr" if ref else llty(t) for _, t, _, ref in caps]
+        tramp = self.mod.closure_code(sub.llname, cname, ctys, ptypes, ret, throws, ir)
+        st = closure_block(ctys)
+        ft = fn_type(ptypes, ret, throws)
+        if getattr(e, "escaping", False):       # returned, stored or given to go: it owns its captures (C6)
+            if lends:
+                raise CompileError(f"use (&{sorted(lends)[0]}) cannot be in a closure that is returned, stored or "
+                                   f"given to go: {sorted(lends)[0]} would be gone when it runs", e.line)
+            vals = []
+            for n, t, src, ref in caps:
+                if src == "$this":
+                    raise CompileError("a closure that is returned, stored or given to go cannot use $this (the "
+                                       "object may be gone when it runs): read what it needs into a variable "
+                                       "first, e.g. $rate = $this->rate;", e.line)
+                if is_heap(t):                  # strings copied, lists / maps / objects / closures moved
+                    v, _ = self.owned_value(Node("var", e.line, name=src), t, e.line)
+                else:
+                    v = self.use_var(src, e.line)[0]
+                vals.append(v)
+            fr, cp = self.mod.closure_helpers(cname, tramp, [t for _, t, _, _ in caps])
+            blk = self.call("ptr", "@pn_obj_new", f"i64 ptrtoint (ptr getelementptr ({st}, ptr null, i32 1) to i64)")
+            self.fn_header(blk, tramp, fr, cp)
+            for i, v in enumerate(vals):
+                p = self.tmp()
+                self.emit(f"{p} = getelementptr inbounds {st}, ptr {blk}, i32 0, i32 {3 + i}")
+                self.emit(f"store {ctys[i]} {v}, ptr {p}")
+            return blk, ft, True
+        # a local closure: a block in this function's stack frame; the captured values are loans (C4)
+        if lends:
+            cp = "@pn_fn_nocopy"
+        else:
+            cp = self.mod.closure_helpers(cname, tramp, [t for _, t, _, _ in caps])[1]
+        blk = f"%v.__env{self.n}"
+        self.n += 1
+        self.allocas.append(f"  {blk} = alloca {st}")
+        self.fn_header(blk, tramp, "null", cp)
+        for i, (n, t, src, ref) in enumerate(caps):
+            if ref:                             # use (&$x): the address of $x (C5)
+                v = self.slot(src)
+            else:
+                v = self.use_var(src, e.line, raw=True)[0] if src != "$this" else "%arg.this"
+            p = self.tmp()
+            self.emit(f"{p} = getelementptr inbounds {st}, ptr {blk}, i32 0, i32 {3 + i}")
+            self.emit(f"store {ctys[i]} {v}, ptr {p}")
+        if not getattr(e, "as_arg", False):     # kept beyond one call: what it reads stays read-only (C4)
+            f, line = self.closure_target or ("the closure", e.line)
+            if lends and not self.closure_target:
+                raise CompileError("a closure that changes variables (use (&...)) must be passed straight to a call "
+                                   "or kept in a variable", e.line)
+            keep = set()
+            for _, _, src, ref in caps:
+                if src == "$this" or ref:
+                    continue
+                keep.add(src)
+                keep |= {r for r, _ in self.borrow_vars.get(src, ())}
+                if self.foreach_root.get(src):
+                    keep.add(self.foreach_root[src][0])
+            if self.closure_target:
+                self.loop_frozen(f, keep, e.line)
+            for n in keep:
+                self.frozen.setdefault(n, (f, line))
+            self.frozen_by.setdefault(f, set()).update(keep)
+        return blk, ft, True
+
+    def loop_frozen(self, f, keep, line):
+        """In a loop, a value the closure in f reads may be replaced earlier in the body: the next round frees it
+        while the closure from this round can still be called. Allowed only when every round makes f again after
+        the change and before any use of f (C4)."""
+        for n in sorted(keep):
+            if not is_heap(self.vars.get(n, "")):
+                continue                        # numbers and bools are copied into the block
+            ws = list(self.writes.get(n, ()))
+            for g, roots in self.ref_caps.items():
+                if n in roots:
+                    ws += self.uses.get(g, [])
+            for lo, hi, kills in self.open_loops:
+                for w, wl in ws:
+                    if not lo <= w < self.at:
+                        continue
+                    ks = [k for k in kills.get(f, ()) if k > w]
+                    seen = [ul for o, ul in self.uses.get(f, ()) if w < o < (min(ks) if ks else hi + 1)]
+                    if not ks or seen:
+                        raise CompileError(
+                            f"{f} keeps a closure that reads {n}, and {n} is replaced on line {wl} in this loop: "
+                            f"the next round would free what the closure from this round reads" +
+                            (f" (it is called on line {seen[0]})" if seen else "") + ". Make the closure where it is "
+                            f"used, or give it its own value with copy({n})", line)
+
+    def fn_header(self, blk, code, fr, cp):
+        self.emit(f"store ptr {code}, ptr {blk}")
+        for i, v in ((1, fr), (2, cp)):
+            p = self.tmp()
+            self.emit(f"{p} = getelementptr inbounds ptr, ptr {blk}, i64 {i}")
+            self.emit(f"store ptr {v}, ptr {p}")
+
+    def call_value(self, e):
+        """$f($x): call an fn value (code pointer + captured values)."""
+        fv, ft = self.borrow(e.fn)
+        if is_opt(ft) and is_fn(ft[1:]):
+            self.not_null(e.fn, ft, e.line)
+        if not is_fn(ft):
+            raise CompileError(f"{show(e.fn)} is {ft}, not a function", e.line)
+        ps, ret, th = fn_parts(ft)
+        if len(e.args) != len(ps):
+            raise CompileError(f"{show(e.fn)} takes {len(ps)} argument(s), not {len(e.args)}", e.line)
+        args = []
+        for a, pt in zip(e.args, ps):
+            if a.kind == "ref":
+                raise CompileError("an fn value's parameters are read-only: no &", e.line)
+            v, t = self.borrow(a, pt)
+            args.append(f"{llty(pt)} {self.coerce(v, t, pt, e.line, f'argument of {show(e.fn)}')}")
+        code, env = self.tmp(), fv
+        self.emit(f"{code} = load ptr, ptr {fv}, !invariant.load !15")    # a block's code never changes
+        if th:
+            return self.failing_call(ret, code, [f"ptr {env}"] + args, e.line, f"{show(e.fn)}(...)"), ret, is_heap(ret)
+        if ret == "void":
+            self.call("void", code, f"ptr {env}", *args)
+            return None, "void", False
+        return self.call(llty(ret), code, f"ptr {env}", *args), ret, is_heap(ret)
+
     def assign_var(self, name, val_e, line, want=None):
         if name == "$this":
             raise CompileError("$this cannot be assigned", line)
+        self.check_frozen(name, line)
+        if self.ref_caps_seen:
+            self.no_lend_into(name, val_e, line)
+        try:
+            self.closure_target = (name, line)    # closures made here: their captures stay read-only (C4)
+            return self.assign_var_(name, val_e, line, want)
+        finally:
+            self.closure_target = None
+            if is_fn(self.vars.get(name, "")) and self.fn_local(val_e):
+                self.local_fn.add(name)
+            if self.ref_caps_seen and is_fn(self.vars.get(name, "")):
+                lends = self.fn_lends(val_e)
+                if lends:
+                    self.ref_caps.setdefault(name, set()).update(lends)
+
+    def assign_var_(self, name, val_e, line, want):
         if self.is_borrow(name, val_e):
             return self.assign_borrow(name, val_e, line, want)
         if val_e.kind == "go" or (val_e.kind == "var" and holds_task(self.vars.get(val_e.name, ""))):
@@ -3619,6 +6211,12 @@ class FuncGen:
             self.flow.maybe.discard(name)
         self.emit(f"store {llty(t)} {v}, ptr {self.slot(name)}")
         self.flow.assigned.add(name)
+        self.drop_paths([name])                 # a new object: nothing checked on the old one holds
+        if is_opt(t):                           # $u = new User(...) is known not null; $u = find(...) is not
+            if is_opt(vt):
+                self.flow.nonnull.discard(name)
+            else:
+                self.flow.nonnull.add(name)
 
     def free_var(self, name, t):
         old = self.tmp()
@@ -3629,13 +6227,16 @@ class FuncGen:
 
     def assign(self, s):
         tg, op = s.target, s.op
+        if self.ref_caps_seen and (tg.kind != "var" or op != "="):
+            self.no_lend_into(path_root(tg)[0], s.val, s.line)
         if tg.kind == "var":
             name = tg.name
             if op == "=":
                 return self.assign_var(name, s.val, s.line)
             self.require_assigned(name, s.line)
-            vt = self.vars[name]
+            vt = self.vtype(name)
             if op == ".=":
+                self.not_null(tg, vt, s.line)
                 if vt != "string":
                     raise CompileError(f"'.=' needs a string variable; {name} is {vt}", s.line)
                 self.check_writable(name, s.line)
@@ -3652,7 +6253,7 @@ class FuncGen:
                 return
             if is_heap(vt):
                 raise CompileError(f"'{op}' does not work on {vt}", s.line)
-            bin_e = Node("bin", s.line, op=op[0], l=tg, r=s.val)
+            bin_e = Node("bin", s.line, op=op[:-1], l=tg, r=s.val)
             v, t = self.borrow(bin_e)
             v = self.coerce(v, t, vt, s.line, f"assigning to {name}")
             self.emit(f"store {llty(vt)} {v}, ptr {self.slot(name)}")
@@ -3663,7 +6264,8 @@ class FuncGen:
         self.require_assigned(name, s.line)
         if name in self.moved:
             self.use_var(name, s.line)          # reports the move
-        st = self.vars[name]
+        st = self.vtype(name)
+        self.not_null(tg.seq, st, s.line)
         self.mutating(name, (), s.line, what="appended to" if tg.kind == "append" else "changed")
         if tg.kind == "append":
             if self.walked(name):
@@ -3686,7 +6288,7 @@ class FuncGen:
             elif is_heap(et):
                 v, t = self.owned_value(s.val, et, s.line, into=name)    # the list owns what it holds
             else:
-                v, t = self.borrow(s.val)
+                v, t = self.borrow(s.val, et)
             v = self.coerce(v, t, et, s.line, f"appending to {name}")
             lst, _ = self.use_var(name, s.line)
             ln, cp, capp, full = self.tmp(), self.tmp(), self.tmp(), self.tmp()
@@ -3713,8 +6315,10 @@ class FuncGen:
             if op not in ("=", ".=") or (op == ".=" and et != "string"):
                 raise CompileError(f"'{op}' needs numbers; {name} is {st}", s.line)
             v, t = self.owned_value(s.val, et, s.line, into=name) if op == "=" else self.borrow(s.val)
-            if t != et:
+            if op == ".=" and t != "string":
                 raise CompileError(f"storing into {name}: expected {et} but got {t}", s.line)
+            if op == "=":
+                v = self.coerce(v, t, et, s.line, f"storing into {name}")
             lst, _ = self.use_var(name, s.line)
             iv, it = self.borrow(tg.idx)
             if it != "int":
@@ -3732,7 +6336,7 @@ class FuncGen:
             et = elem_of(st)
             if op == ".=":
                 raise CompileError("'.=' needs a string", s.line)
-            v, t = self.borrow(s.val)
+            v, t = self.borrow(s.val, et)
             lst, _ = self.use_var(name, s.line)
             iv, it = self.borrow(tg.idx)
             if it != "int":
@@ -3786,11 +6390,18 @@ class FuncGen:
             st = self.static_type(tg.seq)
             if st is None:
                 self.place(tg.seq, line)
+            if st is not None:
+                self.not_null(tg.seq, st, line)
             if not is_list(st):
                 raise CompileError(f"{show(tg.seq)} is {st}; $a[] = value appends to lists only", line)
             tt = elem_of(st)
         else:
+            key = self.path_key(tg) if tg.kind == "field" else None
+            checked = key in self.flow.nonnull
+            self.flow.nonnull.discard(key)      # storing into $u->email: its declared ?T type, not the checked T
             tt = self.static_type(tg)
+            if checked:
+                self.flow.nonnull.add(key)
             if tt is None:
                 self.place(tg, line)            # reports what is wrong with the path
                 raise CompileError(f"cannot assign to {show(tg)}", line)
@@ -3808,12 +6419,17 @@ class FuncGen:
             v = self.coerce(v, vt, tt, line, f"storing into {show(tg)}")
             if tg.kind == "append":
                 lst, _ = self.base_value(tg.seq, line)
-                self.call("void", "@pn_list_push", f"ptr {lst}", f"i64 {esize(tt)}", f"i64 {self.to_bits(v, tt)}")
+                if is_opt_scalar(tt):
+                    self.store_elem(self.call("ptr", "@pn_list_push_slot", f"ptr {lst}", f"i64 {esize(tt)}"), v, tt)
+                else:
+                    self.call("void", "@pn_list_push", f"ptr {lst}", f"i64 {esize(tt)}", f"i64 {self.to_bits(v, tt)}")
                 return
             p, t, st = self.place(tg, line, create=True)
             if is_heap(t):
                 self.call("void", free_fn(t), f"ptr {self.load_at(p, t, st)}")
             self.store_at(p, v, t, st)
+            if tg.kind == "field" and is_opt(t) and not is_opt(vt) and self.path_key(tg):
+                self.flow.nonnull.add(self.path_key(tg))    # $u->email = "a@b.c": not null from here on
             if this_field:
                 self.flow.assigned.add(f"$this->{tg.name}")
             return
@@ -3839,6 +6455,9 @@ class FuncGen:
     def arith(self, a, at, b, bt, op, line):
         if at not in ("int", "float") or bt not in ("int", "float"):
             raise CompileError(f"'{op}' needs numbers", line)
+        if op[:-1] in ("|", "&", "^", "<<", ">>", "**"):
+            raise CompileError(f"'{op}' works on int variables; for a list item or property write "
+                               f"$x[$i] = $x[$i] {op[:-1]} ...", line)
         if op[0] in "/%":
             raise CompileError(f"'{op}' on list/map items is not supported yet", line)
         tt = "float" if "float" in (at, bt) else "int"
@@ -3851,23 +6470,27 @@ class FuncGen:
 
     def cond(self, e):
         v, t = self.borrow(e)
+        self.not_null(e, t, e.line)
         if t != "bool":
             raise CompileError(f"condition must be bool but got {t} (write the comparison, e.g. $x != 0)", e.line)
         self.flush_temps()
         return v
 
     def if_(self, s):
+        yes, no = self.null_facts(s.cond)
         v = self.cond(s.cond)
         then, els, end = self.newlabel("then"), self.newlabel("else"), self.newlabel("endif")
         self.emit(f"br i1 {v}, label %{then}, label %{els}")
         start = self.flow
         self.flow = start.copy()
+        self.flow.nonnull |= yes
         self.place_label(then)
         self.stmt(s.then)
         then_flow = self.flow
         if not self.term:
             self.emit(f"br label %{end}")
         self.flow = start.copy()
+        self.flow.nonnull |= no
         self.place_label(els)
         if s.els:
             self.stmt(s.els)
@@ -3876,12 +6499,18 @@ class FuncGen:
 
     def loop(self, cond, step, body, node):
         head, bodyl, stepl, end = (self.newlabel(x) for x in ("loop", "body", "step", "endloop"))
+        self.forget_written([cond, step, body])     # the next round may see them null again
         head_flow = self.flow.copy()
+        exit_flow = head_flow
         self.open_loops.append((node.first, node.order, node.kills))
         self.place_label(head)
         if cond is not None:
+            yes, no = self.null_facts(cond)
             v = self.cond(cond)
             self.emit(f"br i1 {v}, label %{bodyl}, label %{end}")
+            exit_flow = head_flow.copy()
+            exit_flow.nonnull |= no
+            self.flow.nonnull |= yes
         self.place_label(bodyl)
         lp = Loop(end, stepl)
         self.loops.append(lp)
@@ -3896,7 +6525,7 @@ class FuncGen:
         self.place_label(end)
         self.open_loops.pop()
         forever = cond is None or (cond.kind == "bool" and cond.val)
-        self.flow = Flow.merge(lp.breaks + ([] if forever else [head_flow]), head_flow)
+        self.flow = Flow.merge(lp.breaks + ([] if forever else [exit_flow]), head_flow)
 
     def check_back_edge(self, head_flow):
         """The state going round again must be no worse than the state the loop started with."""
@@ -3934,6 +6563,7 @@ class FuncGen:
         mine = self.temps[mark:]           # a temporary being walked over lives until the loop ends
         del self.temps[mark:]
         self.flush_temps()
+        self.not_null(s.seq, st, s.line)
         if not (is_list(st) or is_map(st)):
             raise CompileError(f"foreach needs a list or map but got {st}", s.line)
         if is_list(st):
@@ -3947,6 +6577,9 @@ class FuncGen:
             if vt == "bool":
                 raise CompileError("foreach with & does not work on bools yet; assign by index: $xs[$i] = ...",
                                    s.line)
+            if is_map(st) and is_opt_scalar(vt):
+                raise CompileError(f"foreach with & does not work on {vt} map values yet; assign by key: "
+                                   f"$m[$k] = ...", s.line)
             self.vars[s.var] = vt
             self.refs.add(s.var)
         else:
@@ -3961,6 +6594,7 @@ class FuncGen:
         walked = root is not None
         if walked:
             self.iterating.append((root, props, s.line))
+        self.forget_written(s.body)
         head_flow = self.flow.copy()
         head, bodyl, stepl, end = (self.newlabel(x) for x in ("fe", "febody", "festep", "feend"))
         self.place_label(head)
@@ -4037,7 +6671,7 @@ class FuncGen:
             return
         if s.val is None:
             if self.ret != "void":
-                raise CompileError(f"{self.name}() must return {self.ret}", s.line)
+                raise CompileError(f"{self.shown} must return {self.ret}", s.line)
             self.ctor_done(s.line)
             self.tasks_done(s.line)
             self.flush_temps()
@@ -4047,13 +6681,27 @@ class FuncGen:
             self.emit_ret()
             self.flow.live = False
             return
+        if self.ret == "?infer":                # fn($x) => ... with no declared result: the body says (closures.md C3)
+            v, t, owned = self.expr(s.val)
+            if t in ("void", "null"):
+                raise CompileError("this closure's result has no type here: write it, fn($x): ?string => ...", s.line)
+            if is_heap(t) and not owned:
+                v = self.dup_str(v) if t == "string" else self.call("ptr", copy_fn(t), f"ptr {v}")
+            self.ret = t
+            self.flush_temps()
+            self.free_stashed()
+            self.free_pending()
+            self.free_owned()
+            self.emit_ret(v)
+            self.flow.live = False
+            return
         if self.ret == "void":
-            raise CompileError(f"{self.name}() is void and cannot return a value", s.line)
+            raise CompileError(f"{self.shown} is void and cannot return a value", s.line)
         if is_heap(self.ret):
             v, t = self.owned_value(s.val, self.ret, s.line, may_move_string=True)
         else:
             v, t = self.borrow(s.val, self.ret)
-        v = self.coerce(v, t, self.ret, s.line, f"return value of {self.name}()")
+        v = self.coerce(v, t, self.ret, s.line, f"return value of {self.shown}")
         self.tasks_done(s.line)                 # after the value: it may be what awaits them
         self.flush_temps()
         self.free_stashed()
@@ -4094,7 +6742,7 @@ class FuncGen:
                 self.emit_ret()
             else:
                 if self.flow.live:
-                    raise CompileError(f"{self.name}() can reach its end without returning {'an' if self.ret[0] in 'aeiou' else 'a'} {self.ret}. "
+                    raise CompileError(f"{self.shown} can reach its end without returning {'an' if self.ret[0] in 'aeiou' else 'a'} {self.ret}. "
                                        f"Add a return at the end (or in every branch)", self.line)
                 self.call("void", "@pn_noreturn", f"i32 {self.line}")
                 self.emit("unreachable")
@@ -4127,6 +6775,7 @@ TBAA = """
 !5 = !{!12, !12, i64 0}
 !10 = !{!"branch_weights", i32 2000, i32 1}
 !11 = !{!"branch_weights", i32 1, i32 2000}
+!15 = !{}
 """
 
 
@@ -4154,8 +6803,19 @@ def resolve_type(t, mid, imports, line, file=None):
     ("Order" in the main file, "shop::Order" for class Order of module shop)."""
     if t in ("int", "float", "bool", "string", "void", "db", "rows", "sub", "stream"):
         return t
+    if t.startswith("?"):
+        inner = resolve_type(t[1:], mid, imports, line, file)
+        if inner in ("void", "db", "rows", "sub", "stream") or is_task(inner):
+            raise CompileError(f"{inner} cannot be null: ?{inner} is not a type", line, file)
+        return "?" + inner
     if t.startswith("Task<"):
         return f"Task<{resolve_type(t[5:-1], mid, imports, line, file)}>"
+    if is_fn(t):
+        ps, r, th = fn_parts(t)
+        ps = [resolve_type(x, mid, imports, line, file) for x in ps]
+        if "void" in ps:
+            raise CompileError("an fn type's parameters cannot be void", line, file)
+        return fn_type(ps, resolve_type(r, mid, imports, line, file), th)
     if t.startswith("list<"):
         e = resolve_type(t[5:-1], mid, imports, line, file)
         if e in ("db", "rows", "sub", "stream"):
@@ -4182,22 +6842,213 @@ def resolve_type(t, mid, imports, line, file=None):
     key = f"{mid}::{t}" if mid else t
     if key in CLASSES:
         return key
+    if t == "Error":                            # the built-in error type has the same name in every module
+        return "Error"
     near = {"integer": "int", "boolean": "bool", "double": "float", "str": "string", "array": "list<int>"}
     raise CompileError(f"unknown type '{t}'" + (f" (did you mean {near[t]}?)" if t in near else
                        " (types: int, float, bool, string, list<T>, map<K,V>, db, rows, or a class name)"), line, file)
 
 
-def check_default(e, line):
-    """Property defaults are literals, like PHP's constant expressions."""
-    ok = e.kind in ("int", "float", "bool", "str") or (e.kind == "unary" and e.op == "-" and e.e.kind in ("int", "float"))
+def check_default(e, line, what="property"):
+    """Property and parameter defaults are literals, like PHP's constant expressions."""
+    ok = e.kind in ("int", "float", "bool", "str", "null") or (e.kind == "unary" and e.op == "-" and e.e.kind in ("int", "float"))
     if e.kind == "listlit":
-        ok = all(check_default(i, line) for i in e.items)
+        ok = all(check_default(i, line, what) for i in e.items)
     if e.kind == "maplit":
-        ok = all(check_default(k, line) and check_default(v, line) for k, v in e.pairs)
+        ok = all(check_default(k, line, what) and check_default(v, line, what) for k, v in e.pairs)
     if not ok:
-        raise CompileError("a property default must be a literal such as 0, 1.5, \"text\", true, [] or [1, 2]; set "
-                           "other values in __construct()", line)
+        raise CompileError(f"a {what} default must be a literal such as 0, 1.5, \"text\", true, null, [] or [1, 2]; "
+                           + ("set other values in __construct()" if what == "property" else
+                              "compute other values inside the function"), line)
     return True
+
+
+def decodable(t, seen=()):
+    """Can json_decode() build a value of type t? Why not, as a string, or None."""
+    t = strip_opt(t)                        # ?T: JSON null (or a missing field) gives null
+    if t in ("int", "float", "bool", "string"):
+        return None
+    if is_list(t):
+        return decodable(elem_of(t), seen)
+    if is_map(t):
+        k, v = map_kv(t)
+        return "a map with int keys (JSON keys are strings)" if k != "string" else decodable(v, seen)
+    if is_class(t) and t in CLASSES and not getattr(CLASSES[t], "builtin", False):
+        if t in seen:
+            return None
+        ci = CLASSES[t]
+        ctor = ci.methods.get("__construct")
+        if ctor:
+            for pt, pn, ref in ctor.params:
+                if ref:
+                    return f"{ci.name}::__construct() takes &${pn}"
+                why = decodable(pt, seen + (t,))
+                if why:
+                    return f"{ci.name}::__construct() parameter ${pn}: {why}"
+        else:
+            for f in ci.fields.values():
+                if f.vis == "public":
+                    why = decodable(f.type, seen + (t,))
+                    if why:
+                        return f"{ci.name}::${f.name}: {why}"
+        return None
+    return f"a value of type {t}"
+
+
+def gen_decoders(mods, order):
+    """json_decode() (design P2): for every class, Pin source for a function that reads it from JSON text, plus
+    one per list / map type its fields use. They call the __jd_* built-ins (runtime/jdecode.c), which work on
+    positions in the text. The source is parsed and added to the class's own module like hand-written code."""
+    for file in order:
+        mid, funcs, _, table, _ = mods[file]
+        helpers, out = {}, []
+
+        def tname(t):                               # the type as this module's source writes it
+            if is_opt(t):
+                return "?" + tname(t[1:])
+            if is_list(t):
+                return f"list<{tname(elem_of(t))}>"
+            if is_map(t):
+                k, v = map_kv(t)
+                return f"map<{k},{tname(v)}>"
+            if is_class(t):
+                ci = CLASSES[t]
+                if ci.mid == mid:
+                    return ci.name
+                alias = next(a for a, (tid, _) in table.items() if tid == ci.mid)
+                return f"{alias}::{ci.name}"
+            return t
+
+        def reader(t, pos):                          # an expression that decodes a value of type t at pos
+            if t in ("int", "float", "bool", "string"):
+                return f"try __jd_{t}($j, {pos})"
+            if is_class(t):
+                ci = CLASSES[t]
+                fn = f"__jd_C_{ci.name}"
+                if ci.mid != mid:
+                    fn = f"{tname(t).split('::')[0]}::{fn}"
+                return f"try {fn}($j, {pos})"
+            if t not in helpers:
+                name = f"__jd_T{len(helpers)}"
+                helpers[t] = name
+                if is_opt(t):
+                    out.append(f"""function {name}(string $j, int $p): {tname(t)} throws {{
+    if (__jd_null($j, $p)) {{ return null; }}
+    return {reader(t[1:], "$p")};
+}}""")
+                elif is_list(t):
+                    out.append(f"""function {name}(string $j, int $p): {tname(t)} throws {{
+    {tname(t)} $xs = [];
+    $q = try __jd_first($j, $p);
+    while ($q >= 0) {{
+        $v = {reader(elem_of(t), "$q")};
+        $xs[] = $v;
+        $q = __jd_next($j, $q);
+    }}
+    return $xs;
+}}""")
+                else:
+                    out.append(f"""function {name}(string $j, int $p): {tname(t)} throws {{
+    {tname(t)} $m = [];
+    $q = try __jd_mfirst($j, $p);
+    while ($q >= 0) {{
+        $v = {reader(map_kv(t)[1], "__jd_val($j, $q)")};
+        $m[__jd_key($j, $q)] = $v;
+        $q = __jd_mnext($j, $q);
+    }}
+    return $m;
+}}""")
+            return f"try {helpers[t]}($j, {pos})"
+
+        for ci in list(CLASSES.values()):
+            if ci.mid != mid or getattr(ci, "builtin", False) or decodable(ci.key):
+                continue
+            if not all(not is_class(t) or CLASSES[t].mid == mid or
+                       any(tid == CLASSES[t].mid for tid, _ in table.values())
+                       for t in decoder_types(ci.key)):
+                continue                            # names a class this module cannot write: no decoder
+            ctor = ci.methods.get("__construct")
+            names = [pn.lstrip("$") for _, pn, _ in ctor.params] if ctor else \
+                [f.name for f in ci.fields.values() if f.vis == "public"]
+            keys = ", ".join('"' + n + '"' for n in names)
+            body = [f"    $ok = try __jd_object($j, $p, [{keys}]);"] if names else \
+                ["    $ok = try __jd_object($j, $p, []);"]
+            if ctor:
+                defaults = getattr(ctor.node, "defaults", None) or [None] * len(ctor.params)
+                for i, ((pt, pn, _), d) in enumerate(zip(ctor.params, defaults)):
+                    key = pn.lstrip("$")
+                    if d is None and not is_opt(pt):
+                        body.append(f"    $a{i} = {reader(pt, f'try __jd_field($j, $p, \"{key}\")')};")
+                    else:                           # a parameter with a default, or ?T: the field may be left out
+                        body.append(f"    {tname(pt)} $a{i} = {literal_src(d) if d is not None else 'null'};")
+                        body.append(f"    if (__jd_has($j, $p, \"{key}\")) {{ $a{i} = "
+                                    f"{reader(pt, f'try __jd_field($j, $p, \"{key}\")')}; }}")
+                args = ", ".join(f"$a{i}" for i in range(len(ctor.params)))
+                body.append(f"    return {'try ' if ctor.throws else ''}new {ci.name}({args});")
+            else:
+                body.append(f"    $o = new {ci.name}();")
+                for f in ci.fields.values():
+                    if f.vis == "public":
+                        line = f"$o->{f.name} = {reader(f.type, f'try __jd_field($j, $p, \"{f.name}\")')};"
+                        if is_opt(f.type):          # may be left out: stays null
+                            line = f"if (__jd_has($j, $p, \"{f.name}\")) {{ {line} }}"
+                        body.append("    " + line)
+                body.append("    return $o;")
+            out.append(f"export function __jd_C_{ci.name}(string $j, int $p): {ci.name} throws {{\n"
+                       + "\n".join(body) + "\n}")
+        if out:
+            src = "\n\n".join(out) + "\n"
+            if os.environ.get("PIN_SHOW_DECODERS"):        # for working on this generator
+                print(src, file=sys.stderr)
+            try:
+                gfuncs, _, _, _ = Parser(lex(src)).program()
+            except CompileError as err:              # a bug in this generator, not in the program
+                raise CompileError(f"internal error generating json_decode() code: {err}\n{src}", 0, file)
+            for g in gfuncs:
+                g.generated = True
+            funcs.extend(gfuncs)
+
+
+def literal_src(e):
+    """Pin source for a literal node (a default value), for generated code."""
+    if e.kind == "null":
+        return "null"
+    if e.kind == "int":
+        return str(e.val)
+    if e.kind == "float":
+        return repr(float(e.val))
+    if e.kind == "bool":
+        return "true" if e.val else "false"
+    if e.kind == "str":
+        out = "".join({"\\": "\\\\", '"': '\\"', "$": "\\$", "\n": "\\n", "\t": "\\t", "\r": "\\r"}.get(c, c)
+                      for c in e.val)
+        return f'"{out}"'
+    if e.kind == "unary":
+        return "-" + literal_src(e.e)
+    if e.kind == "listlit":
+        return "[" + ", ".join(literal_src(i) for i in e.items) + "]"
+    if e.kind == "maplit":
+        return "[" + ", ".join(f"{literal_src(k)} => {literal_src(v)}" for k, v in e.pairs) + "]"
+    raise CompileError("internal error: not a literal", e.line)
+
+
+def decoder_types(t, seen=None):
+    """Every type a decoder for t touches (t itself, field and element types)."""
+    seen = set() if seen is None else seen
+    if t in seen:
+        return seen
+    seen.add(t)
+    if is_list(t):
+        decoder_types(elem_of(t), seen)
+    elif is_map(t):
+        decoder_types(map_kv(t)[1], seen)
+    elif is_class(t) and t in CLASSES:
+        ci = CLASSES[t]
+        ctor = ci.methods.get("__construct")
+        for ft in ([pt for pt, _, _ in ctor.params] if ctor else
+                   [f.type for f in ci.fields.values() if f.vis == "public"]):
+            decoder_types(ft, seen)
+    return seen
 
 
 def compile_file(path, src=None):
@@ -4265,7 +7116,11 @@ def compile_file(path, src=None):
                 except CompileError as err:
                     err.file = ci.file
                     raise
-            ci.fields[pr.name] = Field(pr.name, ft, pr.vis, pr.default, len(ci.fields), pr.line)
+            if is_fn(ft) and pr.default is not None:
+                raise CompileError(f"a property holding a function ({pr.name}) cannot have a default: set it in "
+                                   f"__construct", pr.line, ci.file)
+            ci.fields[pr.name] = Field(pr.name, ft, pr.vis, pr.default, ci.slots, pr.line)
+            ci.slots += nslots(ft)
         for m in ci.node.methods:
             if m.name in ci.methods:
                 raise CompileError(f"class {ci.name} has two methods called {m.name}()", m.line, ci.file)
@@ -4274,7 +7129,7 @@ def compile_file(path, src=None):
                 raise CompileError(f"{m.name}() has two parameters with the same name", m.line, ci.file)
             ci.methods[m.name] = Method(ci, m, ps, resolve_type(m.ret, ci.mid, ci.imports, m.line, ci.file))
         if "__construct" not in ci.methods:
-            bare = [f.name for f in ci.fields.values() if f.default is None]
+            bare = [f.name for f in ci.fields.values() if f.default is None and not is_opt(f.type)]
             if bare:
                 f = ci.fields[bare[0]]
                 raise CompileError(f"class {ci.name} has no __construct(), so every property needs a default "
@@ -4282,14 +7137,16 @@ def compile_file(path, src=None):
                                    f"${f.name}", ci.node.line, ci.file)
 
     def holds(t, target, seen):          # does a value of type t contain a `target` object directly?
-        if not is_class(t) or t in seen:
+        if not is_class(t) or t in seen:    # (a ?T property can be null, so it ends the chain: linked lists)
             return False
         return any(f.type == target or holds(f.type, target, seen | {t}) for f in CLASSES[t].fields.values())
     for ci in CLASSES.values():
         if holds(ci.key, ci.key, set()):
             raise CompileError(f"class {ci.name} contains itself through its properties, so no {ci.name} could ever "
-                               f"be built. Hold it in a list (list<{ci.name}>) or store an id instead",
-                               ci.node.line, ci.file)
+                               f"be built. Hold it in a list (list<{ci.name}>), make the property ?{ci.name}, or "
+                               f"store an id instead", ci.node.line, ci.file)
+    if any(re.search(r"json_decode|db_all|db_one", read_source(file)) for file in order):   # they share the readers
+        gen_decoders(mods, order)
     for file in order:
         mid, funcs, _, table, _ = mods[file]
         for f in funcs:
@@ -4303,7 +7160,10 @@ def compile_file(path, src=None):
             if any(holds_task(t) for t, _, _ in ps) or holds_task(resolve_type(f.ret, mid, table, f.line, file)):
                 raise CompileError("a task cannot be passed to or returned from a function: await it in the function "
                                    "that started it (concurrency.md C1)", f.line, file)
+            if any(r and is_fn(t) for t, _, r in ps):
+                raise CompileError("an fn parameter cannot be &", f.line, file)
             mod.params[key] = ps
+            mod.defaults[key] = getattr(f, "defaults", None)
             mod.funcs[key] = ([t for t, _, _ in ps], resolve_type(f.ret, mid, table, f.line, file))
             mod.exported[key] = getattr(f, "exported", False) or not mid
             mod.throws[key] = bool(getattr(f, "throws", False))
@@ -4539,7 +7399,7 @@ def pin_get(spec):
     return 0
 
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 
 USAGE = """pin — compile and run Pin programs (.pn)
 
@@ -4588,6 +7448,106 @@ def to_ir(path):
         sys.exit(1)
 
 
+# PRAGMAs that may take a value without changing the connection: they read (the argument names a table or
+# index) or they change the database file, which every connection sees anyway.
+PRAGMA_OK = {"table_info", "table_xinfo", "table_list", "index_info", "index_xinfo", "index_list",
+             "foreign_key_list", "foreign_key_check", "integrity_check", "quick_check", "user_version",
+             "application_id", "auto_vacuum", "incremental_vacuum", "page_size", "wal_checkpoint",
+             "optimize", "data_version", "schema_version", "freelist_count", "page_count"}
+
+
+def trusted_sql_vars(body, params):
+    """Variables whose every value is built from string literals only (postgres.md G6): every write to them is
+    `= <literal pieces>` or `.= <literal pieces>`, where a piece is a string literal or another such variable.
+    They may be passed to db_* as SQL: nothing a client sends can be part of their text. Flow-insensitive (all
+    writes in the function count), which is simple and sound."""
+    writes = {}
+
+    def scan(x):
+        if isinstance(x, (list, tuple)):
+            for y in x:
+                scan(y)
+            return
+        if not isinstance(x, Node):
+            return
+        if x.kind == "assign" and x.target.kind == "var":
+            writes.setdefault(x.target.name, []).append((x.op, x.val))
+        elif x.kind == "decl":
+            writes.setdefault(x.name, []).append(("=", x.val) if x.val is not None else None)
+        elif x.kind == "foreach":
+            for n in (x.key, x.var):
+                if n:
+                    writes.setdefault(n, []).append(None)
+        elif x.kind in ("try", "trystmt") and getattr(x, "var", None):
+            writes.setdefault(x.var, []).append(None)
+        elif x.kind == "ref" and x.e.kind == "var":
+            writes.setdefault(x.e.name, []).append(None)
+        for k, v in x.__dict__.items():
+            if k not in ("kind", "line", "order", "first", "kills"):
+                scan(v)
+    scan(body)
+    for p in params:
+        writes.setdefault(p, []).append(None)
+    trusted = {n for n, ws in writes.items() if all(w is not None and w[0] in ("=", ".=") for w in ws)}
+
+    def pieces_ok(e, ok):
+        if e.kind == "str":
+            return True
+        if e.kind == "bin" and e.op == ".":
+            return pieces_ok(e.l, ok) and pieces_ok(e.r, ok)
+        return e.kind == "var" and e.name in ok
+
+    while True:                                 # drop variables with a non-literal piece until nothing changes
+        keep = {n for n in trusted if all(pieces_ok(v, trusted) for _, v in writes[n])}
+        if keep == trusted:
+            break
+        trusted = keep
+
+    def lits(e):
+        if e.kind == "str":
+            return [e.val]
+        return lits(e.l) + lits(e.r) if e.kind == "bin" else []
+    return {n: [t for _, v in writes[n] for t in lits(v)] for n in trusted}
+
+
+SQLITE_SETUP = ("Pin sets every SQLite connection up the same way (WAL, foreign_keys ON, 5 s busy timeout); "
+                "for data, use a normal table")
+PG_LOCAL = "For a setting one transaction needs, use SET LOCAL between BEGIN and COMMIT"
+
+
+def session_sql(sql):
+    """What in this SQL would change the connection for its next user (pool.md K4, postgres.md G4) and what to do
+    instead, or None. SQLite: a PRAGMA that sets a per-connection value, ATTACH / DETACH, TEMP objects.
+    PostgreSQL: SET without LOCAL, RESET, LISTEN / UNLISTEN, PREPARE / DEALLOCATE, DISCARD, LOAD, set_config(...,
+    false) and session advisory locks. Both rule sets apply to every db_* call: the database is chosen at run time."""
+    t = re.sub(r"'(?:[^']|'')*'|--[^\n]*|/\*.*?\*/", " ", sql, flags=re.S).lower()
+    m = re.match(r"\s*pragma\s+(?:\w+\.)?(\w+)\s*(=|\()?", t)
+    if m and m.group(2) and m.group(1) not in PRAGMA_OK:
+        return f"PRAGMA {m.group(1)} with a value", SQLITE_SETUP
+    m = re.match(r"\s*(attach|detach)\b", t)
+    if m:
+        return m.group(1).upper(), SQLITE_SETUP
+    if re.match(r"\s*create\s+(temp|temporary)\b", t):
+        return "CREATE TEMP", "Use a normal table (and delete its rows when done)"
+    m = re.match(r"\s*set\s+(\w+)(?:\s+(\w+))?", t)
+    if m and m.group(1) not in ("local", "transaction", "constraints"):
+        what = "SET ROLE" if m.group(1) == "role" else "SET SESSION AUTHORIZATION" if m.group(2) == "authorization" \
+            else "SET without LOCAL"
+        return what, PG_LOCAL
+    m = re.match(r"\s*(reset|listen|unlisten|prepare|deallocate|discard|load)\b", t)
+    if m:
+        return m.group(1).upper(), {"reset": PG_LOCAL, "prepare": "Pass values with ? placeholders: every query is "
+                                    "already sent with its values apart", "deallocate": "Pass values with ? placeholders"}.get(
+            m.group(1), "Pin's connections cannot keep per-connection state")
+    if re.search(r"\bset_config\s*\((?:[^()]|\([^()]*\))*,\s*false\s*\)", t):
+        return "set_config(..., false)", "Use set_config(name, value, true): it lasts until the transaction ends"
+    m = re.search(r"\b(pg_(?:try_)?advisory_lock(?:_shared)?)\s*\(", t)
+    if m:
+        return f"{m.group(1)}()", ("A session lock stays with the connection after the request: use "
+                                   "pg_advisory_xact_lock() inside BEGIN ... COMMIT")
+    return None
+
+
 def needs_sqlite(ir):
     """Only programs that call a db_* function link SQLite (every program *declares* them)."""
     return re.search(r"call [^\n]*@pn_db_", ir) is not None
@@ -4606,6 +7566,8 @@ def link(ir, out):
         with open(ll, "w") as f:
             f.write(ir)
         db = ["-DPIN_SQLITE", "-lsqlite3"] if needs_sqlite(ir) else []
+        if db and sys.platform.startswith("linux"):
+            db.append("-ldl")                   # PostgreSQL's libpq is loaded with dlopen (runtime/postgres.c)
         if os.environ.get("PIN_SANITIZE") == "1":
             # tests only (run_tests.py --sanitize): ASAN + UBSAN, built the way tools/sanitize.sh does (on Linux,
             # -O2 with -fsanitize=address fails on the runtime's assembly: "Undefined temporary symbol")
@@ -4615,8 +7577,12 @@ def link(ir, out):
                 r = subprocess.run(["clang", "-g", "-fsanitize=address,undefined", os.path.join(HERE, "runtime.c"), obj,
                                     "-lm", "-pthread", *db, "-o", out], capture_output=True, text=True)
         else:
-            r = subprocess.run(["clang", "-O2", "-pthread", "-Wno-override-module", ll, os.path.join(HERE, "runtime.c"),
-                                "-lm", *db, "-o", out], capture_output=True, text=True)
+            # each function and table in its own section, and the linker drops the unused ones: a program that
+            # never calls grapheme_* / normalizer_normalize() does not carry their Unicode tables
+            strip = "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections"
+            r = subprocess.run(["clang", "-O2", "-pthread", "-Wno-override-module", "-ffunction-sections",
+                                "-fdata-sections", ll, os.path.join(HERE, "runtime.c"), "-lm", *db, strip, "-o", out],
+                               capture_output=True, text=True)
     if r.returncode:
         if db and ("sqlite3.h" in r.stderr or "lsqlite3" in r.stderr):
             print("error: this program uses the database, which needs SQLite's development files. "

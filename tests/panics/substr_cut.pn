@@ -1,0 +1,2 @@
+// substr() with an offset inside a character (each Thai character is 3 bytes)
+echo substr("ไทย", 0, 4);

@@ -59,7 +59,7 @@ static Str *find_header(Str *name) {
             const char *v = colon + 1, *ve = e;
             while (v < ve && (*v == ' ' || *v == '\t')) v++;
             while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t')) ve--;
-            return str_from(v, ve - v);
+            return str_from_lossy(v, ve - v);       // headers may carry other bytes: U+FFFD for them
         }
         p = e + 2;
     }
@@ -69,6 +69,20 @@ static Str *find_header(Str *name) {
 Str *pn_request_header(Str *name) {
     Str *v = find_header(name);
     return v ? v : str_alloc(0);
+}
+
+// request_ip(): the address of the client's end of the connection ("203.0.113.7", "2001:db8::1"); "" outside a
+// request. Behind a proxy on the same machine this is the proxy (127.0.0.1): see tack::client_ip().
+Str *pn_request_ip(void) {
+    if (!cur_req || !cur_req->conn) return str_alloc(0);
+    struct sockaddr_storage sa;
+    socklen_t n = sizeof sa;
+    char buf[INET6_ADDRSTRLEN] = "";
+    if (getpeername(((Conn *)cur_req->conn)->fd, (struct sockaddr *)&sa, &n) != 0) return str_alloc(0);
+    if (sa.ss_family == AF_INET) inet_ntop(AF_INET, &((struct sockaddr_in *)&sa)->sin_addr, buf, sizeof buf);
+    else if (sa.ss_family == AF_INET6) inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&sa)->sin6_addr, buf, sizeof buf);
+    const char *ip = strncmp(buf, "::ffff:", 7) == 0 && strchr(buf + 7, '.') ? buf + 7 : buf;   // IPv4 in IPv6
+    return str_from(ip, (int64_t)strlen(ip));
 }
 
 int64_t pn_request_has_header(Str *name) {
@@ -181,7 +195,7 @@ static const char internal_error_body[] = "{\"error\":\"Internal Server Error\"}
 typedef struct {
     Conn *c;
     Str *method, *path, *body, *resp;
-    int keep;
+    int keep;               // 0 close after, 1 keep (HTTP/1.1), 2 keep and say so (HTTP/1.0 keep-alive)
     char what[120];         // "GET /path" for the log
 } RunArgs;
 
@@ -199,8 +213,8 @@ static void handler_task(void *arg) {
         req_kill_tasks(r);
         r->resp_hdr_len = 0; r->resp_has_ctype = 0;        // a 500 carries none of the handler's headers
         req_free_all(r);
-        fprintf(stderr, "  in request %s -> 500\n", ra->what);
-        r->status = 500;
+        r->status = r->panic_status ? r->panic_status : 500;
+        fprintf(stderr, "  in request %s -> %lld\n", ra->what, (long long)r->status);
         ra->resp = NULL;
         return;
     }
@@ -210,6 +224,55 @@ static void handler_task(void *arg) {
     if (r->panicked) die();                     // a task it started panicked after it finished waiting
 }
 
+// ---- request deadlines (design: pin-language/docs design/tack.md T6)
+// request_deadline(ms) puts the running request on this thread's list; the worker loop cancels it when the
+// time comes, the same way as when the client leaves: every wait of its tasks ends, now with 504, and the
+// answer is 504 whatever the handler returns afterwards. Computing loops are not interrupted (no waits).
+static __thread Req *dl_head;
+
+static void dl_unlink(Req *r) {
+    if (!r->dl_linked) return;
+    if (r->dl_prev) r->dl_prev->dl_next = r->dl_next; else dl_head = r->dl_next;
+    if (r->dl_next) r->dl_next->dl_prev = r->dl_prev;
+    r->dl_prev = r->dl_next = NULL;
+    r->dl_linked = 0;
+}
+
+void pn_request_deadline(int64_t ms) {
+    if (!cur_req || !cur_req->conn) return;      // outside a server request (a CLI program, a test): nothing
+    if (ms < 1 || ms > 3600000) panic_msg("request_deadline(): give 1 to 3600000 milliseconds");
+    int64_t at = now_ms() + ms;
+    if (cur_req->deadline && cur_req->deadline <= at) return;   // an earlier deadline stays
+    cur_req->deadline = at;
+    if (!cur_req->dl_linked) {
+        cur_req->dl_next = dl_head;
+        if (dl_head) dl_head->dl_prev = cur_req;
+        dl_head = cur_req;
+        cur_req->dl_linked = 1;
+    }
+}
+
+// Cancel the requests whose deadline passed; the ms until the next one, or -1.
+static int64_t deadlines_fire(int64_t now) {
+    int64_t next = -1;
+    for (Req *r = dl_head, *nx; r; r = nx) {
+        nx = r->dl_next;
+        if (now >= r->deadline) {
+            dl_unlink(r);
+            if (!r->cancelled) {
+                r->timed_out = 1;
+                r->cancelled = 1;
+                for (Task *t = r->tasks; t; t = t->req_next) wake_waiting(t);
+            }
+        } else if (next < 0 || r->deadline - now < next) {
+            next = r->deadline - now;
+        }
+    }
+    return next;
+}
+
+static const char timeout_body[] = "{\"error\":\"Gateway Timeout\"}";
+
 // The request's task ended: write the response (unless the client is gone) and free the request.
 static void request_done(Task *t) {
     RunArgs *ra = t->ctx;
@@ -218,22 +281,23 @@ static void request_done(Task *t) {
     if (c->streaming) {
         c->close_after = 1;                     // the handler wrote the body; the end of the stream is a close
     } else if (!c->orphan) {
-        int64_t st = r->status;
-        const char *body = ra->resp ? ra->resp->data : internal_error_body;
-        size_t blen = ra->resp ? (size_t)ra->resp->len : sizeof internal_error_body - 1;
+        int64_t st = r->timed_out ? 504 : r->status;
+        const char *body = r->timed_out ? timeout_body : ra->resp ? ra->resp->data : internal_error_body;
+        size_t blen = r->timed_out ? sizeof timeout_body - 1 : ra->resp ? (size_t)ra->resp->len : sizeof internal_error_body - 1;
         char head[160];
         int hn = snprintf(head, sizeof head, "HTTP/1.1 %lld %s\r\n%s", (long long)st, reason(st),
                           r->resp_has_ctype ? "" : "Content-Type: application/json\r\n");
         out_add(c, head, (size_t)hn);
         if (r->resp_hdr_len) out_add(c, r->resp_hdr, r->resp_hdr_len);
         hn = snprintf(head, sizeof head, "Content-Length: %lld\r\n%s\r\n", (long long)blen,
-                      ra->keep ? "" : "Connection: close\r\n");
+                      ra->keep == 2 ? "Connection: keep-alive\r\n" : ra->keep ? "" : "Connection: close\r\n");
         out_add(c, head, (size_t)hn);
         out_add(c, body, blen);
         if (!ra->keep) c->close_after = 1;
     }
     c->busy = NULL;
     task_unlink_req(t);
+    dl_unlink(r);                               // before the free: the deadline list must not point at it
     req_free_all(r);                            // the response body, method, path, body and anything left over
     free(r->hdr); free(r->resp_hdr); free(r);
     t->req = NULL;
@@ -322,7 +386,7 @@ static int handle_input(Conn *c) {
             } else if (ieq_prefix(p, e, "connection:")) {
                 char *v = p + 11; while (*v == ' ') v++;
                 if (ieq_prefix(v, e, "close")) keep = 0;
-                else if (ieq_prefix(v, e, "keep-alive")) keep = 1;
+                else if (ieq_prefix(v, e, "keep-alive")) keep = http10 ? 2 : 1;   // 2: HTTP/1.0 must be told
             }
             p = e + 2;
         }
@@ -330,6 +394,9 @@ static int handle_input(Conn *c) {
         if (bad) { refuse(c, bad); c->parsing = 0; return 0; }
         size_t hlen = (size_t)(hend - buf) + 4;
         if (avail < hlen + (size_t)clen) break;      // body not complete yet
+        if (!utf8_valid(buf, sp2 - buf) || !utf8_valid(hend + 4, clen)) {   // strings are UTF-8 (strings.md ST1)
+            refuse(c, 400); c->parsing = 0; return 0;
+        }
         start_request(c, buf, sp1, sp2, line_end + 2, hend, hend + 4, clen, keep);
         off += hlen + (size_t)clen;
     }
@@ -604,6 +671,8 @@ static void *worker(void *arg) {
             if (!c->dead) conn_progress(ep, c, now);
         }
         int64_t wait = timers_fire(now);
+        int64_t dl = deadlines_fire(now);
+        if (dl >= 0 && (wait < 0 || dl < wait)) wait = dl;
         if (ready_head) continue;
         int n = poll_wait(ep, evs, 256, wait < 0 || wait > 1000 ? 1000 : (int)wait);
         now = now_ms();
@@ -663,6 +732,8 @@ static void *worker(void *arg) {
         }
         if (now - last_scan >= 1000) {                        // once a second: drop clients that are too slow
             last_scan = now;
+            void (*scan)(int64_t) = __atomic_load_n(&pool_scan_hook, __ATOMIC_ACQUIRE);
+            if (scan) scan(now);                              // and close long-idle database connections
             for (Conn *c = conns.next, *nx; c != &conns; c = nx) {
                 nx = c->next;
                 if (c->busy && !(c->streaming && c->out_start && now - c->out_start > write_timeout_ms)) continue;
@@ -677,20 +748,9 @@ static void *worker(void *arg) {
     return NULL;
 }
 
-void pn_serve(int64_t port, Handler handler) {
-    if (!handler) panic_msg("serve(): no handler compiled in");
-    if (cur_task) {               // called from main's task: from here on this stack runs the scheduler
-        cur_task = NULL;
-        cur_req = NULL; cur_jmp = NULL;
-    }
-    pn_user_handler = handler;
-    signal(SIGPIPE, SIG_IGN);
-    setvbuf(stdout, NULL, _IOLBF, 0);
-    listen_port = (int)port;
-    read_timeout_ms = env_ms("PN_READ_TIMEOUT_MS", read_timeout_ms);
-    idle_timeout_ms = env_ms("PN_IDLE_TIMEOUT_MS", idle_timeout_ms);
-    write_timeout_ms = env_ms("PN_WRITE_TIMEOUT_MS", write_timeout_ms);
-    max_conns = env_ms("PN_MAX_CONNS", max_conns);
+// The number of worker threads serve() starts: PN_THREADS, else one per CPU (also used by the PostgreSQL pool's
+// connection count check).
+static int serve_threads(void) {
     int threads = 0;
     const char *env = getenv("PN_THREADS");
     if (env) threads = atoi(env);
@@ -703,6 +763,24 @@ void pn_serve(int64_t port, Handler handler) {
 #endif
         if (threads <= 0) threads = 1;
     }
+    return threads;
+}
+
+void pn_serve(int64_t port, Handler handler) {
+    if (!handler) panic_msg("serve(): no handler compiled in");
+    if (cur_task) {               // called from main's task: from here on this stack runs the scheduler
+        cur_task = NULL; stack_limit = NULL;
+        cur_req = NULL; cur_jmp = NULL;
+    }
+    pn_user_handler = handler;
+    signal(SIGPIPE, SIG_IGN);
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    listen_port = (int)port;
+    read_timeout_ms = env_ms("PN_READ_TIMEOUT_MS", read_timeout_ms);
+    idle_timeout_ms = env_ms("PN_IDLE_TIMEOUT_MS", idle_timeout_ms);
+    write_timeout_ms = env_ms("PN_WRITE_TIMEOUT_MS", write_timeout_ms);
+    max_conns = env_ms("PN_MAX_CONNS", max_conns);
+    int threads = serve_threads();
 #ifdef __APPLE__
     shared_listener = open_listener(listen_port);
 #endif

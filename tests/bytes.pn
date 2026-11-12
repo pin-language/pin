@@ -1,0 +1,8 @@
+// ord / chr / rawurlencode (PHP's): bytes, not characters. chr() above 127 panics (tests/panics/chr_high.pn)
+echo ord("A"), " ", ord(""), " ", ord("ไ"), " ", ord(mb_chr(200)), "\n";
+echo chr(72), chr(105), chr(-191), chr(256 + 33), "\n";
+echo rawurlencode("a b/c~ไ%&=+"), "\n";
+echo query_param("?q=" . rawurlencode("x & y/ไ+z"), "q"), "\n";
+$all = "";
+for ($i = 0; $i < 128; $i++) { $all = $all . chr($i); }
+echo strlen($all), " ", strlen(rawurlencode($all)), "\n";

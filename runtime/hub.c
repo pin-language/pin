@@ -160,11 +160,12 @@ typedef struct { int64_t code; Str *message; } PinError;
 static PinError *make_error(int64_t code, const char *msg) {
     PinError *e = xmalloc(sizeof *e);
     e->code = code;
-    e->message = str_from(msg, (int64_t)strlen(msg));
+    e->message = str_from_lossy(msg, (int64_t)strlen(msg));   // may quote another server's bytes, cut anywhere
     return e;
 }
 
 typedef struct { Str *value; PinError *err; } StrOrError;
+static PinError *cancel_error(const char *what);
 
 // hub_next($sub, $ms): the next message, waiting at most $ms (504 when none came; 507 when this reader was
 // too slow and messages were dropped; 499 when the request was cancelled).
@@ -185,7 +186,7 @@ StrOrError pn_hub_next(Sub *s, int64_t ms) {
         int over = s->overflow;
         pthread_mutex_unlock(&hub_mu);
         if (over) { r.err = make_error(507, "hub_next(): this reader fell more than 100 messages behind; messages were dropped"); return r; }
-        if (cancelled_now()) { r.err = make_error(499, "hub_next(): cancelled"); return r; }
+        if (cancelled_now()) { r.err = cancel_error("hub_next()"); return r; }
         if (!cur_task || now_ms() >= deadline) { r.err = make_error(504, "hub_next(): no message in time"); return r; }
         s->waiter = cur_task;
         cur_task->waiting_sub = s;
@@ -195,6 +196,14 @@ StrOrError pn_hub_next(Sub *s, int64_t ms) {
         heap_remove(cur_task);
         hub_forget_waiter(cur_task);
     }
+}
+
+// A wait that stopped because the request was cancelled: 504 when its deadline passed, 499 when the client left.
+static PinError *cancel_error(const char *what) {
+    char msg[160];
+    int late = cur_req && cur_req->timed_out;
+    snprintf(msg, sizeof msg, "%s: %s", what, late ? "the request's deadline passed" : "cancelled");
+    return make_error(late ? 504 : 499, msg);
 }
 
 PinError *pn_timeout_error(void) { return make_error(504, "await_timeout(): the task did not finish in time"); }

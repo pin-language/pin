@@ -32,6 +32,15 @@ void pn_list_push(List *l, int64_t esize, uint64_t bits) {
     l->len++;
 }
 
+// A new zeroed item at the end; for items bigger than pn_list_push's 8 bytes (?int / ?float are 16).
+void *pn_list_push_slot(List *l, int64_t esize) {
+    if (l->len == l->cap) pn_list_grow(l, esize);
+    void *p = (char *)l->data + l->len * esize;
+    memset(p, 0, (size_t)esize);
+    l->len++;
+    return p;
+}
+
 List *pn_list_copy(List *src, int64_t esize) {
     List *l = xmalloc(sizeof(List));
     l->len = src->len; l->cap = src->len > 0 ? src->len : 1;
@@ -49,6 +58,12 @@ void pn_list_free(List *l) {
 __attribute__((noreturn)) void pn_oob(int64_t i, int64_t len) {
     fflush(stdout);
     fprintf(stderr, "panic: index %lld out of range (list has %lld items)\n", (long long)i, (long long)len);
+    die();
+}
+
+__attribute__((noreturn)) void pn_badshift(int32_t line) {
+    fflush(stdout);
+    fprintf(stderr, "panic: shift by a negative number on line %d\n", line);
     die();
 }
 
@@ -101,6 +116,82 @@ static Str *str_from(const char *p, int64_t n) {
 }
 
 Str *pn_str_new(int64_t cap) { return str_alloc(cap); }
+
+static Str *str_add_bytes(Str *d, const char *p, int64_t n);
+void pn_str_free(Str *s);
+
+// ---- UTF-8 (design/strings.md ST1): every string is valid UTF-8. Operations on valid strings keep it valid;
+// text that comes in from outside is checked where it comes in: the request path and body are refused (400),
+// other text (a header, a database column, another server's answer) has bad bytes replaced by U+FFFD.
+
+// Length of the UTF-8 sequence at p (1-4), or 0 when it is not valid: overlong forms, surrogates
+// (U+D800-DFFF), values above U+10FFFF, stray continuation bytes and cut sequences are not.
+static int utf8_seq(const unsigned char *p, int64_t n) {
+    unsigned c = p[0];
+    if (c < 0x80) return 1;
+    if (c < 0xC2 || c > 0xF4) return 0;
+    int need = c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+    if (n < need) return 0;
+    unsigned lo = c == 0xE0 ? 0xA0 : c == 0xF0 ? 0x90 : 0x80, hi = c == 0xED ? 0x9F : c == 0xF4 ? 0x8F : 0xBF;
+    if (p[1] < lo || p[1] > hi) return 0;
+    for (int i = 2; i < need; i++) if ((p[i] & 0xC0) != 0x80) return 0;
+    return need;
+}
+
+// Offset of the first byte that does not start a valid sequence, or n when p[0..n) is all valid UTF-8.
+static int64_t utf8_check(const char *s, int64_t n) {
+    const unsigned char *p = (const unsigned char *)s;
+    int64_t i = 0;
+    while (i < n) {
+        if (i + 8 <= n) {                       // 8 ASCII bytes at a time
+            uint64_t w;
+            memcpy(&w, p + i, 8);
+            if (!(w & 0x8080808080808080ULL)) { i += 8; continue; }
+        }
+        if (p[i] < 0x80) { i++; continue; }
+        int k = utf8_seq(p + i, n - i);
+        if (!k) return i;
+        i += k;
+    }
+    return n;
+}
+
+static int utf8_valid(const char *p, int64_t n) { return utf8_check(p, n) == n; }
+
+// Bytes to skip for one U+FFFD: the longest start of a valid sequence (WHATWG's "maximal subpart"), at least 1.
+static int64_t utf8_bad_len(const unsigned char *p, int64_t n) {
+    unsigned c = p[0];
+    if (c < 0xC2 || c > 0xF4) return 1;
+    int need = c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+    unsigned lo = c == 0xE0 ? 0xA0 : c == 0xF0 ? 0x90 : 0x80, hi = c == 0xED ? 0x9F : c == 0xF4 ? 0x8F : 0xBF;
+    if (n < 2 || p[1] < lo || p[1] > hi) return 1;
+    int64_t i = 2;
+    while (i < need && i < n && (p[i] & 0xC0) == 0x80) i++;
+    return i;
+}
+
+// A string of p[0..n), with every invalid sequence replaced by U+FFFD (as browsers decode text).
+static Str *str_from_lossy(const char *p, int64_t n) {
+    int64_t i = utf8_check(p, n);
+    if (i == n) return str_from(p, n);
+    Str *d = str_alloc(n + 16);
+    int64_t start = 0;
+    while (i < n) {
+        d = str_add_bytes(d, p + start, i - start);
+        d = str_add_bytes(d, "\xEF\xBF\xBD", 3);
+        start = i + utf8_bad_len((const unsigned char *)p + i, n - i);
+        i = start + utf8_check(p + start, n - start);
+    }
+    return str_add_bytes(d, p + start, n - start);
+}
+
+// The same for a string the runtime built from outside bytes (an answer read in pieces): kept when valid.
+static Str *str_make_valid(Str *s) {
+    if (!s || utf8_valid(s->data, s->len)) return s;
+    Str *r = str_from_lossy(s->data, s->len);
+    pn_str_free(s);
+    return r;
+}
 
 void pn_str_free(Str *s) { if (s && s->cap >= 0) xfree(s); }
 
@@ -217,6 +308,22 @@ double pn_str_to_float(Str *s) {
     return strtod(buf, NULL);              // stops at the first character that does not fit
 }
 
+// ST3: positions count bytes, as in PHP, but a substr() that would cut a character in half panics: the byte at
+// the position must not be a continuation byte (10xxxxxx).
+static int substr_cuts(Str *s, int64_t at) { return at > 0 && at < s->len && (s->data[at] & 0xC0) == 0x80; }
+
+__attribute__((noreturn)) static void substr_panic(Str *s, int64_t at) {
+    fflush(stdout);
+    int64_t a = at;
+    while (a > 0 && (s->data[a] & 0xC0) == 0x80) a--;
+    int64_t b = a + 1;
+    while (b < s->len && (s->data[b] & 0xC0) == 0x80) b++;
+    fprintf(stderr, "panic: substr() would cut a character in half at byte %lld (the character \"%.*s\" is bytes "
+            "%lld-%lld). Use mb_substr() to count characters\n", (long long)at, (int)(b - a), s->data + a,
+            (long long)a, (long long)(b - 1));
+    die();
+}
+
 // PHP substr semantics, including negative start / length
 Str *pn_substr(Str *s, int64_t start, int64_t len, int64_t has_len) {
     int64_t n = s->len;
@@ -227,6 +334,7 @@ Str *pn_substr(Str *s, int64_t start, int64_t len, int64_t has_len) {
         if (len < 0) { end = n + len; if (end < start) return str_alloc(0); }
         else if (len < n - start) end = start + len;
     }
+    if (substr_cuts(s, start) || substr_cuts(s, end)) substr_panic(s, substr_cuts(s, start) ? start : end);
     return str_from(s->data + start, end - start);
 }
 
@@ -272,6 +380,8 @@ Str *pn_str_trim(Str *s) {
 // ============================================================================ maps
 
 // kinds: 0 int, 1 float, 2 bool, 3 string, 4 owned pointer (list, map or object; freed by compiled code)
+// alive: 0 deleted, 1 in use; 3 = in use and null, for ?int / ?float / ?bool values (value kinds 8, 9, 10: the
+// compiled code reads and writes that bit, 8 bytes after the value slot)
 typedef struct { uint64_t hash, key, val; int64_t alive; } Entry;
 typedef struct {
     int64_t count;          // first field so count() is one load, same as lists
@@ -404,6 +514,7 @@ Map *pn_map_copy(Map *src) {
         if (!e->alive) continue;
         uint64_t *slot = pn_map_slot(m, e->key, 1);
         *slot = src->vk == 3 ? (uint64_t)pn_str_dup((Str *)e->val) : e->val;
+        if (src->vk >= 8) ((Entry *)((char *)slot - offsetof(Entry, val)))->alive = e->alive;   // null bit
     }
     return m;
 }
@@ -455,13 +566,18 @@ static Str *json_value(Str *d, uint64_t bits, int kind) {
     }
 }
 
+// kind 8 / 9 / 10: ?int / ?float / ?bool items, the value and then a "has a value" byte ({ i64, i1 } is 16 bytes,
+// { i1, i1 } is 2)
 Str *pn_json_add_list(Str *d, List *l, int64_t kind) {
+    int64_t vk = kind & 7, vsize = vk == 2 ? 1 : 8, esize = kind >= 8 ? (vk == 2 ? 2 : 16) : vsize;
     d = str_add_bytes(d, "[", 1);
     for (int64_t i = 0; i < l->len; i++) {
         if (i) d = str_add_bytes(d, ",", 1);
+        const char *item = (char *)l->data + i * esize;
+        if (kind >= 8 && !item[vsize]) { d = str_add_bytes(d, "null", 4); continue; }
         uint64_t bits = 0;
-        memcpy(&bits, (char *)l->data + i * (kind == 2 ? 1 : 8), kind == 2 ? 1 : 8);
-        d = json_value(d, bits, (int)kind);
+        memcpy(&bits, item, (size_t)vsize);
+        d = json_value(d, bits, (int)vk);
     }
     return str_add_bytes(d, "]", 1);
 }
@@ -482,7 +598,8 @@ Str *pn_json_add_map(Str *d, Map *m) {
         if (!e->alive) continue;
         if (!first) d = str_add_bytes(d, ",", 1);
         first = 0;
-        d = json_value(json_key(d, m, e), e->val, m->vk);
+        d = json_key(d, m, e);
+        d = m->vk >= 8 && (e->alive & 2) ? str_add_bytes(d, "null", 4) : json_value(d, e->val, m->vk & 7);
     }
     return str_add_bytes(d, "}", 1);
 }
@@ -490,6 +607,24 @@ Str *pn_json_add_map(Str *d, Map *m) {
 Str *pn_json_map(Map *m) { return pn_json_add_map(str_alloc(16 + m->count * 16), m); }
 
 Str *pn_json_str(Str *s) { return json_string(NULL, s->data, s->len); }
+
+// Bytes from a database as a JSON string, or as JSON text as it is: U+FFFD where they are not UTF-8 (a SQLite
+// TEXT column can hold any bytes; so can a PostgreSQL database in the SQL_ASCII encoding).
+__attribute__((unused)) static Str *json_text(Str *d, const char *p, int64_t n) {
+    if (utf8_valid(p, n)) return json_string(d, p, n);
+    Str *t = str_from_lossy(p, n);
+    d = json_string(d, t->data, t->len);
+    pn_str_free(t);
+    return d;
+}
+
+__attribute__((unused)) static Str *add_text(Str *d, const char *p, int64_t n) {
+    if (utf8_valid(p, n)) return str_add_bytes(d, p, n);
+    Str *t = str_from_lossy(p, n);
+    d = str_add_bytes(d, t->data, t->len);
+    pn_str_free(t);
+    return d;
+}
 Str *pn_json_float(double v) { return json_float(NULL, v); }
 Str *pn_json_add_str(Str *d, Str *s) { return json_string(d, s->data, s->len); }
 Str *pn_json_add_float(Str *d, double v) { return json_float(d, v); }
@@ -505,6 +640,25 @@ typedef Str *(*JsonFn)(Str *, void *);
 
 void *pn_obj_new(int64_t size) { return xcalloc((size_t)size); }
 void pn_obj_free(void *o) { xfree(o); }
+
+/* fn values (closures.md): a pointer to a block { code, free, copy, captured values... }. A named function's block
+   is a constant and a local closure's is on its maker's stack: both have free = NULL. A closure that is returned or
+   stored owns its block and what it captured; its free / copy are generated for it. A local closure's copy makes
+   such an owned block; one with use (&$x) cannot be copied (it points at a variable of its maker). */
+typedef struct FnBlock { void *code; void (*free)(void *); void *(*copy)(void *); } FnBlock;
+void pn_fn_free(void *p) {
+    FnBlock *b = p;
+    if (b && b->free) b->free(p);
+}
+void *pn_fn_copy(void *p) {
+    FnBlock *b = p;
+    return b->copy ? b->copy(p) : p;
+}
+void *pn_fn_nocopy(void *p) {
+    (void)p;
+    panic_msg("a closure with use (&...) cannot be copied or kept: it changes a variable of the function that "
+              "made it (closures.md C5). Return the new value from the closure instead");
+}
 
 void pn_list_free_with(List *l, FreeFn f) {
     if (!l) return;

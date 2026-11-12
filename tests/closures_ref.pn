@@ -1,0 +1,51 @@
+<?php
+// use (&$x): closures that change variables of the function that made them (closures.md C5)
+function each_item(list<int> $xs, fn(int): void $f): void {
+    foreach ($xs as $x) { $f($x); }
+}
+$count = 0;
+$sum = 0;
+array_map(function ($x) use (&$count): int { $count++; return $x * 2; }, [1, 2, 3]);
+echo $count, "\n";
+each_item([4, 5, 6], function ($x) use (&$sum, &$count): void { $sum += $x; $count++; });
+echo $sum, " ", $count, "\n";
+list<string> $names = [];
+$add = function (string $n) use (&$names): void { $names[] = strtoupper($n); };
+$add("a");
+$add("bee");
+echo count($names), " ", $names[1], "\n";
+$log = "";
+$say = function (string $m) use (&$log): void { $log .= $m . ";"; };
+$say("x");
+$say("yz");
+echo $log, "\n";
+$names[] = "c";
+$add("d");
+echo implode(",", $names), "\n";
+$tot = 0;
+$xs = [3, 1, 2];
+usort($xs, function ($a, $b) use (&$tot): int { $tot++; return $a <=> $b; });
+echo implode(",", $xs), " ", $tot > 0, "\n";
+$m = ["a" => 1];
+$put = function (string $k, int $v) use (&$m): void { $m[$k] = $v; };
+$put("b", 2);
+echo json_encode($m), "\n";
+$h = fn() => 1;
+$calls = 0;
+$g = function () use (&$calls): int { $calls++; return $calls; };
+echo $g() + 0, "\n";
+
+// closures calling closures that change things
+$n = 0;
+$inc = function () use (&$n): void { $n++; };
+$twice = function () use ($inc): void { $inc(); $inc(); };
+$twice();
+$twice();
+echo $n, "\n";
+list<int> $xs = [1];
+$push = function () use (&$xs): void { $xs[] = count($xs); };
+$both = function () use (&$xs, $push): int { $push(); return count($xs); };
+echo $both(), " ", $both(), "\n";
+$s = "";
+array_map(function (int $i) use (&$s): int { $s .= strval($i); return $i; }, [1, 2, 3]);
+echo $s, "\n";

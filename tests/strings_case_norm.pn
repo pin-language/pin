@@ -1,0 +1,17 @@
+// mb_strtolower / mb_strtoupper (full Unicode case, final sigma) and normalizer_normalize (NFC, NFD, NFKC, NFKD)
+echo mb_strtoupper("straße ǆ ﬁ ไทย"), "|", mb_strtolower("ΟΔΥΣΣΕΥΣ Σ ΑΣ. ΑΣΑ İ"), "|", strtolower("ÄB"), "\n";
+$composed = "café";
+$parts = "cafe" . mb_chr(769);
+echo strlen($composed), " ", strlen($parts), " ", $composed == $parts ? "==" : "!=", " ",
+     normalizer_normalize($parts) == $composed ? "NFC equal" : "NFC differs", " ",
+     strlen(normalizer_normalize($composed, Normalizer::FORM_D)), "\n";
+echo normalizer_normalize("ﬁ ① ㎏ Ⅳ", Normalizer::FORM_KC), "|", normalizer_normalize("ﬁ", Normalizer::FORM_C), "\n";
+$am = "น้ำ";                                    // ำ as one code point
+$am2 = "น้" . mb_chr(3661) . mb_chr(3634);      // ํ + า, the other spelling
+echo $am == $am2 ? "==" : "!=", " ", normalizer_normalize($am, Normalizer::NFKC) == normalizer_normalize($am2, Normalizer::NFKC) ? "NFKC equal" : "NFKC differs", "\n";
+$h = "한국어";
+echo strlen($h), " ", strlen(normalizer_normalize($h, Normalizer::FORM_D)), " ",
+     normalizer_normalize(normalizer_normalize($h, Normalizer::FORM_D)) == $h ? "round trip" : "broken", "\n";
+echo normalizer_normalize("plain ascii"), " ", mb_strtolower(""), "|", normalizer_normalize(""), "|\n";
+// a mark order that NFC must sort: q + dot below (220) after dot above (230)
+echo normalizer_normalize("q" . mb_chr(775) . mb_chr(803)) == "q" . mb_chr(803) . mb_chr(775) ? "sorted" : "not sorted", "\n";

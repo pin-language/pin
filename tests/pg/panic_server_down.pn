@@ -1,0 +1,2 @@
+<?php
+$db = db_open(env("PIN_TEST_PG_DOWN"));

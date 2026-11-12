@@ -1,0 +1,1 @@
+panic: db_exec(): one SQL statement per call (call it again for the next statement)

@@ -9,11 +9,94 @@
 #ifdef PIN_SQLITE
 #include <sqlite3.h>
 
-typedef struct { sqlite3 *h; void *res; char err[256]; } Db;
-typedef struct { sqlite3_stmt *st; void *res; int state; } Rows;      // state: 0 before first row, 1 row, 2 done
+// pg: a PostgreSQL connection instead of h (postgres.c); slot: its pool slot, -1 = not pooled
+typedef struct { sqlite3 *h; void *res; int slot; char err[256]; struct PGconn *pg; } Db;
+// pg: a PostgreSQL result instead of st, read row by row; state: 0 before first row, 1 row, 2 done
+typedef struct { sqlite3_stmt *st; void *res; int state; struct PGresult *pg; int row; } Rows;
 
-static void db_res_close(void *o) { Db *d = o; if (d->h) sqlite3_close_v2(d->h); d->h = NULL; }
-static void rows_res_close(void *o) { Rows *r = o; if (r->st) sqlite3_finalize(r->st); r->st = NULL; }
+// ---------------------------------------------------------------- the pool (pin-language/docs design/pool.md)
+// Opening a connection costs ~80-200 µs (file, WAL, pragmas); a query by key ~3 µs. Pin has no globals, so
+// every request opens its own `db`: the runtime keeps the connections instead, per thread and per path. Tasks
+// never leave their thread, so the pool needs no locks. A connection comes back only clean (no transaction,
+// no statement half-way); after a panic or a cancelled request it is closed. ":memory:" and temporary
+// databases ("") are never pooled: each open must be a fresh, empty database.
+#define POOL_KEYS 16
+#define POOL_WAIT_MS 5000
+typedef struct PoolConn { sqlite3 *h; int64_t since; struct PoolConn *next; } PoolConn;
+typedef struct { char path[256]; int max, idle_ms; } PoolCfg;
+typedef struct { char path[256]; PoolConn *idle; int open; } PoolSlot;
+static PoolCfg pool_cfg[POOL_KEYS];                   // db_pool(): written by the top level before serve() starts threads
+static int pool_ncfg;
+static __thread PoolSlot pool_slots[POOL_KEYS];
+static __thread int pool_nslots;
+
+static int pool_poolable(const char *path) {
+    return path[0] && !strstr(path, ":memory:") && !strstr(path, "mode=memory") && strlen(path) < 256;
+}
+static PoolCfg pool_config(const char *path) {
+    for (int i = 0; i < pool_ncfg; i++) if (strcmp(pool_cfg[i].path, path) == 0) return pool_cfg[i];
+    PoolCfg c = {"", 4, 60000};
+    return c;
+}
+static void pg_scan(int64_t now);
+static void pg_close_all(void);
+static void pool_scan(int64_t now) {                  // the server's once-a-second scan: close long-idle connections
+    pg_scan(now);
+    for (int i = 0; i < pool_nslots; i++) {
+        PoolSlot *sl = &pool_slots[i];
+        int idle_ms = pool_config(sl->path).idle_ms;
+        for (PoolConn **pp = &sl->idle; *pp;) {
+            PoolConn *c = *pp;
+            if (now - c->since < idle_ms) { pp = &c->next; continue; }
+            *pp = c->next;
+            sqlite3_close_v2(c->h);
+            free(c);
+            sl->open--;
+        }
+    }
+}
+static void pool_close_all(void) {                    // at exit: this thread's idle connections (LeakSanitizer)
+    pg_close_all();
+    for (int i = 0; i < pool_nslots; i++)
+        for (PoolConn *c = pool_slots[i].idle, *n; c; c = n) { n = c->next; sqlite3_close_v2(c->h); free(c); }
+    pool_nslots = 0;
+}
+static pthread_once_t pool_once = PTHREAD_ONCE_INIT;
+static void pool_init(void) { atexit(pool_close_all); __atomic_store_n(&pool_scan_hook, pool_scan, __ATOMIC_RELEASE); }
+static int pool_slot(const char *path) {
+    for (int i = 0; i < pool_nslots; i++) if (strcmp(pool_slots[i].path, path) == 0) return i;
+    if (pool_nslots == POOL_KEYS) return -1;          // more databases than slots: open and close as before
+    PoolSlot *sl = &pool_slots[pool_nslots];
+    snprintf(sl->path, sizeof sl->path, "%s", path);
+    sl->idle = NULL; sl->open = 0;
+    return pool_nslots++;
+}
+// Give a connection back, or close it when it may not be clean.
+static void pool_release(int slot, sqlite3 *h) {
+    PoolSlot *sl = &pool_slots[slot];
+    int keep = !(cur_req && (cur_req->cancelled || cur_req->panicked));
+    if (keep && !sqlite3_get_autocommit(h)) {         // a transaction left open: never let it reach the next user
+        sqlite3_exec(h, "ROLLBACK", NULL, NULL, NULL);
+        keep = sqlite3_get_autocommit(h);
+    }
+    for (sqlite3_stmt *st = keep ? sqlite3_next_stmt(h, NULL) : NULL; st; st = sqlite3_next_stmt(h, st))
+        if (sqlite3_stmt_busy(st)) { keep = 0; break; }   // a result set still being read belongs to its owner
+    if (!keep) { sqlite3_close_v2(h); sl->open--; return; }
+    PoolConn *c = malloc(sizeof *c);
+    if (!c) { sqlite3_close_v2(h); sl->open--; return; }
+    c->h = h; c->since = now_ms(); c->next = sl->idle;
+    sl->idle = c;
+}
+
+static void pg_close_conn(Db *d);
+static void db_res_close(void *o) {                   // a panic: close, never return to the pool
+    Db *d = o;
+    pg_close_conn(d);
+    if (d->h) { sqlite3_close_v2(d->h); if (d->slot >= 0) pool_slots[d->slot].open--; }
+    d->h = NULL;
+}
+static void pq_clear_rows(Rows *r);
+static void rows_res_close(void *o) { Rows *r = o; if (r->st) sqlite3_finalize(r->st); r->st = NULL; pq_clear_rows(r); }
 
 __attribute__((noreturn)) static void db_panic(const char *what, const char *detail) {
     fflush(stdout);
@@ -21,7 +104,17 @@ __attribute__((noreturn)) static void db_panic(const char *what, const char *det
     die();
 }
 
-Db *pn_db_open(Str *path) {
+// Inside a request the panic answers 503 instead of 500: the database is there but out of reach for now (every
+// pooled connection stayed busy, or the server does not answer). B15: db_open() does not fail with an error
+// value, so this is still a panic, only with the status that tells clients to try again.
+__attribute__((noreturn)) static void db_unavailable(const char *what, const char *detail) {
+    if (cur_req) cur_req->panic_status = 503;
+    db_panic(what, detail);
+}
+
+#include "postgres.c"
+
+static sqlite3 *db_connect(Str *path) {
     sqlite3 *h = NULL;
     int rc = sqlite3_open_v2(path->data, &h, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, NULL);
     if (rc != SQLITE_OK) {
@@ -32,16 +125,72 @@ Db *pn_db_open(Str *path) {
     }
     sqlite3_busy_timeout(h, 5000);                       // wait for other writers instead of failing at once
     sqlite3_exec(h, "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
+    return h;
+}
+
+Db *pn_db_open(Str *path) {
+    if (pg_url(path->data)) return pg_open(path);
+    sqlite3 *h = NULL;
+    int slot = -1;
+    if (pool_poolable(path->data)) {
+        pthread_once(&pool_once, pool_init);
+        slot = pool_slot(path->data);
+    }
+    if (slot >= 0) {
+        int max = pool_config(path->data).max;
+        int64_t give_up = now_ms() + POOL_WAIT_MS;
+        for (;;) {
+            PoolSlot *sl = &pool_slots[slot];
+            if (sl->idle) {
+                PoolConn *c = sl->idle;
+                sl->idle = c->next;
+                h = c->h;
+                free(c);
+                break;
+            }
+            if (sl->open < max) { h = db_connect(path); sl->open++; break; }
+            if (cur_req && cur_req->cancelled) db_panic("db_open()", "the request ended while waiting for a connection");
+            if (now_ms() >= give_up) {
+                char msg[200];
+                snprintf(msg, sizeof msg, "all %d connections of this thread to %s stayed in use for %d s "
+                         "(raise the limit with db_pool(), or close a $db before waiting)", max, path->data, POOL_WAIT_MS / 1000);
+                db_unavailable("db_open()", msg);
+            }
+            pn_sleep(2);                                  // other tasks on this thread run meanwhile
+        }
+    } else {
+        h = db_connect(path);
+    }
     Db *d = xmalloc(sizeof(Db));
-    d->h = h; d->err[0] = 0;
+    d->h = h; d->pg = NULL; d->slot = slot; d->err[0] = 0;
     d->res = pn_res_add(db_res_close, d);
     return d;
+}
+
+// db_pool($path, $per_thread, $idle_ms): only at the top level (the compiler checks), before serve().
+void pn_db_pool(Str *path, int64_t per_thread, int64_t idle_ms) {
+    if (per_thread < 1 || per_thread > 1000) db_panic("db_pool()", "connections per thread must be 1 to 1000");
+    if (idle_ms < 0 || idle_ms > 86400000) db_panic("db_pool()", "the idle time must be 0 to 86400000 ms (one day)");
+    if (!pool_poolable(path->data)) db_panic("db_pool()", "\":memory:\" and temporary databases are never pooled");
+    int i = 0;
+    while (i < pool_ncfg && strcmp(pool_cfg[i].path, path->data) != 0) i++;
+    if (i == POOL_KEYS) db_panic("db_pool()", "at most 16 databases can be configured");
+    snprintf(pool_cfg[i].path, sizeof pool_cfg[i].path, "%s", path->data);
+    pool_cfg[i].max = (int)per_thread; pool_cfg[i].idle_ms = (int)idle_ms;
+    if (i == pool_ncfg) pool_ncfg++;
 }
 
 void pn_db_close(Db *d) {
     if (!d) return;
     pn_res_remove(d->res);
-    if (d->h) sqlite3_close_v2(d->h);
+    if (d->pg) {
+        if (d->slot >= 0) pg_release(d);
+        else pg_close_conn(d);
+    }
+    if (d->h) {
+        if (d->slot >= 0) pool_release(d->slot, d->h);
+        else sqlite3_close_v2(d->h);
+    }
     xfree(d);
 }
 
@@ -49,6 +198,7 @@ void pn_rows_free(Rows *r) {
     if (!r) return;
     pn_res_remove(r->res);
     if (r->st) sqlite3_finalize(r->st);
+    pq_clear_rows(r);
     xfree(r);
 }
 
@@ -91,6 +241,7 @@ static sqlite3_stmt *db_prepare(Db *d, Str *sql, List *params, int64_t kind, con
 // INSERT / UPDATE / DELETE / CREATE ...: rows changed, or -1 when a constraint (UNIQUE, NOT NULL, CHECK,
 // FOREIGN KEY) refused it — db_error() says which. Any other failure is a bug in the SQL: panic.
 int64_t pn_db_exec(Db *d, Str *sql, List *params, int64_t kind) {
+    if (d->pg) return pg_exec(d, sql, params, kind);
     sqlite3_stmt *st = db_prepare(d, sql, params, kind, "db_exec()");
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {}
@@ -106,14 +257,16 @@ int64_t pn_db_exec(Db *d, Str *sql, List *params, int64_t kind) {
 }
 
 Rows *pn_db_query(Db *d, Str *sql, List *params, int64_t kind) {
+    if (d->pg) return pg_rows(d, sql, params, kind);
     sqlite3_stmt *st = db_prepare(d, sql, params, kind, "db_query()");
     Rows *r = xmalloc(sizeof(Rows));
-    r->st = st; r->state = 0;
+    r->st = st; r->state = 0; r->pg = NULL; r->row = -1;
     r->res = pn_res_add(rows_res_close, r);
     return r;
 }
 
 int64_t pn_db_next(Rows *r) {
+    if (r->pg) return pg_next(r);
     if (!r->st || r->state == 2) return 0;
     int rc = sqlite3_step(r->st);
     if (rc == SQLITE_ROW) { r->state = 1; return 1; }
@@ -136,21 +289,49 @@ static int db_col(Rows *r, Str *name, const char *fn) {
     db_panic(fn, msg);
 }
 
-int64_t pn_db_int(Rows *r, Str *col) { return sqlite3_column_int64(r->st, db_col(r, col, "db_int()")); }
-double pn_db_float(Rows *r, Str *col) { return sqlite3_column_double(r->st, db_col(r, col, "db_float()")); }
-int64_t pn_db_is_null(Rows *r, Str *col) { return sqlite3_column_type(r->st, db_col(r, col, "db_is_null()")) == SQLITE_NULL; }
-
-Str *pn_db_string(Rows *r, Str *col) {
-    int i = db_col(r, col, "db_string()");
-    const unsigned char *p = sqlite3_column_text(r->st, i);
-    return p ? str_from((const char *)p, sqlite3_column_bytes(r->st, i)) : str_alloc(0);
+int64_t pn_db_int(Rows *r, Str *col) {
+    if (r->pg) return pg_int(r, col);
+    return sqlite3_column_int64(r->st, db_col(r, col, "db_int()"));
+}
+double pn_db_float(Rows *r, Str *col) {
+    if (r->pg) return pg_float(r, col);
+    return sqlite3_column_double(r->st, db_col(r, col, "db_float()"));
+}
+int64_t pn_db_is_null(Rows *r, Str *col) {
+    if (r->pg) return pq.getisnull(r->pg, r->row, pg_col(r, col, "db_is_null()"));
+    return sqlite3_column_type(r->st, db_col(r, col, "db_is_null()")) == SQLITE_NULL;
 }
 
-int64_t pn_db_last_id(Db *d) { return d->h ? sqlite3_last_insert_rowid(d->h) : 0; }
-Str *pn_db_error(Db *d) { return str_from(d->err, (int64_t)strlen(d->err)); }
+Str *pn_db_string(Rows *r, Str *col) {
+    if (r->pg) {
+        int i = pg_col(r, col, "db_string()");
+        return str_from_lossy(pq.getvalue(r->pg, r->row, i), pq.getlength(r->pg, r->row, i));
+    }
+    int i = db_col(r, col, "db_string()");
+    const unsigned char *p = sqlite3_column_text(r->st, i);
+    return p ? str_from_lossy((const char *)p, sqlite3_column_bytes(r->st, i)) : str_alloc(0);   // any bytes: ST1
+}
+
+int64_t pn_db_last_id(Db *d) {
+    if (d->pg) db_panic("db_last_id()", "PostgreSQL has no last insert id: add RETURNING id to the INSERT and read it "
+                        "with db_query(), e.g. db_query($db, \"INSERT INTO t (name) VALUES (?) RETURNING id\", [$name])");
+    return d->h ? sqlite3_last_insert_rowid(d->h) : 0;
+}
+// db_all() / db_one(): a row that does not fit the class (a column missing, one too many, a wrong type, or
+// the constructor refused it) is a bug in the program: panic with the reader's message ($[row].column: ...).
+void pn_db_row_panic(PinError *e, Str *what) {
+    fflush(stdout);
+    fprintf(stderr, "panic: %.*s: a row does not fit the class: %.*s (the SELECT's column names must be the "
+            "class's fields; SQLite has no booleans: 0 / 1 read as int)\n", (int)what->len, what->data,
+            (int)e->message->len, e->message->data);
+    die();
+}
+
+Str *pn_db_error(Db *d) { return str_from_lossy(d->err, (int64_t)strlen(d->err)); }
 
 // the whole result as a JSON array of objects, with JSON types from SQLite's (NULL -> null)
 Str *pn_db_json(Db *d, Str *sql, List *params, int64_t kind) {
+    if (d->pg) return pg_json(d, sql, params, kind);
     Rows *r = pn_db_query(d, sql, params, kind);         // a heap Rows, so a panic below can finalize it
     sqlite3_stmt *st = r->st;
     Str *out = str_add_bytes(NULL, "[", 1);
@@ -161,7 +342,7 @@ Str *pn_db_json(Db *d, Str *sql, List *params, int64_t kind) {
         for (int i = 0; i < n; i++) {
             if (i) out = str_add_bytes(out, ",", 1);
             const char *name = sqlite3_column_name(st, i);
-            out = json_string(out, name, (int64_t)strlen(name));
+            out = json_text(out, name, (int64_t)strlen(name));
             out = str_add_bytes(out, ":", 1);
             switch (sqlite3_column_type(st, i)) {
             case SQLITE_INTEGER: out = pn_str_add_int(out, sqlite3_column_int64(st, i)); break;
@@ -169,7 +350,7 @@ Str *pn_db_json(Db *d, Str *sql, List *params, int64_t kind) {
             case SQLITE_NULL: out = str_add_bytes(out, "null", 4); break;
             default: {
                 const char *p = (const char *)sqlite3_column_text(st, i);
-                out = json_string(out, p ? p : "", sqlite3_column_bytes(st, i));
+                out = json_text(out, p ? p : "", sqlite3_column_bytes(st, i));
             }
             }
         }

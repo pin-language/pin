@@ -1,0 +1,1 @@
+$limit is read by the closure in $small (line 4), so it cannot change while $small can still be called

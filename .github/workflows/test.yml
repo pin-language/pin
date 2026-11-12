@@ -11,6 +11,20 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    services:
+      # PostgreSQL for tests/pg and tests/server/pg.pn (service containers run on Linux runners only; macOS
+      # gets it from Homebrew below). An empty image on macOS skips the container.
+      postgres:
+        image: ${{ matrix.os == 'ubuntu-latest' && 'postgres:16' || '' }}
+        env:
+          POSTGRES_USER: pin
+          POSTGRES_PASSWORD: pin-test-only
+          POSTGRES_DB: pin_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pin" --health-interval 2s --health-timeout 5s --health-retries 20
+    env:
+      PIN_TEST_POSTGRES: postgres://pin:pin-test-only@127.0.0.1:5432/pin_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,15 +32,30 @@ jobs:
           python-version: "3.12"
       - name: Install clang (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y clang libsqlite3-dev
+        run: sudo apt-get update && sudo apt-get install -y clang libsqlite3-dev libpq5
+      - name: PostgreSQL (macOS, Homebrew)
+        if: runner.os == 'macOS'
+        run: |
+          brew install postgresql@16
+          brew services start postgresql@16
+          for i in $(seq 1 30); do /opt/homebrew/opt/postgresql@16/bin/pg_isready -h 127.0.0.1 && break; sleep 1; done
+          /opt/homebrew/opt/postgresql@16/bin/psql -h 127.0.0.1 -d postgres -c "CREATE ROLE pin LOGIN PASSWORD 'pin-test-only'"
+          /opt/homebrew/opt/postgresql@16/bin/createdb -h 127.0.0.1 -O pin pin_test
       - name: clang version
         run: clang --version
       - name: Test suite
         run: python3 tests/run_tests.py
       - name: Sanitizers (ASAN + UBSAN; leaks too on Linux)
         run: >
-          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn tests/classes.pn tests/nested.pn tests/errors_ok.pn tests/tasks.pn tests/hub.pn tests/json_nested.pn tests/run_client_errors.pn
+          tools/sanitize.sh tests/hello.pn tests/strmap.pn tests/arith.pn tests/flow.pn tests/json_float.pn tests/strings_list.pn tests/json_hostile.pn tests/db_basics.pn tests/db_lifetimes.pn tests/db_pool.pn tests/crypto.pn tests/json_decode.pn tests/bytes.pn tests/classes.pn tests/nested.pn tests/errors_ok.pn tests/tasks.pn tests/hub.pn tests/json_nested.pn tests/run_client_errors.pn tests/null_basics.pn tests/null_more.pn tests/null_linked.pn tests/null_json.pn tests/null_narrow.pn tests/null_ownership.pn tests/null_scalars.pn tests/null_scalar_class.pn tests/null_scalar_flow.pn tests/null_items.pn tests/null_items_class.pn tests/null_items_more.pn tests/strings_utf8.pn tests/strings_case_norm.pn tests/null_narrow_fields.pn tests/null_tasks.pn tests/db_classes.pn tests/literal_items.pn tests/php_helpers.pn tests/sprintf_date.pn tests/php_helpers2.pn tests/list_pop.pn tests/bitwise.pn tests/usort.pn tests/map_filter.pn tests/php_helpers3.pn tests/validate.pn tests/spaceship.pn tests/closures.pn tests/closures_more.pn tests/closures_ref.pn tests/closures_escape.pn tests/closures_owned.pn tests/closures_loops.pn
           examples/wordcount.pn examples/ownership.pn tests/bench/listsum.pn
+      - name: SHA-256 on x86 (SHA-NI when the CPU has it, then the portable code)
+        if: runner.os == 'Linux'
+        run: |
+          grep -m1 -o -w sha_ni /proc/cpuinfo || echo "this runner has no SHA-NI"
+          mkdir -p build && python3 pinac.py tests/crypto.pn -o build/crypto_x86
+          time build/crypto_x86 | diff - tests/expected/crypto.out
+          time PIN_SHA_SOFTWARE=1 build/crypto_x86 | diff - tests/expected/crypto.out
       - name: HTTP servers under ASAN + UBSAN (sanitize.sh cannot run programs that never exit)
         run: python3 tests/run_tests.py --sanitize
       - name: Installer (install.sh from this checkout into a temp folder)

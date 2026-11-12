@@ -1,0 +1,18 @@
+// array_pop / array_shift give ?T; json_encode with JSON_PRETTY_PRINT
+list<int> $xs = [1, 2, 3];
+$a = array_pop($xs);
+$b = array_shift($xs);
+echo $a ?? -1, " ", $b ?? -1, " ", json_encode($xs), "\n";
+list<string> $ss = ["x"];
+$s1 = array_pop($ss);
+$s2 = array_pop($ss);
+echo $s1 ?? "none", " ", $s2 ?? "none", " ", count($ss), "\n";
+list<list<int>> $ll = [[1], [2, 3]];
+$f = array_shift($ll);
+echo json_encode($f), json_encode($ll), "\n";
+list<bool> $bs = [true];
+$bb = array_pop($bs);
+echo $bb === null ? "null" : ($bb ? "true" : "false"), "\n";
+map<string,list<int>> $pm = ["b" => [1, 2], "c" => []];
+echo json_encode($pm, JSON_PRETTY_PRINT), "\n", json_encode(["d" => "x:{y}, \"q\""], JSON_PRETTY_PRINT), "\n";
+echo json_encode([1, 2], JSON_UNESCAPED_UNICODE), "\n";

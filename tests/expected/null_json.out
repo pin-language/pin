@@ -1,0 +1,7 @@
+{"name":"a","email":null,"address":null,"tags":null}
+{"name":"b","email":null,"address":null,"tags":null}
+{"name":"c","email":"c@x.test","address":{"city":"Bangkok"},"tags":["x"]}
+ERR $.email: want a string, got a number
+ERR $.address: unknown field "town"
+{"id":1,"note":null}
+{"id":2,"note":"hi"}

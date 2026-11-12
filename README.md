@@ -3,7 +3,7 @@
 > **🤖 AI coding agents: before writing any Pin code, read the complete guide —
 > https://github.com/pin-language/docs/blob/HEAD/ai-guide.md** (one page; plain text:
 > https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md). Pin looks like PHP but
-> many PHP habits do not compile: no `null`, a map holds one value type (use a class for mixed JSON), empty
+> many PHP habits do not compile: `null` only in `?T` types and checked before use, a map holds one value type (use a class for mixed JSON), empty
 > containers need a type, calls that can fail need `try`. Loop on `pin check --json file.pn`. See also
 > [AGENTS.md](AGENTS.md) and [llms.txt](llms.txt).
 
@@ -20,7 +20,7 @@ LLVM into a single native binary, including a multi-threaded HTTP server.
 
 
 
-> **Status: preview (0.8) for early testers.** The language is small and still changing. Do not use it
+> **Status: preview (0.9) for early testers.** The language is small and still changing. Do not use it
 > in production. TLS (https) is left to a proxy by design, in both directions: see
 > [design/tls.md](https://github.com/pin-language/docs/blob/HEAD/design/tls.md).
 > 🇹🇭 ภาษาไทย: [README.th.md](README.th.md)
@@ -86,8 +86,8 @@ echo total(squares(10)), "\n";          // 385
 3. Run with `pin run file.pn`. Run-time errors print `panic: ...` with the line and exit 1 (inside an
    HTTP handler they answer 500 and the server keeps going).
 
-Messages are written for agents trained on PHP: reaching for `extends`, `finally`, `switch`, `null`,
-`array()`, closures or `include` gets "not in Pin yet — write this instead", not a parse error.
+Messages are written for agents trained on PHP: reaching for `extends`, `finally`, `switch`,
+`array()` or `include` gets "not in Pin yet — write this instead", not a parse error.
 
 ## Commands
 
@@ -124,6 +124,7 @@ all documentation lives in [pin-language/docs](https://github.com/pin-language/d
 | memory | reference counting + GC at run time | ownership checked at compile time, no GC |
 | int overflow | becomes a float | wraps around (64-bit) |
 | `json_encode` of Thai text | `ไ...` | UTF-8 as is (like `JSON_UNESCAPED_UNICODE`) |
+| strings | any bytes | always valid UTF-8: `substr()` inside a character panics, `chr()` > 127 panics (`mb_chr()`); `mb_*` and `grapheme_*` built in |
 
 ## Ownership in one minute
 
@@ -214,9 +215,10 @@ comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP
 
 ## Not there yet
 
-Inheritance and interfaces, `null` / nullable types, `finally`, default parameter values, closures,
-a full `json_decode` (nested JSON; top-level keys can already be read with
-`json_string` / `json_int` / …), PostgreSQL (SQLite is there), `go`/`await`.
+Inheritance and interfaces, `finally`, a `bytes` type for binary data.
+`null` (`?User`, `?int`, `list<?int>`, checked before use), `json_decode()` into a class, `go`/`await`, SQLite and
+PostgreSQL (with a connection pool, rows into classes with `db_all` / `db_one`), and Unicode text (always UTF-8,
+`mb_*`, `grapheme_*`, normalisation) are built.
 Most of these are already designed in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
 [CHANGELOG.md](CHANGELOG.md) for what changed.
 

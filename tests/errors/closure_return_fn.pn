@@ -1,0 +1,3 @@
+<?php
+// an fn parameter is a loan: it cannot be returned (copy() it to keep one)
+function same(fn(int): int $f): fn(int): int { return $f; }

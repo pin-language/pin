@@ -5,6 +5,7 @@ function handle(string $method, string $path, string $body): string throws {
         return json_encode(["name" => request_header("x-name"), "has" => request_has_header("X-Name") ? "yes" : "no",
                             "missing" => request_header("X-Missing")]);
     }
+    if ($route == "/ip") { return json_encode(["ip" => request_ip()]); }
     if ($route == "/redirect") {
         http_status(302);
         response_header("Location", "/target");

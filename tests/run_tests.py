@@ -58,7 +58,7 @@ def fail(name, why):
 
 def build(src, out, emit_ll_only=False):
     cmd = PINAC + [src, "-o", out] + (["--emit-ll"] if emit_ll_only else [])
-    san = SANITIZE and os.sep + os.path.join("tests", "server") + os.sep in src
+    san = SANITIZE and any(os.sep + os.path.join("tests", d) + os.sep in src for d in ("server", "pg"))
     env = dict(os.environ, PIN_SANITIZE="1") if san else None
     return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
@@ -155,7 +155,7 @@ try:
     sys.path.insert(0, ROOT)
     import pinac  # noqa: E402
     listed = gram["repository"]["builtin-calls"]["match"]
-    missing = [b for b in sorted(pinac.BUILTINS) if b not in listed]
+    missing = [b for b in sorted(pinac.BUILTINS) if b not in listed and not b.startswith("__")]
     (ok if not missing else lambda n: fail(n, f"builtins missing from the grammar (run tools/gen_docs.py --docs ...): {missing}"))("vscode grammar")
 except (OSError, ValueError, KeyError) as e:
     fail("vscode grammar", repr(e))
@@ -347,7 +347,8 @@ if "--no-server" not in sys.argv:
             for path, want in [("/boom", (500, err500)), ("/ok", (200, '{"ok":true}')), ("/oob", (500, err500)), ("/objects", (500, err500)),
                                ("/notfound", (404, '{"error":"Not Found"}')), ("/odd", (500, err500)),
                                ("/caught", (200, '{"code":404,"message":"no such thing: /notfound"}')),
-                               ("/overflow", (500, err500)), ("/ok", (200, '{"ok":true}'))]:
+                               ("/overflow", (500, err500)), ("/deep", (500, err500)), ("/deep", (500, err500)),
+                               ("/ok", (200, '{"ok":true}'))]:
                 got = http_get(8085, path)
                 if got == want:
                     ok("GET " + path)
@@ -431,6 +432,9 @@ if "--no-server" not in sys.argv:
                     (("POST", "/items", '{"name":"tea","qty":5}'), (409, '{"error":"UNIQUE constraint failed: items.name"}')),
                     (("GET", "/items", None), (200, '[{"id":1,"name":"tea","qty":2}]')),
                     (("GET", "/boom", None), (500, '{"error":"Internal Server Error"}')),
+                    (("GET", "/tx-left", None), (200, '{"ok":true}')),
+                    (("GET", "/tx-boom", None), (500, '{"error":"Internal Server Error"}')),
+                    (("GET", "/leftovers", None), (200, '{"n":0}')),
                     (("GET", "/total", None), (200, '{"total":2}'))]:
                 got = http(8086, m, path, body)
                 (ok if got == want else lambda n: fail(n, f"want {want}\n        got  {got}"))(f"{m} {path}")
@@ -457,6 +461,22 @@ if "--no-server" not in sys.argv:
                 ok("200 parallel inserts on 4 threads, all stored")
             else:
                 fail("200 parallel inserts", f"statuses {sorted(set(results))}, total {total}")
+            held = []
+            ts = [threading.Thread(target=lambda: held.append(http(8086, "GET", "/hold"))) for _ in range(12)]
+            for th in ts:
+                th.start()
+            for th in ts:
+                th.join()
+            (ok if held.count((200, '{"held":true}')) == 12 else lambda n: fail(n, str(sorted(set(held)))[:300]))(
+                "12 requests holding their connection, 1 per thread (db_pool): the others wait, none fail")
+            held = []
+            ts = [threading.Thread(target=lambda: held.append(http(8086, "GET", "/hold-long")[0])) for _ in range(5)]
+            for th in ts:
+                th.start()
+            for th in ts:
+                th.join()
+            (ok if 503 in held and set(held) <= {200, 503} else lambda n: fail(n, str(held)))(
+                "a connection still busy after 5 s: 503, not 500 (B15; 5 requests, 4 threads, 1 connection each)")
         finally:
             proc.terminate()
             proc.wait(timeout=5)
@@ -508,10 +528,15 @@ if "--no-server" not in sys.argv:
             r = raw(8087, b"GET /echo-header HTTP/1.1\r\nX-Name:   Pin  \r\nConnection: close\r\n\r\n")
             check("request_header: case-insensitive, trimmed, \"\" when absent",
                   r.endswith('{"name":"Pin","has":"yes","missing":""}'), r)
+            r = raw(8087, b"GET /ip HTTP/1.1\r\nConnection: close\r\n\r\n")
+            check("request_ip(): the client's address", r.endswith('{"ip":"127.0.0.1"}'), r)
             r = raw(8087, b"GET /redirect HTTP/1.1\r\nConnection: close\r\n\r\n")
             check("response_header: Location and two Set-Cookie",
                   r.startswith("HTTP/1.1 302 Found\r\n") and "\r\nLocation: /target\r\n" in r
                   and r.count("Set-Cookie:") == 2, r)
+            r = raw(8087, b"GET /html HTTP/1.0\r\nConnection: keep-alive\r\n\r\n", wait=0.5)
+            check("HTTP/1.0 keep-alive: the answer says Connection: keep-alive (B13) and the connection stays",
+                  "\r\nConnection: keep-alive\r\n" in r and "<reset>" not in r, r)
             r = raw(8087, b"GET /html HTTP/1.1\r\nConnection: close\r\n\r\n")
             check("response_header: Content-Type replaces application/json",
                   "Content-Type: text/html; charset=utf-8\r\n" in r and "application/json" not in r, r)
@@ -529,6 +554,14 @@ if "--no-server" not in sys.argv:
             check("two different Content-Length values: 400", r.startswith("HTTP/1.1 400"), r)
             r = raw(8087, b"POST /x HTTP/1.1\r\nContent-Length: 5x\r\n\r\nhello")
             check("a Content-Length that is not digits: 400", r.startswith("HTTP/1.1 400"), r)
+            r = raw(8087, b"POST /x HTTP/1.1\r\nContent-Length: 3\r\nConnection: close\r\n\r\na\xc8b")
+            check("a body that is not UTF-8: 400 before the handler (strings.md ST1)", r.startswith("HTTP/1.1 400"), r)
+            r = raw(8087, b"GET /x\xff HTTP/1.1\r\nConnection: close\r\n\r\n")
+            check("a path that is not UTF-8: 400", r.startswith("HTTP/1.1 400"), r)
+            r = raw(8087, "POST /x?q=ไทย HTTP/1.1\r\nContent-Length: 9\r\nConnection: close\r\n\r\nไทย".encode())
+            check("UTF-8 in the path and body is accepted", r.startswith("HTTP/1.1 200"), r)
+            r = raw(8087, b"GET /echo-header HTTP/1.1\r\nX-Name: a\xc8b\r\nConnection: close\r\n\r\n")
+            check("a header value that is not UTF-8 reads with U+FFFD", '"name":"a\xef\xbf\xbdb"' in r, r)   # raw() reads Latin-1
             r = raw(8087, b"GET / HTTP/1.1\r\n" + b"X-Big: " + b"a" * 70000 + b"\r\n\r\n")
             check("more than 64 KB of headers: 431", r.startswith("HTTP/1.1 431"), r)
 
@@ -722,6 +755,142 @@ if "--no-server" not in sys.argv:
         finally:
             proc.terminate()
             proc.wait(timeout=5)
+
+if "--no-server" not in sys.argv:
+    print("request deadlines (tests/server/deadline.pn on :8097)")
+    out = os.path.join(BUILD, "server_deadline")
+    b = build(os.path.join(ROOT, "tests", "server", "deadline.pn"), out)
+    if b.returncode:
+        fail("tests/server/deadline.pn", "build failed: " + b.stderr[-400:])
+    else:
+        proc = subprocess.Popen([out], env=dict(os.environ, PN_THREADS="2"), stdout=subprocess.DEVNULL,
+                                stderr=server_log(out))
+        try:
+            for _ in range(50):
+                try:
+                    socket.create_connection(("127.0.0.1", 8097), timeout=0.2).close()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            for path, want, body in [("/wait", 504, '{"error":"Gateway Timeout"}'),
+                                     ("/sleep", 504, '{"error":"Gateway Timeout"}'),
+                                     ("/tasks", 504, '{"error":"Gateway Timeout"}'),
+                                     ("/caught", 504, '{"error":"Gateway Timeout"}'),
+                                     ("/fast", 200, '{"fast":true}')]:
+                t0 = time.time()
+                got = http(8097, "GET", path)
+                took = time.time() - t0
+                (ok if got == (want, body) and took < 1.5 else lambda n: fail(n, f"{got} after {took:.2f}s"))(
+                    f"GET {path}: {want} in {took * 1000:.0f} ms")
+            before = open_fds(proc.pid)
+            import threading  # noqa: E402
+            res = []
+            ts = [threading.Thread(target=lambda: res.append(http(8097, "GET", "/tasks")[0])) for _ in range(100)]
+            for th in ts:
+                th.start()
+            for th in ts:
+                th.join()
+            grew = open_fds(proc.pid) - before
+            alive = http(8097, "GET", "/fast")
+            (ok if res.count(504) == 100 and grew < 10 and alive[0] == 200 else
+             lambda n: fail(n, f"{sorted(set(res))} fds+{grew} {alive}"))(
+                "100 parallel requests past their deadline: all 504, nothing left open, the server keeps going")
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+PG_URL = os.environ.get("PIN_TEST_POSTGRES", "")
+if not PG_URL:
+    print("PostgreSQL (tests/pg, tests/server/pg.pn): skipped — set PIN_TEST_POSTGRES to a database URL that may be emptied")
+else:
+    print("PostgreSQL programs (tests/pg/*.pn)")
+    pg_env = dict(os.environ, DATABASE_URL=PG_URL, PIN_TEST_PG_DOWN="postgres://pin:secret@127.0.0.1:1/none")
+    for src in sorted(glob.glob(os.path.join(ROOT, "tests", "pg", "*.pn")), key=lambda p: "panic_" in p):
+        name = os.path.splitext(os.path.basename(src))[0]
+        out = os.path.join(BUILD, "pg_" + name)
+        b = build(src, out)
+        if b.returncode:
+            fail(rel(src), "compile failed: " + b.stderr)
+            continue
+        # a panic exits at once, with memory still in use: only use-after-free and the like count there
+        r = subprocess.run([out], capture_output=True, text=True, timeout=60,
+                           env=dict(pg_env, ASAN_OPTIONS="detect_leaks=0") if name.startswith("panic_") else pg_env)
+        if "ERROR: AddressSanitizer" in r.stderr or "ERROR: LeakSanitizer" in r.stderr or "runtime error:" in r.stderr:
+            fail(rel(src), r.stderr[-1500:])
+            continue
+        if name.startswith("panic_"):
+            exp_path = src[:-3] + ".expected"
+            if UPDATE:
+                open(exp_path, "w").write(r.stderr.strip() + "\n")
+            expected = open(exp_path).read().strip()
+            (ok if r.returncode == 1 and expected in r.stderr else
+             lambda n: fail(n, f"want exit 1 + '{expected}', got exit {r.returncode}: {r.stderr}"))(rel(src))
+            continue
+        exp_path = src[:-3] + ".out"
+        if UPDATE:
+            open(exp_path, "w").write(r.stdout)
+        expected = open(exp_path).read() if os.path.exists(exp_path) else None
+        (ok if r.returncode == 0 and r.stdout == expected else
+         lambda n: fail(n, f"exit {r.returncode}: {r.stderr}\n{r.stdout}"))(rel(src))
+
+    if "--no-server" not in sys.argv:
+        print("PostgreSQL server (tests/server/pg.pn on :8110, one thread)")
+        out = os.path.join(BUILD, "server_pg")
+        b = build(os.path.join(ROOT, "tests", "server", "pg.pn"), out)
+        if b.returncode:
+            fail("tests/server/pg.pn", "build failed: " + b.stderr[-400:])
+        else:
+            srv_url = PG_URL + ("&" if "?" in PG_URL else "?") + "application_name=pin_test_server"
+            proc = subprocess.Popen([out], env=dict(os.environ, PN_THREADS="1", DATABASE_URL=srv_url),
+                                    stdout=subprocess.DEVNULL, stderr=server_log(out))
+            try:
+                for _ in range(50):
+                    try:
+                        socket.create_connection(("127.0.0.1", 8110), timeout=0.2).close()
+                        break
+                    except OSError:
+                        time.sleep(0.1)
+                for (m, path, body), want in [
+                        (("POST", "/items", '{"name":"tea"}'), (201, '{"id":1}')),
+                        (("POST", "/items", '{"name":"tea"}'), (409, '{"error":"exists"}')),
+                        (("GET", "/boom", None), (500, '{"error":"Internal Server Error"}')),
+                        (("GET", "/tx-left", None), (200, '{"ok":true}')),
+                        (("GET", "/tx-boom", None), (500, '{"error":"Internal Server Error"}')),
+                        (("GET", "/leftovers", None), (200, '[{"n":0}]'))]:
+                    got = http(8110, m, path, body)
+                    (ok if got == want else lambda n: fail(n, f"want {want}\n        got  {got}"))(f"{m} {path}")
+                import threading  # noqa: E402
+                res = []
+                t0 = time.time()
+                ts = [threading.Thread(target=lambda: res.append(http(8110, "GET", "/slow"))) for _ in range(4)]
+                for th in ts:
+                    th.start()
+                for th in ts:
+                    th.join()
+                took = time.time() - t0
+                (ok if res.count((200, '{"slow":true}')) == 4 and took < 1.2 else
+                 lambda n: fail(n, f"{res} in {took:.2f}s"))(
+                    f"4 queries of 0.4 s on one thread wait together: {took:.2f} s, not 1.6 s")
+                t0 = time.time()
+                got = http(8110, "GET", "/late")
+                took = time.time() - t0
+                (ok if got[0] == 504 and took < 0.6 else lambda n: fail(n, f"{got} after {took:.2f}s"))(
+                    f"a query past the request's deadline: 504 in {took * 1000:.0f} ms")
+                for _ in range(3):                  # clients that leave while their query runs
+                    s = socket.create_connection(("127.0.0.1", 8110))
+                    s.sendall(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n")
+                    time.sleep(0.05)
+                    s.close()
+                time.sleep(0.6)
+                for _ in range(30):
+                    http(8110, "GET", "/boom")
+                conns = http(8110, "GET", "/conns")
+                n = json.loads(conns[1])[0]["n"] if conns[0] == 200 else -1
+                (ok if 1 <= n <= 4 else lambda x: fail(x, str(conns)))(
+                    f"after panics, cancelled queries and a deadline: {n} connection(s) open (at most 4)")
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)
 
 if SANITIZE:
     print("sanitizer reports in the servers' logs")

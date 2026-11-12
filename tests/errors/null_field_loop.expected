@@ -1,0 +1,1 @@
+tests/errors/null_field_loop.pn:7: error: $b->label may be null (?string)

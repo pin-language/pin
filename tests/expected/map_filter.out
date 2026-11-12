@@ -1,0 +1,3 @@
+[2,4,6]["tea=45","cake=120","rice=30"]
+[{"name":"tea","price":45},{"name":"rice","price":30}][2,4][null,1,2]
+3 [2,4,6]

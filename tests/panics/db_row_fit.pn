@@ -1,0 +1,6 @@
+// db_all() into a class whose field the SELECT does not give: a bug in the program, so a panic
+class Product { public function __construct(public int $id, public string $name, public int $price) {} }
+$db = db_open(":memory:");
+db_exec($db, "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT)", []);
+db_exec($db, "INSERT INTO products (name) VALUES ('tea')", []);
+list<Product> $ps = db_all($db, "SELECT id, name FROM products", []);

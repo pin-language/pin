@@ -1,0 +1,10 @@
+<?php
+// same through a captured closure: the old mk() result is freed when $f is replaced
+function mk(int $i): fn(): string { $s = "v" . strval($i) . "-long-enough-for-heap"; return fn(): string => $s; }
+$h = fn(): string => "none";
+$f = mk(0);
+for ($i = 0; $i < 3; $i++) {
+    $f = mk($i);
+    echo $h(), "\n";
+    $h = fn(): string => $f() . "!";
+}

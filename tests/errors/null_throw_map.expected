@@ -1,0 +1,1 @@
+?? throw works on a value that may be null; for a map entry check isset($m[$k]) first

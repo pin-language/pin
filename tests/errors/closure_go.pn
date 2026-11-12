@@ -1,0 +1,6 @@
+<?php
+// a closure given to go owns what it uses: use (&$n) would let the task change $n while this function runs (C7)
+function apply1(fn(int): int $f): int { return $f(1); }
+$n = 1;
+$t = go apply1(function (int $x) use (&$n): int { return $x + $n; });
+echo await $t;

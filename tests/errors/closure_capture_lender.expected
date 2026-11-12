@@ -1,0 +1,1 @@
+this closure changes $xs (use (&$xs), through $push) and also reads $xs

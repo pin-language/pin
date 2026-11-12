@@ -1,0 +1,25 @@
+<?php
+// closures in loops: made again each round after what they read changes (allowed), and closures written into
+// list / map items through foreach (... as &$f), which own what they use (C4, C6)
+function mk_map(): map<string, fn(): string> {
+    $s = "abc" . strval(1);
+    map<string, fn(): string> $m = ["a" => fn(): string => "0", "b" => fn(): string => "1"];
+    foreach ($m as $k => &$f) { $f = fn(): string => $s . $k; }
+    return $m;
+}
+$mm = mk_map();
+echo $mm["a"](), " ", $mm["b"](), "\n";
+
+$words = ["a", "bb", "ccc"];
+foreach ($words as $w) {
+    $up = strtoupper($w);
+    $rep = fn(int $n): string => str_repeat($up, $n);
+    echo $rep(2), " ";
+    $ys = array_map(fn($x) => $up . strval($x), [1, 2]);
+    echo $ys[1], "\n";
+}
+for ($i = 0; $i < 2; $i++) {
+    $s = "x" . strval($i);
+    $g = function () use ($s): string { return $s; };
+    echo $g(), "\n";
+}

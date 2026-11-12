@@ -18,14 +18,105 @@ def f(name, cat, sig, summary, example, notes=(), php=None, run=True, kind="func
 S, L, N, V, J, H = "strings", "lists-and-maps", "numbers", "conversions", "json", "http"
 
 # ----------------------------------------------------------------------------------------- strings
+f("ord", S, "ord(string $s): int", "The first byte of a string as a number (0 to 255); 0 for `\"\"`.",
+  r'''echo ord("A"), " ", ord("a"), " ", ord(""), " ", ord("ไ"), "\n";''',
+  ["A byte, not a character: Thai and other non-ASCII characters are several bytes."])
+f("chr", S, "chr(int $n): string", "A one-byte string with the byte `$n` (taken modulo 256, like PHP).",
+  r'''echo chr(72), chr(105), chr(33 + 256), "\n";''',
+  ["A byte above 127 panics: alone it is not UTF-8, and every Pin string is valid UTF-8. `mb_chr($n)` gives the "
+   "character with that code point."],
+  php="`chr(200)` gives one byte in PHP; in Pin it panics (use `mb_chr(200)` for \"È\").")
+f("rawurlencode", S, "rawurlencode(string $s): string",
+  "Percent-encode everything but `A-Z a-z 0-9 - _ . ~`, for a value inside a URL path or query.",
+  r'''echo "/search?q=" . rawurlencode("tea & cake/ไทย"), "\n";''',
+  ["Spaces become `%20` (PHP's `urlencode` writes `+`; Pin has only this one)."],
+  php="Same as PHP's `rawurlencode`.")
 f("strlen", S, "strlen(string $s): int", "Length of a string in bytes.",
   r'''echo strlen("hello"), " ", strlen("ไทย"), " ", strlen(""), "\n";''',
   ["Counts bytes, not characters: each Thai character is 3 bytes in UTF-8."])
 f("substr", S, "substr(string $s, int $start, int $length = rest): string", "Part of a string, by byte offsets.",
   r'''echo substr("hello world", 6), "|", substr("hello", -3), "|", substr("hello", 1, 3), "|", substr("hello", 1, -1), "|", substr("hi", 10), "|\n";''',
   ["A negative `$start` counts from the end; a negative `$length` stops that many bytes before the end.",
-   "Out-of-range offsets give a shorter or empty string, never a panic.",
-   "Offsets are bytes: cutting inside a Thai character gives broken text."])
+   "Out-of-range offsets give a shorter or empty string.",
+   "Offsets are bytes. One that falls inside a character (each Thai character is 3 bytes) **panics** instead of "
+   "giving broken text; positions from `strpos()` never do. To count characters use `mb_substr()`, to shorten "
+   "text for display `grapheme_substr()`."],
+  php="The same, except that cutting a character in half panics instead of giving invalid UTF-8.")
+f("ctype_digit", S, 'ctype_digit(string $s): bool', 'Whether every byte is a digit 0-9 (ASCII); false for "".',
+  r'''echo ctype_digit("2024") ? "yes" : "no", " ", ctype_digit("20.5") ? "yes" : "no", "\n";''')
+f("ctype_alpha", S, 'ctype_alpha(string $s): bool', 'Whether every byte is a letter a-z / A-Z (ASCII); false for "".',
+  r'''echo ctype_alpha("Pin") ? "yes" : "no", " ", ctype_alpha("Pin8") ? "yes" : "no", "\n";''')
+f("ctype_alnum", S, 'ctype_alnum(string $s): bool', 'Whether every byte is a letter or digit (ASCII); false for "".',
+  r'''echo ctype_alnum("abc123") ? "yes" : "no", " ", ctype_alnum("abc-123") ? "yes" : "no", "\n";''')
+f("ctype_space", S, 'ctype_space(string $s): bool', 'Whether every byte is whitespace (space, tab, newlines) (ASCII); false for "".',
+  r'''echo ctype_space("  ") ? "yes" : "no", " ", ctype_space("a b") ? "yes" : "no", "\n";''')
+f("ctype_upper", S, 'ctype_upper(string $s): bool', 'Whether every byte is an upper-case letter A-Z (ASCII); false for "".',
+  r'''echo ctype_upper("ABC") ? "yes" : "no", " ", ctype_upper("AbC") ? "yes" : "no", "\n";''')
+f("ctype_lower", S, 'ctype_lower(string $s): bool', 'Whether every byte is a lower-case letter a-z (ASCII); false for "".',
+  r'''echo ctype_lower("abc") ? "yes" : "no", " ", ctype_lower("aBc") ? "yes" : "no", "\n";''')
+f("ctype_xdigit", S, 'ctype_xdigit(string $s): bool', 'Whether every byte is a hex digit 0-9 a-f A-F (ASCII); false for "".',
+  r'''echo ctype_xdigit("ff00") ? "yes" : "no", " ", ctype_xdigit("fg") ? "yes" : "no", "\n";''')
+f("nl2br", S, 'nl2br(string $s): string', 'Insert `<br />` before each newline, for showing text in HTML.',
+  r'''echo nl2br("line 1\nline 2"), "\n";''',
+  ['Escape first: `nl2br(htmlspecialchars($text))`.'])
+f("mb_str_split", S, "mb_str_split(string $s, int $length = 1): list<string>", "Split into pieces of `$length` characters (code points).",
+  r'''echo json_encode(mb_str_split("ไทย")), json_encode(mb_str_split("abcde", 2)), "\n";''',
+  ["PHP's `str_split()` splits bytes and breaks Thai text; this is the one to use."])
+f("mb_strlen", S, "mb_strlen(string $s): int", "Length in characters (Unicode code points).",
+  r'''echo mb_strlen("hello"), " ", mb_strlen("ไทย"), " ", mb_strlen("ที่"), "\n";''',
+  ["A Thai tone mark or vowel above or below a letter is a code point of its own: `\"ที่\"` is 3. To count what a "
+   "reader sees, use `grapheme_strlen()`."],
+  php="`mb_strlen($s)` with UTF-8; there is no encoding argument.")
+f("mb_substr", S, "mb_substr(string $s, int $start, int $length = rest): string", "Part of a string, counted in characters (code points).",
+  r'''echo mb_substr("สวัสดีครับ", 0, 4), "|", mb_substr("สวัสดีครับ", -4), "|", mb_substr("abc", 5), "|\n";''',
+  ["The same rules as `substr()` for negative and out-of-range values, in code points.",
+   "It can separate a tone mark from its letter (`mb_substr(\"ที่\", 0, 2)` is `\"ที\"`); for text people read, "
+   "use `grapheme_substr()`."],
+  php="`mb_substr()` with UTF-8.")
+f("mb_strpos", S, "mb_strpos(string $haystack, string $needle): int", "Position of the first match in characters, or -1.",
+  r'''echo mb_strpos("ภาษาไทย", "ไทย"), " ", strpos("ภาษาไทย", "ไทย"), " ", mb_strpos("abc", "z"), "\n";''',
+  ["Use it with `mb_substr()`; `strpos()` gives bytes, for `substr()`."],
+  php="PHP returns `false` when not found; Pin returns `-1`.")
+f("mb_chr", S, "mb_chr(int $codepoint): string", "The character with this Unicode code point.",
+  r'''echo mb_chr(3652), mb_chr(3607), mb_chr(3618), " ", mb_chr(128077), "\n";''',
+  ["A value that is not a character (negative, above 0x10FFFF, or a surrogate 0xD800–0xDFFF) panics."],
+  php="PHP returns `false` for those.")
+f("mb_ord", S, "mb_ord(string $s): int", "The Unicode code point of the first character.",
+  r'''echo mb_ord("ไ"), " ", mb_ord("A"), " ", mb_ord("👍"), "\n";''',
+  ["`mb_ord(\"\")` panics (PHP throws a ValueError)."])
+f("grapheme_strlen", S, "grapheme_strlen(string $s): int", "Length in what people see as characters (grapheme clusters).",
+  r'''echo grapheme_strlen("ที่นี่"), " ", mb_strlen("ที่นี่"), " ", grapheme_strlen("👨‍👩‍👧🇹🇭"), "\n";''',
+  ["Unicode's extended grapheme clusters (UAX #29, Unicode 17): a Thai letter with its vowel and tone marks, an "
+   "emoji with its skin tone or family members, a flag, are one each.",
+   "ASCII is as fast as `mb_strlen()`; other text looks each code point up in a table (O(n))."],
+  php="`grapheme_strlen()` (PHP's intl extension).")
+f("grapheme_substr", S, "grapheme_substr(string $s, int $start, int $length = rest): string",
+  "Part of a string, counted in what people see as characters. **Use this to shorten text for display.**",
+  r'''$title = "ที่นี่มีน้ำใจ";
+echo grapheme_substr($title, 0, 4), "…|", mb_substr($title, 0, 4), "…|", grapheme_substr($title, -2), "\n";''',
+  ["The same rules as `substr()` for negative and out-of-range values, in grapheme clusters.",
+   "Never separates a tone mark or vowel from its letter, or an emoji from its modifier."],
+  php="`grapheme_substr()`; PHP returns `false` when `$start` is past the end, Pin returns `\"\"`.")
+f("mb_strtolower", S, "mb_strtolower(string $s): string", "Lower-case copy for every script that has letter case.",
+  r'''echo mb_strtolower("ÄÖÜ ΟΔΥΣΣΕΥΣ Hello ไทย"), "\n";''',
+  ["Unicode's full mappings, and a Greek Σ at the end of a word becomes ς (as PHP 8.3 does).",
+   "Thai has no letter case: it is left as it is. `strtolower()` changes A–Z only."],
+  php="`mb_strtolower()` with UTF-8.")
+f("mb_strtoupper", S, "mb_strtoupper(string $s): string", "Upper-case copy for every script that has letter case.",
+  r'''echo mb_strtoupper("straße éa ไทย"), "\n";''',
+  ["Full mappings: `ß` becomes `SS`, so the result can be longer."],
+  php="`mb_strtoupper()` with UTF-8.")
+f("normalizer_normalize", S, "normalizer_normalize(string $s, int $form = Normalizer::FORM_C): string",
+  "The same text in one Unicode normal form, so that equal-looking strings compare equal.",
+  r'''$a = "café";                                  // é as one code point
+$b = "cafe" . mb_chr(769);                     // e + a combining accent
+echo $a == $b ? "same" : "different", " ", normalizer_normalize($a) == normalizer_normalize($b) ? "same" : "different", "\n";
+echo normalizer_normalize("ﬁle ①", Normalizer::FORM_KC), "\n";''',
+  ["`Normalizer::FORM_C` (the default), `FORM_D`, `FORM_KC`, `FORM_KD` (also `Normalizer::NFC` ...).",
+   "**Usernames, emails and lookup keys: `FORM_KC` before storing and before comparing**: it also folds "
+   "look-alikes such as `ﬁ` → `fi`, and the two spellings of Thai `ำ`.",
+   "ASCII text comes back unchanged at once."],
+  php="`normalizer_normalize()` (PHP's intl extension); Pin returns the string, never `false`.")
 f("strpos", S, "strpos(string $haystack, string $needle): int", "Byte position of the first match, or -1.",
   r'''echo strpos("hello", "ll"), " ", strpos("hello", "z"), " ", strpos("abc", ""), "\n";''',
   ["An empty needle matches at 0."],
@@ -47,6 +138,82 @@ f("strtoupper", S, "strtoupper(string $s): string", "Upper-case copy; only a–z
 f("trim", S, "trim(string $s): string", "Copy without leading and trailing whitespace.",
   r'''echo "[", trim("  padded \n"), "]\n";''',
   [r"Removes spaces, tabs, `\n`, `\r` and `\v`. There is no second argument yet."])
+f("sprintf", S, "sprintf(string $format, ...$values): string", "Format values into a string, like C and PHP.",
+  r'''echo sprintf("%s: %5.2f baht, %03d items, %x", "tea", 45.5, 7, 255), "\n";
+echo sprintf("[%-6s] [%6s] %+d %.1e %%", "ab", "ab", 3, 1234.5), "\n";''',
+  ["`%s` (any value), `%d` `%u` `%x` `%X` `%o` `%b` `%c` (int; `%c` is the character with that code point), "
+   "`%f` `%F` `%e` (number), `%%`; flags `-` `+` `0` space, a width and `.precision`.",
+   "The format must be a string literal: the compiler checks each value's type against it and the count.",
+   "Widths count bytes as in PHP, but `%.2s` never cuts a character in half."],
+  php="`sprintf()` without `%1$s` positions or `*` widths.")
+f("printf", S, "printf(string $format, ...$values): int", "Print what `sprintf` would give; returns its length in bytes.",
+  r'''printf("%-5s|%5.1f|\n", "tea", 2.25);''')
+f("date", N, "date(string $format, int $timestamp = time()): string", "A time as text, with PHP's format letters, in UTC.",
+  r'''echo date("Y-m-d H:i:s", 0), " ", date("D, jS F Y", 1762646400), " ", date("c", 1762646400), "\n";''',
+  ["Letters: `d D j l N S w z F m M n t L Y y a A g G h H i s v u e T P p O Z U c r`; `\\` before a letter keeps it "
+   "as it is. Anything else is copied.",
+   "Always UTC: Pin has no time zones yet (`T` is `UTC`, `P` is `+00:00`). For an API, `date(\"c\")` (ISO 8601) "
+   "or plain `time()` numbers are the usual choice."],
+  php="Like `date()` with `date.timezone=UTC`.")
+f("str_pad", S, "str_pad(string $s, int $length, string $pad = \" \", int $type = STR_PAD_RIGHT): string",
+  "Pad a string to `$length` bytes.",
+  r'''echo "[", str_pad("7", 3, "0", STR_PAD_LEFT), "] [", str_pad("ab", 6), "] [", str_pad("ab", 6, "-", STR_PAD_BOTH), "]\n";''',
+  ["`STR_PAD_RIGHT` (default), `STR_PAD_LEFT`, `STR_PAD_BOTH`. Lengths are bytes, as in PHP; only whole characters "
+   "of `$pad` are added, so the result can be a little shorter with a Thai `$pad`."])
+f("mb_str_pad", S, "mb_str_pad(string $s, int $length, string $pad = \" \", int $type = STR_PAD_RIGHT): string",
+  "Pad a string to `$length` characters (code points).",
+  r'''echo "[", mb_str_pad("ไทย", 6, "-"), "] [", mb_str_pad("ab", 5, "ไ", STR_PAD_LEFT), "]\n";''',
+  ["For Thai with vowels and tone marks, a reader sees fewer characters than there are code points: pad with "
+   "`grapheme_strlen()` when the column must line up."], php="PHP 8.3's mb_str_pad().")
+f("STR_PAD_LEFT", S, "STR_PAD_LEFT: int", "For `str_pad()`: pad on the left.", r'''echo STR_PAD_LEFT, "\n";''', kind="constant")
+f("STR_PAD_RIGHT", S, "STR_PAD_RIGHT: int", "For `str_pad()`: pad on the right (the default).", r'''echo STR_PAD_RIGHT, "\n";''', kind="constant")
+f("STR_PAD_BOTH", S, "STR_PAD_BOTH: int", "For `str_pad()`: pad both sides.", r'''echo STR_PAD_BOTH, "\n";''', kind="constant")
+f("ucwords", S, "ucwords(string $s): string", "Upper-case the first letter of every word (ASCII a–z).",
+  r'''echo ucwords("hello big world"), "\n";''')
+f("strrev", S, "strrev(string $s): string", "The string backwards, by what a reader sees as characters.",
+  r'''echo strrev("stressed"), " ", strrev("ไทย"), "\n";''',
+  php="PHP reverses bytes, which breaks UTF-8 text; Pin reverses grapheme clusters (Thai marks stay on their letter).")
+f("is_numeric", S, "is_numeric(string $s): bool", "Whether the text is a number PHP would accept (`12`, `-1.5`, `2e3`, spaces around).",
+  r'''foreach (["12", " 1.5 ", "1e3", "12abc", ""] as $s) { echo is_numeric($s) ? "y" : "n"; }
+echo "\n";''', ["Check with it, then read the value with `intval()` / `floatval()`."], php="For strings (PHP's also takes ints and floats).")
+f("str_replace", S, "str_replace(string $search, string $replace, string $subject): string",
+  "Replace every `$search` in `$subject`.",
+  r'''echo str_replace("cat", "dog", "cat and catalog"), " ", str_replace("-", "", "08-1234-5678"), "\n";''',
+  ["Left to right, matches do not overlap; an empty `$search` changes nothing."],
+  php="`str_replace()` with three strings (no arrays, no count argument).")
+f("ltrim", S, "ltrim(string $s): string", "Copy without leading whitespace (as `trim()`).",
+  r'''echo "[", ltrim("  x  "), "]\n";''')
+f("rtrim", S, "rtrim(string $s): string", "Copy without trailing whitespace (as `trim()`).",
+  r'''echo "[", rtrim("  x  \n"), "]\n";''')
+f("ucfirst", S, "ucfirst(string $s): string", "Copy with the first letter in upper case (ASCII a–z).",
+  r'''echo ucfirst("hello world"), "\n";''', php="Like PHP 8.2+: only a-z.")
+f("lcfirst", S, "lcfirst(string $s): string", "Copy with the first letter in lower case (ASCII A–Z).",
+  r'''echo lcfirst("HelloWorld"), "\n";''')
+f("htmlspecialchars", S, "htmlspecialchars(string $s): string",
+  "Escape `& < > \" '` for HTML, so text from users cannot become markup.",
+  r'''echo htmlspecialchars("<b>Tom & 'Jerry'</b>"), "\n";''',
+  ["Use it on every value you put into HTML (`response_header(\"Content-Type\", \"text/html; charset=utf-8\")`)."],
+  php="`htmlspecialchars($s)` with PHP 8.1's defaults (`ENT_QUOTES`).")
+f("base64_encode", S, "base64_encode(string $s): string", "Standard base64 (RFC 4648) of the bytes of a string.",
+  r'''echo base64_encode("user:secret"), "\n";''')
+f("base64_decode", S, "base64_decode(string $s): string throws", "The text a base64 string holds.",
+  r'''$auth = "Basic dXNlcjpzZWNyZXQ=";
+echo try base64_decode(substr($auth, 6)), "\n";
+echo try base64_decode("%%%") catch ($e) { "error " . $e->code; }, "\n";''',
+  ["Reads the standard and the URL-safe alphabet (`-` `_`), with or without `=` padding; whitespace is skipped.",
+   "Fails with 400 for other characters, and when the decoded bytes are not UTF-8 text (Pin has no binary "
+   "strings yet)."],
+  php="PHP returns `false` (or the bytes) instead of failing.")
+f("rawurldecode", S, "rawurldecode(string $s): string", "Decode `%XX` (the opposite of `rawurlencode`).",
+  r'''echo rawurldecode("tea%20%26%20cake%2F%E0%B9%84"), "\n";''',
+  ["Bytes that are not UTF-8 after decoding become U+FFFD. `query_param()` already decodes query values."])
+f("urldecode", S, "urldecode(string $s): string", "Like `rawurldecode`, and `+` becomes a space (form encoding).",
+  r'''echo urldecode("tea+%26+cake"), "\n";''')
+f("number_format", S, "number_format(float $x, int $decimals = 0, string $point = \".\", string $thousands = \",\"): string",
+  "A number with grouped thousands, rounded to `$decimals` places.",
+  r'''echo number_format(1234567.891), " ", number_format(1234567.891, 2), " ", number_format(4500 / 100, 2, ".", ""), "\n";''',
+  ["For money keep integer satang/cents and format at the end: `number_format($satang / 100, 2)`."],
+  php="Same as PHP's.")
 f("explode", S, "explode(string $separator, string $s): list<string>", "Split a string into a list of strings.",
   r'''echo json_encode(explode(",", "a,b,,c")), " ", count(explode(",", "")), "\n";''',
   ["Empty pieces are kept. Splitting an empty string gives one empty piece.",
@@ -59,6 +226,102 @@ f("implode", S, "implode(string $glue, list<string|int|float> $xs): string", "Jo
 f("PHP_EOL", S, "PHP_EOL: string", r'The string `"\n"`.', r'''echo "line", PHP_EOL;''', kind="constant")
 
 # ----------------------------------------------------------------------------------------- lists and maps
+f("array_map", L, "array_map(fn(T): R $f, list<T> $xs): list<R>", "A new list: the function applied to each item.",
+  r'''echo json_encode(array_map(fn($satang) => number_format($satang / 100, 2), [4500, 12000])), "\n";
+function label(int $satang): string { return "฿" . number_format($satang / 100, 2); }
+echo json_encode(array_map(label(...), [4500])), json_encode(array_map("strtoupper", ["tea"])), "\n";''',
+  ["`$f` is a closure (`fn($x) => ...`, whose parameter type comes from the list), a function value "
+   "(`label(...)`), or a function's name as a string; it cannot be `throws`.",
+   "One-argument built-ins work by name too: `array_map(\"strtoupper\", $names)`, `array_map(\"intval\", $parts)`, "
+   "`array_filter($xs, \"ctype_digit\")`."],
+  php="Like PHP with one list; the closure reads the variables around it (no `use` needed for `fn`).")
+f("array_filter", L, "array_filter(list<T> $xs, fn(T): bool $keep): list<T>", "A new list of the items the function keeps.",
+  r'''$limit = 100;
+echo json_encode(array_filter([45, 120, 30], fn($price) => $price < $limit)), "\n";''',
+  ["`$keep` is a closure, a function value or a function name `(T $x): bool`. The kept items are copied, and the "
+   "new list is renumbered from 0 (PHP keeps the old keys)."],
+  php="PHP keeps the original keys; Pin's result is a list numbered from 0.")
+f("array_key_first", L, 'array_key_first(map<K,V> $m): ?K', 'The first key of a map, or null when it is empty.',
+  r'''echo array_key_first(["b" => 2, "a" => 1]) ?? "none", "\n";''')
+f("array_key_last", L, 'array_key_last(map<K,V> $m): ?K', 'The last key of a map, or null when it is empty.',
+  r'''echo array_key_last([3 => "c", 7 => "g"]) ?? -1, "\n";''')
+f("ksort", L, "ksort(map<K,V> $m): void", "Sort a map by its keys, in place.",
+  r'''map<string,int> $m = ["b" => 2, "a" => 1];
+ksort($m);
+echo json_encode($m), "\n";''',
+  ["Stable, as PHP 8. `krsort()` sorts the other way."])
+f("krsort", L, "krsort(map<K,V> $m): void", "Sort a map by its keys, largest first, in place.",
+  r'''map<int,string> $m = [1 => "a", 3 => "c"];
+krsort($m);
+echo json_encode($m), "\n";''')
+f("asort", L, "asort(map<K,V> $m): void", "Sort a map by its values (int, float, bool or string), keeping each key with its value.",
+  r'''map<string,int> $votes = ["tea" => 5, "coffee" => 9, "milk" => 2];
+asort($votes);
+echo json_encode($votes), "\n";''',
+  ["`arsort()` sorts the other way (largest first)."])
+f("arsort", L, "arsort(map<K,V> $m): void", "Sort a map by its values, largest first, keeping the keys.",
+  r'''map<string,int> $votes = ["tea" => 5, "coffee" => 9, "milk" => 2];
+arsort($votes);
+echo json_encode(array_keys($votes)), "\n";''')
+f("range", L, "range(int $from, int $to, int $step = 1): list<int>", "The ints from `$from` to `$to` (counting down when `$from` is larger).",
+  r'''echo json_encode(range(1, 5)), json_encode(range(10, 0, 5)), "\n";
+foreach (range(1, 3) as $i) { echo $i; }
+echo "\n";''',
+  ["A step of 0 panics. Ints only (a for loop for floats)."])
+f("array_count_values", L, "array_count_values(list<int|string> $xs): map<T,int>", "How many times each value occurs, in first-seen order.",
+  r'''echo json_encode(array_count_values(["tea", "milk", "tea"])), "\n";''')
+f("array_flip", L, "array_flip(map<K,V> $m): map<V,K>", "Values become keys and keys values (values must be int or string).",
+  r'''echo json_encode(array_flip(["a" => "x", "b" => "y"])), "\n";''',
+  ["When two keys have the same value, the later one wins (as PHP)."])
+f("array_combine", L, "array_combine(list<K> $keys, list<V> $values): map<K,V>", "A map from a list of keys and a list of values.",
+  r'''echo json_encode(array_combine(["id", "qty"], [7, 2])), "\n";''',
+  ["Lists of different lengths panic (PHP throws)."])
+f("array_reduce", L, "array_reduce(list<T> $xs, fn(C, T): C $f, C $initial): C", "Fold a list into one value.",
+  r'''echo array_reduce([45, 120, 30], fn($sum, $p) => $sum + $p, 0), " ", array_reduce(["a", "b"], fn($s, $x) => $s . $x . ";", ""), "\n";''',
+  ["The carry's type is the type of `$initial`; the function gets the carry and an item and gives the next carry."])
+f("usort", L, "usort(list<T> $xs, fn(T, T): int $compare): void", "Sort a list in place with your own comparison function.",
+  r'''class Item { public function __construct(public string $name, public int $price) {} }
+function by_price(Item $a, Item $b): int { return $a->price - $b->price; }
+list<Item> $items = [new Item("cake", 120), new Item("tea", 45), new Item("rice", 30)];
+usort($items, "by_price");
+foreach ($items as $i) { echo $i->name, " "; }
+usort($items, fn($a, $b) => $b->price <=> $a->price);
+echo "| most expensive: ", $items[0]->name;
+echo "\n";''',
+  ["`$compare` is a closure `fn($a, $b) => $a->x <=> $b->x`, a function value, or a function's name, `(T $a, T $b): "
+   "int`: negative puts `$a` first, positive `$b`, 0 keeps their order (the sort is stable). It cannot be `throws`.",
+   "Lists of int, float, string, objects, lists or maps. A list of bools: `sort()`."],
+  php="Same as PHP 8 (stable).")
+f("array_pop", L, "array_pop(list<T> $xs): ?T", "Take the last item out of the list, or null when it is empty.",
+  r'''list<int> $stack = [1, 2, 3];
+$top = array_pop($stack);
+echo $top ?? -1, " ", count($stack), "\n";''',
+  ["The item moves out to the result (no copy); `array_pop($xs) ?? $default` when the list may be empty."],
+  php="Same, null when empty (Pin's result type is `?T`).")
+f("array_shift", L, "array_shift(list<T> $xs): ?T", "Take the first item out of the list, or null when it is empty.",
+  r'''list<string> $queue = ["a", "b"];
+echo array_shift($queue) ?? "none", " ", json_encode($queue), "\n";''', ["Moves every other item down: O(n)."])
+f("array_slice", L, "array_slice(list<T> $xs, int $offset, int $length = rest): list<T>", "A copy of part of a list.",
+  r'''echo json_encode(array_slice([1, 2, 3, 4, 5], 1, 2)), json_encode(array_slice([1, 2, 3, 4, 5], -2)), "\n";''',
+  ["`substr()`'s rules for negative values, counted in items. The items are copied."])
+f("array_merge", L, "array_merge(list<T> $a, list<T> $b): list<T>", "A new list: the items of `$a`, then those of `$b` (copied).",
+  r'''echo json_encode(array_merge([1, 2], [3])), "\n";''', php="Two lists of one type (no maps, no more than two).")
+f("array_reverse", L, "array_reverse(list<T> $xs): list<T>", "A copy of the list in reverse order.",
+  r'''echo json_encode(array_reverse(["a", "b", "c"])), "\n";''')
+f("array_search", L, "array_search(T $value, list<T> $xs): int", "The index of the first item equal to `$value`, or -1.",
+  r'''echo array_search("b", ["a", "b"]), " ", array_search(9, [1, 2]), "\n";''',
+  php="PHP returns `false` when not found; Pin returns `-1` (as `strpos`). Strict comparison.")
+f("array_unique", L, "array_unique(list<T> $xs): list<T>", "The list without repeated items (first ones kept, in order).",
+  r'''echo json_encode(array_unique(["b", "a", "b", "c", "a"])), "\n";''', ["Lists of int, float, bool or string."])
+f("in_array", L, "in_array(T $value, list<T> $xs): bool", "Whether the list holds the value (lists of int, float, bool, string).",
+  r'''echo in_array("tea", ["coffee", "tea"]) ? "yes" : "no", " ", in_array(4, [1, 2, 3]) ? "yes" : "no", "\n";''',
+  ["Compares strictly, like `in_array($v, $xs, true)`. For many lookups use a `map<string,bool>` and `isset()`."])
+f("array_keys", L, "array_keys(map<K,V> $m): list<K>", "The keys of a map, in insertion order.",
+  r'''echo json_encode(array_keys(["a" => 1, "b" => 2])), "\n";''')
+f("array_values", L, "array_values(map<K,V> $m): list<V>", "The values of a map, in insertion order (copied).",
+  r'''echo json_encode(array_values(["a" => 1, "b" => 2])), "\n";''', ["Not for maps of `?int` / `?float` / `?bool` yet."])
+f("array_sum", L, "array_sum(list<int> $xs): int  /  array_sum(list<float> $xs): float", "The sum of a list of numbers.",
+  r'''echo array_sum([1, 2, 3]), " ", array_sum([0.5, 0.25]), "\n";''', ["Ints wrap around like `+`."])
 f("count", L, "count(list|map $xs): int", "Number of items in a list or entries in a map.",
   r'''echo count([1, 2, 3]), " ", count(["a" => 1]), "\n";''')
 f("fill", L, "fill(int $n, int|float|bool|string $value): list", "A new list with `$n` copies of `$value`.",
@@ -66,7 +329,7 @@ f("fill", L, "fill(int $n, int|float|bool|string $value): list", "A new list wit
 $flags[1] = true;
 echo json_encode($flags), " ", json_encode(fill(2, "x")), "\n";''',
   ["A negative or impossibly large `$n` panics."], php="Pin's version of `array_fill(0, $n, $value)`.")
-f("copy", L, "copy(list|map|object|string $x): same type", "An independent copy you own, with everything inside it.",
+f("copy", L, "copy(list|map|object|string|?T $x): same type", "An independent copy you own, with everything inside it.",
   r'''$a = [1, 2];
 $b = copy($a);
 $b[] = 3;
@@ -91,12 +354,16 @@ f("rsort", L, "rsort(list $xs): void", "Sort a list variable in place, largest f
 rsort($xs);
 echo json_encode($xs), "\n";''',
   ["Same rules as `sort()`."])
-f("isset", L, "isset($list[$i] | $map[$key]): bool", "Whether a list index is in range or a map key exists.",
+f("isset", L, "isset($list[$i] | $map[$key] | ?T $x): bool", "Whether a list index is in range, a map key exists, or a ?T variable is not null.",
   r'''$m = ["tea" => 40];
 $xs = [10, 20];
-echo isset($m["tea"]) ? "y" : "n", isset($m["cake"]) ? "y" : "n", isset($xs[1]) ? "y" : "n", isset($xs[5]) ? "y" : "n", "\n";''',
-  ["Use it (or `??`) before reading a key that may be missing: reading a missing map key panics."],
-  php="Works only on one list item or map entry; there is no `null`, so there is no `isset($x)` for a plain variable.")
+echo isset($m["tea"]) ? "y" : "n", isset($m["cake"]) ? "y" : "n", isset($xs[1]) ? "y" : "n", isset($xs[5]) ? "y" : "n", "\n";
+?string $note = null;
+echo isset($note) ? "set" : "null", "\n";''',
+  ["Use it (or `??`) before reading a key that may be missing: reading a missing map key panics.",
+   "`isset($x)` on a `?T` variable is the same as `$x !== null`, and like it, counts `$x` as checked in the "
+   "branch where it is true."],
+  php="Works on one list item, one map entry, or one `?T` variable; not on a property path or an expression.")
 f("array_key_exists", L, "array_key_exists(key, map|list $m): bool", "Same as `isset($m[$key])`.",
   r'''$m = ["a" => 1];
 echo array_key_exists("a", $m) ? "yes" : "no", "\n";''',
@@ -114,6 +381,68 @@ f("intdiv", N, "intdiv(int $a, int $b): int", "Integer division, rounding toward
   r'''echo intdiv(7, 2), " ", intdiv(-7, 2), "\n";''',
   ["`/` always gives a float, like PHP; use `intdiv()` for list indexes and counts.",
    "Division by zero panics; `intdiv(PHP_INT_MIN, -1)` panics (there is no int answer)."])
+f("round", N, "round(float $x, int $digits = 0): float", "Round half away from zero, like PHP.",
+  r'''echo round(2.5), " ", round(-2.5), " ", round(1.955, 2), " ", round(1234.5, -2), "\n";''',
+  ["`round(1.955, 2)` is 1.96 as in PHP, though the stored double is a little below 1.955.",
+   "The result is a float; `(int)round($x)` for an int."])
+f("floor", N, "floor(float $x): float", "The largest whole number not above `$x`.",
+  r'''echo floor(2.7), " ", floor(-2.1), "\n";''')
+f("ceil", N, "ceil(float $x): float", "The smallest whole number not below `$x`.",
+  r'''echo ceil(2.1), " ", ceil(-2.7), "\n";''')
+f("abs", N, "abs(int|float $x): int|float", "The value without its sign (the same type).",
+  r'''echo abs(-7), " ", abs(-2.5), "\n";''', ["`abs(PHP_INT_MIN)` wraps to itself, like `-`."])
+f("max", N, "max(int|float $a, int|float $b): int|float  /  max(list<int|float> $xs)", "The larger of two numbers, or the largest item of a list.",
+  r'''echo max(3, 9), " ", max(2, 2.5), " ", max([4, 11, 7]), "\n";''',
+  ["An int and a float give a float. `max([])` panics (PHP throws)."], php="Numbers only (no strings, no more than two values).")
+f("min", N, "min(int|float $a, int|float $b): int|float  /  min(list<int|float> $xs)", "The smaller of two numbers, or the smallest item of a list.",
+  r'''echo min(3, 9), " ", min([4.5, -1.0]), "\n";''', ["`min([])` panics (PHP throws)."])
+f("pow", N, "pow(int|float $base, int|float $exp): int|float", "`$base` to the power `$exp`, the same as `$base ** $exp`.",
+  r'''echo pow(2, 10), " ", 2 ** 0.5, " ", 2.0 ** -1, " ", -2 ** 2, "\n";''',
+  ["Two ints give an int (wrapping past 64 bits, like `*`); an int base with a negative int exponent panics: write `2.0 ** -1`.", "`**` binds tighter than unary minus and from the right, as in PHP: `2 ** 3 ** 2` is 512."])
+f("fmod", N, "fmod(float $x, float $y): float", "The remainder of `$x / $y` for floats.",
+  r'''echo fmod(10, 3), " ", fmod(-7.5, 2), "\n";''')
+f("log", N, "log(float $x, float $base = M_E): float", "Natural logarithm, or in another base.",
+  r'''echo log(M_E), " ", log(8, 2), "\n";''')
+f("log10", N, "log10(float $x): float", "Base-10 logarithm.",
+  r'''echo log10(1000), "\n";''')
+f("exp", N, "exp(float $x): float", "e to the power `$x`.",
+  r'''echo exp(0), " ", round(exp(1), 5), "\n";''')
+f("sin", N, "sin(float $x): float", "Sine (radians).",
+  r'''echo round(sin(M_PI / 2), 6), "\n";''')
+f("cos", N, "cos(float $x): float", "Cosine (radians).",
+  r'''echo cos(0), "\n";''')
+f("tan", N, "tan(float $x): float", "Tangent (radians).",
+  r'''echo round(tan(M_PI / 4), 6), "\n";''')
+f("asin", N, "asin(float $x): float", "Arc sine, in radians.",
+  r'''echo round(asin(1), 4), "\n";''')
+f("acos", N, "acos(float $x): float", "Arc cosine, in radians.",
+  r'''echo acos(1), "\n";''')
+f("atan", N, "atan(float $x): float", "Arc tangent, in radians.",
+  r'''echo round(atan(1), 4), "\n";''')
+f("atan2", N, "atan2(float $y, float $x): float", "The angle of the point (`$x`, `$y`), in radians.",
+  r'''echo round(atan2(1, 1), 4), "\n";''')
+f("pi", N, "pi(): float", "π, the same as `M_PI`.",
+  r'''echo round(pi(), 5), "\n";''')
+f("is_nan", N, "is_nan(float $x): bool", "Whether `$x` is NaN (not a number).",
+  r'''echo is_nan(NAN) ? "nan" : "number", " ", is_nan(0.5) ? "nan" : "number", "\n";''')
+f("is_finite", N, "is_finite(float $x): bool", "Whether `$x` is neither infinite nor NaN.",
+  r'''echo is_finite(1.5) ? "yes" : "no", " ", is_finite(INF) ? "yes" : "no", "\n";''')
+f("is_infinite", N, "is_infinite(float $x): bool", "Whether `$x` is INF or -INF.",
+  r'''echo is_infinite(-INF) ? "yes" : "no", "\n";''')
+f("M_PI", N, "M_PI: float", "π.",
+  r'''echo round(M_PI, 5), "\n";''', kind="constant")
+f("M_E", N, "M_E: float", "e, the base of natural logarithms.",
+  r'''echo round(M_E, 5), "\n";''', kind="constant")
+f("NAN", N, "NAN: float", "Not a number.",
+  r'''echo is_nan(NAN) ? "nan" : "number", "\n";''', kind="constant")
+f("INF", N, "INF: float", "Infinity (`-INF` for minus infinity).",
+  r'''echo INF > 1e308 ? "bigger" : "not", "\n";''', kind="constant")
+f("PHP_FLOAT_EPSILON", N, "PHP_FLOAT_EPSILON: float", "The smallest float x with 1.0 + x != 1.0.",
+  r'''echo PHP_FLOAT_EPSILON < 0.000001 ? "tiny" : "big", "\n";''', kind="constant")
+f("PHP_FLOAT_MAX", N, "PHP_FLOAT_MAX: float", "The largest float.",
+  r'''echo PHP_FLOAT_MAX > 1e307 ? "huge" : "small", "\n";''', kind="constant")
+f("PHP_FLOAT_MIN", N, "PHP_FLOAT_MIN: float", "The smallest positive normal float.",
+  r'''echo PHP_FLOAT_MIN > 0 ? "positive" : "zero", "\n";''', kind="constant")
 f("sqrt", N, "sqrt(int|float $x): float", "Square root.",
   r'''echo sqrt(16), " ", sqrt(2.0), "\n";''',
   ["`sqrt` of a negative number gives NAN."])
@@ -127,6 +456,13 @@ f("wrapping_mul", N, "wrapping_mul(int $a, int $b): int", "`$a * $b` with 64-bit
   r'''$h = 0;
 foreach ([104, 105] as $c) { $h = wrapping_mul(wrapping_add($h, $c), 1099511628211); }
 echo $h, "\n";''')
+f("time", N, "time(): int", "The current time as seconds since 1970-01-01 00:00 UTC (Unix time).",
+  r'''$expires = time() + 3600;               // one hour from now
+echo $expires > time() ? "valid\n" : "expired\n";''',
+  ["The system's wall clock: it moves when the clock is set, so use it for expiry times and timestamps, not to "
+   "measure how long something took.",
+   "Keep times as Unix seconds in the database (`INTEGER` / `BIGINT`): the same on SQLite and PostgreSQL."],
+  php="`time()`. No `date()` / `microtime()` yet.")
 f("PHP_INT_MAX", N, "PHP_INT_MAX: int", "The largest int, 9223372036854775807.",
   r'''echo PHP_INT_MAX, "\n";''', kind="constant")
 f("PHP_INT_MIN", N, "PHP_INT_MIN: int", "The smallest int, -9223372036854775808.",
@@ -153,7 +489,14 @@ f("(string)", V, "(string) $x", "Cast to string: the same as `strval()`.",
   notes=["There is no `(bool)` cast: compare instead, e.g. `$n != 0`."])
 
 # ----------------------------------------------------------------------------------------- json
-f("json_encode", J, "json_encode(int|float|bool|string|list|map|object $x): string", "JSON text for a value.",
+f("json_validate", J, 'json_validate(string $json): bool', 'Whether the text is valid JSON.',
+  r'''echo json_validate("{\"a\":[1,2]}") ? "valid" : "invalid", " ", json_validate("{a:1}") ? "valid" : "invalid", "\n";''', php="PHP 8.3's json_validate().")
+f("JSON_PRETTY_PRINT", J, "JSON_PRETTY_PRINT: int", "For `json_encode($v, JSON_PRETTY_PRINT)`: indented output, as PHP.",
+  r'''echo json_encode(["a" => [1, 2]], JSON_PRETTY_PRINT), "\n";''', kind="constant")
+f("JSON_UNESCAPED_SLASHES", J, "JSON_UNESCAPED_SLASHES: int", "Accepted for PHP code; Pin never escapes `/`.", r'''echo JSON_UNESCAPED_SLASHES, "\n";''', kind="constant")
+f("JSON_UNESCAPED_UNICODE", J, "JSON_UNESCAPED_UNICODE: int", "Accepted for PHP code; Pin writes UTF-8 as it is.", r'''echo JSON_UNESCAPED_UNICODE, "\n";''', kind="constant")
+f("JSON_THROW_ON_ERROR", J, "JSON_THROW_ON_ERROR: int", "Accepted for PHP code; `json_encode` cannot fail in Pin.", r'''echo JSON_THROW_ON_ERROR, "\n";''', kind="constant")
+f("json_encode", J, "json_encode(int|float|bool|string|list|map|object|?T $x, int $flags = 0): string", "JSON text for a value (`JSON_PRETTY_PRINT` to indent).",
   r'''class Line {
     public function __construct(public string $item, public int $qty, private int $cost) {}
 }
@@ -161,7 +504,8 @@ echo json_encode(["name" => "ไทย", "note" => "a\"b"]), " ", json_encode([1
 echo json_encode([new Line("tea", 2, 80)]), " ", json_encode([[1, 2], [3]]), "\n";''',
   ["UTF-8 text is kept as is (like `JSON_UNESCAPED_UNICODE`); whole floats keep `.0`.",
    "Objects become JSON objects of their public properties, in declaration order; private properties are left out.",
-   "A map has one value type; for a JSON object with mixed values, use a class."],
+   "A map has one value type; for a JSON object with mixed values, use a class.",
+   "A null `?T` value (or property) is written `null`; null properties are kept in the output, like PHP."],
   php=r"PHP escapes non-ASCII as `\uXXXX` and drops `.0` unless `JSON_PRESERVE_ZERO_FRACTION` is set.")
 f("json_raw", J, "json_raw(string $json, string $key): string",
   "The JSON text of one value of an object (an object, an array or anything), to read further with the json_* functions.",
@@ -187,6 +531,32 @@ f("json_has", J, "json_has(string $json, string $key): bool", "Whether a JSON ob
   r'''$b = "{\"title\": \"tea\", \"qty\": null}";
 echo json_has($b, "title") ? "y" : "n", json_has($b, "qty") ? "y" : "n", json_has($b, "x") ? "y" : "n", json_has("not json", "title") ? "y" : "n", "\n";''',
   ["True even when the value is `null`. False when the text is not a JSON object."])
+f("json_decode", J, "json_decode(string $json): T throws", "Build an object of a class from JSON text, checking every field.",
+  r'''class Order {
+    public function __construct(public string $item, public int $qty) throws {
+        if ($qty < 1 || $qty > 100) { throw error(400, "qty must be 1-100"); }
+    }
+}
+Order $o = try json_decode("{\"item\":\"tea\",\"qty\":2}");
+echo $o->item, " x", $o->qty, "\n";
+Order $bad = try json_decode("{\"item\":\"tea\",\"qty\":\"2\"}") catch ($e) { echo $e->code, " ", $e->message, "\n"; return; };''',
+  ["The class comes from where the value goes: `Order $o = try json_decode($body);`, or `return try "
+   "json_decode($body);` in a function declared `: Order throws`. The top level must be a JSON object.",
+   "Strict: a missing field, an unknown field, a field given twice, a wrong type (`\"2\"` for an int, `1.5` for "
+   "an int, `null`), invalid JSON or nesting deeper than 64 levels fail with `error(400, \"<path>: <what>\")`, "
+   "e.g. `$.lines[1].qty: want an integer, got a string`.",
+   "Optional fields: give the constructor parameter a default (`public int $limit = 20`); a field may then be "
+   "left out. A `?T` field (`?string $email`) accepts JSON `null` and may also be left out; both give null. "
+   "Every other field must be there (a class without `__construct` needs all its public properties).",
+   "A class with `__construct` is built by calling it with the JSON fields named like its parameters, so its "
+   "checks run (throw `error(400, ...)` there). A class without one gets its public properties filled.",
+   "Fields may be int, float (an integer is accepted), bool, string, other classes, `list<T>` and "
+   "`map<string,T>` of those, nested to any depth. `map<int,...>` does not compile (JSON keys are strings).",
+   "Inside a `throws` handler an escaping 400 answers `{\"error\":\"Bad Request\"}` without the message; catch "
+   "it to send the message: `try json_decode($body) catch ($e) { http_status(400); return json_encode([\"error\" "
+   "=> $e->message]); }`."],
+  php="PHP's `json_decode()` gives an untyped array/stdClass and checks nothing; Pin's builds your class and "
+      "checks it (like a typed DTO / Pydantic model).")
 f("json_string", J, "json_string(string $json, string $key): string", 'A top-level string value, or `""`.',
   r'''echo json_string("{\"name\": \"Som\\u0e01\", \"n\": 5}", "name"), "|", json_string("{\"n\": 5}", "n"), "|\n";''',
   ['`""` when the key is missing, the value is not a string, or the text is not a JSON object.',
@@ -240,6 +610,15 @@ f("request_has_header", H, "request_has_header(string $name): bool",
     return "{\"ok\":true}";
 }
 serve(8080, "handle");''', run=False)
+f("request_ip", H, "request_ip(): string", "The client's IP address (the other end of the connection).",
+  r'''function handle(string $method, string $path, string $body): string {
+    return json_encode(["you" => request_ip()]);        // {"you":"203.0.113.7"}
+}
+serve(8080, "handle");''',
+  ["IPv4 as `\"203.0.113.7\"`, IPv6 as `\"2001:db8::1\"`; `\"\"` outside a request.",
+   "Behind a proxy (Caddy for https, design/tls.md) this is the proxy's address, usually `127.0.0.1`; the client's is "
+   "then in `X-Forwarded-For`, which only a proxy you run may be trusted to set (Tack's `client_ip()` does that)."],
+  run=False, php="`$_SERVER['REMOTE_ADDR']`.")
 f("response_header", H, "response_header(string $name, string $value): void",
   "Add a header to the response (for example `Content-Type`, `Location`, `Cache-Control`, `Set-Cookie`).",
   r'''function handle(string $method, string $path, string $body): string {
@@ -279,16 +658,40 @@ f("form_has", H, "form_has(string $body, string $key): bool", "Whether a form bo
 D = "database"
 SETUP = ('$db = db_open(":memory:");\n'
          'db_exec($db, "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT UNIQUE, qty INTEGER, price REAL)", []);\n')
-f("db_open", D, "db_open(string $path): db", "Open (or create) an SQLite database file.",
+f("db_open", D, "db_open(string $path): db", "Open (or create) an SQLite database file, or a PostgreSQL database by URL.",
   r'''$db = db_open(":memory:");          // a file name like "shop.db", or ":memory:" for a temporary one
 echo db_exec($db, "CREATE TABLE t (x INTEGER)", []), "\n";''',
-  ["The connection closes by itself when `$db` goes out of scope — at the end of the function, or when a "
-   "handler panics.",
-   "Open one per request in a server: opening SQLite is fast, and WAL mode lets requests read and write in "
-   "parallel. Writers wait up to 5 seconds for each other.",
+  ["When `$db` goes out of scope (end of the function) the connection goes back to a pool the runtime keeps "
+   "per server thread, so the next `db_open()` of the same file is almost free (~3 µs instead of ~80–200 µs). "
+   "A connection comes back only clean: an open transaction is rolled back; after a handler panics it is closed.",
+   "Open one per request in a server — that is the intended use. WAL mode lets requests read and write in "
+   "parallel; writers wait up to 5 seconds for each other.",
+   "`:memory:` and `\"\"` are never pooled: each open is a new, empty database.",
    "A file that cannot be opened panics. Foreign keys are enforced.",
-   "`db` values move like lists; pass `$db` to functions (they borrow it)."],
-  php="Pin's version of `new PDO('sqlite:shop.db')`. PostgreSQL is planned with the same functions.")
+   "`db` values move like lists; pass `$db` to functions (they borrow it). A task (`go`) cannot use the "
+   "caller's `$db`: open one inside the task.",
+   "SQL that would change the connection for its next user (`PRAGMA foreign_keys = ...`, `ATTACH`, "
+   "`CREATE TEMP ...`; for PostgreSQL `SET` without `LOCAL`, `RESET`, `LISTEN`, `PREPARE`, `DISCARD`, "
+   "`set_config(..., false)`, `pg_advisory_lock()`) does not compile.",
+   "PostgreSQL: `db_open(env(\"DATABASE_URL\"))` with `postgres://user:password@host:5432/name` (or "
+   "`postgresql://`). The same `db_*` functions and `?` placeholders work; the URL as a literal in the code "
+   "does not compile, so the password stays out of git. It needs PostgreSQL's client library at run time "
+   "(Ubuntu/Debian `libpq5`, macOS `brew install libpq`); TLS options go in the URL (`?sslmode=require`).",
+   "PostgreSQL waits never block the thread: while one request waits for the database, the others run. A "
+   "server that is down panics after up to 10 s; inside a handler that answers 503 (try again later), not 500."],
+  php="Pin's version of `new PDO('sqlite:shop.db')` / `new PDO('pgsql:...')`.")
+f("db_pool", D, "db_pool(string $path, int $per_thread, int $idle_ms): void",
+  "Set the connection pool for one database file or PostgreSQL URL (optional).",
+  r'''db_pool("shop.db", 8, 30000);    // up to 8 connections per server thread; close after 30 s unused
+echo "pool set\n";''',
+  ["Without it each file gets 4 connections per thread, closed after 60 s unused.",
+   "Only at the top level of the program, before `serve()` (compile error inside a function).",
+   "When a thread's connections are all in use, `db_open()` waits (other requests keep running) for up to "
+   "5 seconds, then panics — a 503 inside a handler (clients may retry). A handler holds a connection while it waits "
+   "(`sleep_ms`, `await`, `http_get`), so raise the limit for handlers like that.",
+   "PostgreSQL: threads × `$per_thread` must stay under the server's `max_connections` (100 by default); "
+   "the program prints a warning at the first connection when it does not."],
+  php="Like `PDO::ATTR_PERSISTENT` / `pg_pconnect`, but the connection is always returned clean.")
 f("db_exec", D, "db_exec(db $db, string $sql, list $params): int",
   "Run INSERT, UPDATE, DELETE or CREATE; returns the rows changed.",
   SETUP + r'''echo db_exec($db, "INSERT INTO items (name, qty) VALUES (?, ?)", ["tea", "2"]), " ";
@@ -298,7 +701,8 @@ echo db_exec($db, "INSERT INTO items (name, qty) VALUES (?, ?)", ["tea", "5"]), 
    "cannot inject SQL.",
    "Returns -1 when a constraint (UNIQUE, NOT NULL, CHECK, FOREIGN KEY) refuses the change — `db_error($db)` "
    "says which. Any other error (bad SQL, wrong number of values) is a bug and panics.",
-   'One statement per call. Numbers can be passed as strings: SQLite stores `"2"` in an INTEGER column as 2.'])
+   'One statement per call. Numbers can be passed as strings: SQLite stores `"2"` in an INTEGER column as 2, '
+   "and PostgreSQL reads each value as the type its column or `?::type` asks for."])
 f("db_query", D, "db_query(db $db, string $sql, list $params): rows", "Run a SELECT and get the rows one at a time.",
   SETUP + r'''db_exec($db, "INSERT INTO items (name, qty, price) VALUES (?, ?, ?)", ["tea", "2", "40"]);
 db_exec($db, "INSERT INTO items (name, qty, price) VALUES (?, ?, ?)", ["cake", "1", "89.5"]);
@@ -318,7 +722,8 @@ f("db_int", D, "db_int(rows $rows, string $column): int", "An integer column of 
 $rows = db_query($db, "SELECT qty, qty * 10 AS big FROM items", []);
 while (db_next($rows)) { echo db_int($rows, "qty"), " ", db_int($rows, "big"), "\n"; }''',
   ["A column name the query does not have, or reading before `db_next`, panics. Use `AS name` for computed "
-   "columns."])
+   "columns.",
+   "PostgreSQL: strict — a value that is not a whole integer (`\"12abc\"`, `1.5`) panics; a `bool` column gives 1 or 0."])
 f("db_float", D, "db_float(rows $rows, string $column): float", "A numeric column of the current row (NULL gives 0.0).",
   SETUP + r'''db_exec($db, "INSERT INTO items (name, price) VALUES (?, ?)", ["cake", "89.5"]);
 $rows = db_query($db, "SELECT price FROM items", []);
@@ -327,23 +732,63 @@ f("db_string", D, "db_string(rows $rows, string $column): string",
   'A column of the current row as text (NULL gives `""`).',
   SETUP + r'''db_exec($db, "INSERT INTO items (name, qty) VALUES (?, ?)", ["ชาเย็น", "1"]);
 $rows = db_query($db, "SELECT name, qty FROM items", []);
-while (db_next($rows)) { echo db_string($rows, "name"), " ", db_string($rows, "qty"), "\n"; }''')
+while (db_next($rows)) { echo db_string($rows, "name"), " ", db_string($rows, "qty"), "\n"; }''',
+  ["PostgreSQL gives its own text for each type: a `bool` is `\"t\"` or `\"f\"`, a `numeric(10,2)` keeps its zeros "
+   "(`\"1.50\"`)."])
 f("db_is_null", D, "db_is_null(rows $rows, string $column): bool", "Whether a column of the current row is NULL.",
   SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
 $rows = db_query($db, "SELECT name, qty FROM items", []);
-while (db_next($rows)) { echo db_is_null($rows, "qty") ? "qty is NULL" : "qty set", "\n"; }''',
-  ['Pin has no `null` yet, so check this before trusting a 0 or `""` from a nullable column.'])
+while (db_next($rows)) {
+    echo db_is_null($rows, "qty") ? "qty is NULL" : "qty set", "\n";
+    $qty = db_is_null($rows, "qty") ? null : db_int($rows, "qty");      // ?int
+    echo json_encode($qty), "\n";
+}''',
+  ['`db_int` / `db_float` / `db_string` read NULL as 0 / `""`, so check this before trusting them on a '
+   'nullable column; `db_is_null(...) ? null : db_int(...)` gives a `?int`.'])
 f("db_json", D, "db_json(db $db, string $sql, list $params): string",
   "Run a SELECT and get all rows as a JSON array of objects.",
   SETUP + r'''db_exec($db, "INSERT INTO items (name, qty, price) VALUES (?, ?, ?)", ["tea", "2", "40"]);
 db_exec($db, "INSERT INTO items (name) VALUES (?)", ["cake \"special\""]);
 echo db_json($db, "SELECT id, name, qty, price FROM items ORDER BY id", []), "\n";''',
   ["Column names become keys; INTEGER, REAL, TEXT and NULL become JSON numbers, strings and `null`.",
+   "PostgreSQL: integer, float and numeric columns become numbers (`NaN` and `Infinity` strings), `bool` "
+   "`true`/`false`, `json`/`jsonb` are included as they are, everything else (dates, uuid, text) a string.",
    "The easiest way to answer an API request with query results — no loop, no string building."])
+f("db_all", D, "db_all(db $db, string $sql, list $params): list<T>",
+  "Run a SELECT and get every row as an object of the class where the list goes.",
+  r'''class Item {
+    public function __construct(public int $id, public string $name, public ?int $qty = null) {}
+}
+''' + SETUP + r'''db_exec($db, "INSERT INTO items (name, qty) VALUES ('tea', 2), ('cake', NULL)", []);
+list<Item> $items = db_all($db, "SELECT id, name, qty FROM items ORDER BY id", []);
+foreach ($items as $i) { echo $i->name, " ", $i->qty ?? 0, "\n"; }''',
+  ["The class comes from where the value goes: `list<Item> $xs = db_all(...)` or `return db_all(...)` from a "
+   "function declared `: list<Item>`. Column names are the constructor's parameters (or the public properties); "
+   "`?T` and parameters with a default may be missing, NULL gives null.",
+   "A row that does not fit (a missing or extra column, a wrong type, the constructor refuses it) is a bug in the "
+   "program and **panics** (500 in a handler). Tack checks the columns against the class when you build.",
+   "SQLite has no booleans: read 0 / 1 into an `int`. Same SQL rules as `db_query()` (literal SQL, `?` values)."],
+  php="Like PDO's `fetchAll(PDO::FETCH_CLASS, Item::class)`, but typed and checked.")
+f("db_one", D, "db_one(db $db, string $sql, list $params): ?T",
+  "Run a SELECT and get the first row as an object of the class where it goes, or null when there is none.",
+  r'''class Item {
+    public function __construct(public int $id, public string $name) {}
+}
+''' + SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES ('tea')", []);
+?Item $t = db_one($db, "SELECT id, name FROM items WHERE name = ?", ["tea"]);
+?Item $x = db_one($db, "SELECT id, name FROM items WHERE name = ?", ["nope"]);
+echo $t?->name ?? "none", " ", $x?->name ?? "none", "\n";''',
+  ["Write it as `?Item $i = db_one(...)`, then check: `if ($i === null) { throw error(404, \"...\"); }`.",
+   "Only the first row is read; add `LIMIT 1` when more could match. The same rules as `db_all()`."],
+  php="Like PDO's `fetchObject()`, but typed: null instead of `false`.")
 f("db_last_id", D, "db_last_id(db $db): int", "The id of the last row inserted on this connection.",
   SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
 db_exec($db, "INSERT INTO items (name) VALUES (?)", ["cake"]);
-echo db_last_id($db), "\n";''')
+echo db_last_id($db), "\n";''',
+  ["PostgreSQL has no last insert id: write `INSERT ... RETURNING id` and read it with `db_query` (it panics "
+   "on a PostgreSQL connection, saying so). `RETURNING` works in SQLite too.",
+   "To insert unless it exists: `INSERT ... ON CONFLICT (name) DO NOTHING RETURNING id` — no row back means it "
+   "was there already."])
 f("db_error", D, "db_error(db $db): string", 'Why the last `db_exec` returned -1, or `""`.',
   SETUP + r'''db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]);
 if (db_exec($db, "INSERT INTO items (name) VALUES (?)", ["tea"]) < 0) { echo "refused: ", db_error($db), "\n"; }''')
@@ -442,6 +887,20 @@ $x = try hub_next($s, 10) catch ($e) { ""; };
 $y = try hub_next($s, 10) catch ($e) { ""; };
 echo $y, " has id ", hub_last_id($s), "\n";''',
   ["Send it as the SSE event id (`sse_send_id`) so a client can resume from it."])
+f("request_deadline", H, "request_deadline(int $ms): void", "Give the running request at most `$ms` milliseconds.",
+  r'''function handle(string $method, string $path, string $body): string throws {
+    request_deadline(300);                     // the whole request, tasks included
+    $s = hub_subscribe("orders");
+    return try hub_next($s, 5000);             // ends at 300 ms with error 504
+}
+echo "inside serve() only\n";''',
+  ["When the time is up, every wait of the request ends — `await`, `sleep_ms`, `hub_next`, `http_get` / "
+   "`http_post`, `run`, also inside its tasks — and fails with error 504; whatever the handler returns after "
+   "that, the client gets `504 {\"error\":\"Gateway Timeout\"}`.",
+   "Code that computes without waiting is not interrupted: the deadline takes effect at its next wait.",
+   "Calling it again can only make the deadline earlier. Outside a `serve()` request it does nothing.",
+   "1 to 3600000 ms (else panic)."],
+  php="Like `set_time_limit()` for one request, but it also stops the request's tasks and network waits.")
 f("sse_start", H, "sse_start(): void throws",
   "Turn the response into a Server-Sent Events stream (`text/event-stream`), sent as it is written.",
   r'''function handle(string $method, string $path, string $body): string throws {
@@ -546,7 +1005,84 @@ echo try run("sh", ["-c", "exit 3"], 2000) catch ($e) { "exit code " . $e->code;
    "The program reads nothing on stdin; output above 64 MB is cut."],
   php="Instead of `exec()` / `shell_exec()` / `proc_open()`, which go through a shell.")
 
+# ----------------------------------------------------------------------------------------- security
+SEC = "security"
+f("env", SEC, "env(string $name): string", "An environment variable, or `\"\"` when it is not set.",
+  r'''echo env("PIN_SURELY_NOT_SET") == "" ? "not set\n" : "set\n";''',
+  ["Read secrets from here (database URLs, API keys, signing keys), never from string literals: literals end "
+   "up in git and in the binary.",
+   "Read once per request is fine (it is cheap); a name containing a zero byte gives `\"\"`."],
+  php="`getenv('NAME')`, but `\"\"` instead of `false` when unset.")
+f("filter_var", SEC, 'filter_var(string $value, int $filter): ?T', 'Check a value from a client: the value when it is valid, null when not.',
+  r'''echo filter_var("ann@example.com", FILTER_VALIDATE_EMAIL) ?? "bad", " ", filter_var("ann@", FILTER_VALIDATE_EMAIL) ?? "bad", "\n";
+$age = filter_var(" 42 ", FILTER_VALIDATE_INT);
+echo $age === null ? "not a number" : strval($age + 1), "\n";''',
+  ['`FILTER_VALIDATE_EMAIL`, `_URL`, `_IP` give `?string`; `_INT` `?int` (no leading zeros, within 64 bits, spaces around allowed); `_FLOAT` `?float`; `_BOOL` `?bool` (`yes on true 1` / `no off false 0 ""`).', 'The filter must be one of these constants written in the call (the result type depends on it).', "Email: ASCII addresses with a dotted domain, as PHP's default (no Unicode addresses)."], php='PHP returns `false` where Pin gives null; no options or flags argument.')
+f("FILTER_VALIDATE_EMAIL", SEC, 'FILTER_VALIDATE_EMAIL: int', 'For `filter_var()`: an email address (?string).',
+  r'''echo FILTER_VALIDATE_EMAIL > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_URL", SEC, 'FILTER_VALIDATE_URL: int', 'For `filter_var()`: a URL with a scheme and host (?string).',
+  r'''echo FILTER_VALIDATE_URL > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_IP", SEC, 'FILTER_VALIDATE_IP: int', 'For `filter_var()`: an IPv4 or IPv6 address (?string).',
+  r'''echo FILTER_VALIDATE_IP > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_INT", SEC, 'FILTER_VALIDATE_INT: int', 'For `filter_var()`: an int (?int).',
+  r'''echo FILTER_VALIDATE_INT > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_FLOAT", SEC, 'FILTER_VALIDATE_FLOAT: int', 'For `filter_var()`: a number (?float).',
+  r'''echo FILTER_VALIDATE_FLOAT > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_BOOL", SEC, 'FILTER_VALIDATE_BOOL: int', 'For `filter_var()`: yes/no, on/off, true/false, 1/0 (?bool).',
+  r'''echo FILTER_VALIDATE_BOOL > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("FILTER_VALIDATE_BOOLEAN", SEC, 'FILTER_VALIDATE_BOOLEAN: int', 'For `filter_var()`: the same as FILTER_VALIDATE_BOOL.',
+  r'''echo FILTER_VALIDATE_BOOLEAN > 0 ? "a filter" : "", "\n";''', kind="constant")
+f("hash", SEC, 'hash(string $algo, string $data): string', "SHA-256 of a string, as 64 lowercase hex characters.",
+  r'''echo hash("sha256", "abc"), "\n";''',
+  ['`$algo` must be the literal `"sha256"`: MD5 and SHA-1 are broken, so they do not compile.',
+   "For passwords use `password_hash()`, not a plain hash: it is salted and slow on purpose."],
+  php="`hash('sha256', $data)`; no `md5()` / `sha1()`.")
+f("hash_hmac", SEC, 'hash_hmac(string $algo, string $data, string $key): string',
+  "HMAC-SHA256 of `$data` with `$key`, as hex: a signature only someone with the key can make.",
+  r'''$sig = hash_hmac("sha256", "user=7", "server-secret");
+echo strlen($sig), " ", hash_equals($sig, hash_hmac("sha256", "user=7", "server-secret")) ? "valid" : "forged", "\n";''',
+  ['`$algo` must be the literal `"sha256"`.',
+   "Compare a signature that came from a client with `hash_equals()`, never `==`."],
+  php="Same argument order as PHP: algorithm, data, key.")
+f("hash_equals", SEC, "hash_equals(string $known, string $user): bool",
+  "Compare two strings in a time that does not depend on where they differ.",
+  r'''echo hash_equals("abc", "abc") ? "same" : "differ", " ", hash_equals("abc", "abd") ? "same" : "differ", "\n";''',
+  ["Use it for tokens, API keys and signatures: `==` stops at the first different byte, which lets a client "
+   "guess a secret one byte at a time by measuring."])
+f("random_token", SEC, "random_token(int $bytes): string",
+  "`$bytes` random bytes from the operating system, as hex (twice as many characters).",
+  r'''$t = random_token(16);
+echo strlen($t), "\n";                    // 32 hex characters: a 128-bit session token''',
+  ["Secure for session tokens, API keys, password-reset links. 16 bytes is enough for a token.",
+   "`$bytes` must be 1 to 1024 (else panic)."],
+  php="`bin2hex(random_bytes($bytes))`.", run=True)
+f("random_int", SEC, "random_int(int $min, int $max): int",
+  "A random integer from `$min` to `$max` (both included), from the operating system's secure source.",
+  r'''$d = random_int(1, 6);
+echo $d >= 1 && $d <= 6 ? "a dice roll\n" : "impossible\n";''',
+  ["Every value is equally likely (no modulo bias). `$min > $max` panics."],
+  php="Same as PHP's `random_int`. There is no `rand()` / `mt_rand()`: use this.")
+f("password_hash", SEC, "password_hash(string $password): string",
+  "A salted, slow hash of a password, to store instead of the password.",
+  r'''$h = password_hash("correct horse");
+echo substr($h, 0, 22), "...\n";''',
+  ["PBKDF2-HMAC-SHA256 with 600,000 rounds (OWASP's figure for this algorithm) and a random 16-byte salt, "
+   "stored as `$pbkdf2-sha256$600000$<salt>$<hash>`; two calls give different strings.",
+   "Slow on purpose: about 0.04 s on an Apple M2 (the CPU's SHA-256 instructions on arm64), about 0.5 s where "
+   "the portable code runs (x86 for now). It keeps the server thread busy meanwhile: call it at sign-up, "
+   "sign-in and password change only.",
+   "Store the whole string (it fits in TEXT); check with `password_verify()`."],
+  php="`password_hash($password, PASSWORD_DEFAULT)` without the second argument; PHP uses bcrypt, Pin PBKDF2, so "
+      "hashes do not move between them.")
+f("password_verify", SEC, "password_verify(string $password, string $hash): bool",
+  "Whether `$password` matches a hash made by `password_hash()`.",
+  r'''$h = password_hash("correct horse");
+echo password_verify("correct horse", $h) ? "yes" : "no", " ", password_verify("wrong", $h) ? "yes" : "no", "\n";''',
+  ["A string that is not such a hash gives `false` (never a panic): it usually comes from a database.",
+   "As slow as `password_hash()`; the comparison takes constant time."])
+
 CATEGORIES = [{"id": S, "title": "Strings"}, {"id": L, "title": "Lists and maps"}, {"id": N, "title": "Numbers"},
               {"id": V, "title": "Conversions"}, {"id": J, "title": "JSON"}, {"id": H, "title": "HTTP"},
               {"id": "database", "title": "Database (SQLite)"}, {"id": E, "title": "Errors"}, {"id": T, "title": "Tasks (go / await)"},
-              {"id": HB, "title": "Hub (messages between requests)"}, {"id": CL, "title": "Other servers and programs"}]
+              {"id": HB, "title": "Hub (messages between requests)"}, {"id": CL, "title": "Other servers and programs"},
+              {"id": SEC, "title": "Security (hashes, passwords, random)"}]

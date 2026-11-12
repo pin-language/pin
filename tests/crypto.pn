@@ -1,0 +1,39 @@
+// Hashing, HMAC, passwords and secure random numbers. The expected values are published test vectors
+// (NIST SHA-256, RFC 4231 HMAC, RFC 7914 PBKDF2), also checked with Python's hashlib.
+echo hash("sha256", ""), "\n";
+echo hash("sha256", "abc"), "\n";
+echo hash("sha256", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"), "\n";
+echo hash("sha256", str_repeat("a", 1000000)), "\n";
+echo hash("sha256", "ไทย"), "\n";
+echo hash_hmac("sha256", "what do ya want for nothing?", "Jefe"), "\n";
+echo hash_hmac("sha256", "long key", str_repeat("k", 100)), "\n";     // a key longer than 64 bytes is hashed first
+
+// PBKDF2 with chosen rounds, through password_verify (RFC 7914 vectors, first 32 bytes)
+echo password_verify("passwd", "\$pbkdf2-sha256\$1\$73616c74\$55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc") ? "rfc 1 ok" : "rfc 1 BAD", "\n";
+echo password_verify("Password", "\$pbkdf2-sha256\$80000\$4e61436c\$4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56") ? "rfc 2 ok" : "rfc 2 BAD", "\n";
+
+$h = password_hash("correct horse");
+echo str_starts_with($h, "\$pbkdf2-sha256\$600000\$") ? "format ok" : "format BAD", "\n";
+echo password_verify("correct horse", $h) ? "right password: true" : "right password: false", "\n";
+echo password_verify("correct horsf", $h) ? "wrong password: true" : "wrong password: false", "\n";
+echo password_hash("correct horse") != $h ? "salted: two hashes differ" : "NOT salted", "\n";
+foreach (["", "x", "\$pbkdf2-sha256\$", "\$pbkdf2-sha256\$99999999999\$00\$00", "\$2y\$10\$abc", "\$pbkdf2-sha256\$1\$zz\$" . str_repeat("0", 64)] as $bad) {
+    echo password_verify("x", $bad) ? "BAD accepted" : "bad hash: false", "\n";
+}
+
+echo hash_equals("abc", "abc") ? "equal" : "differ", " ", hash_equals("abc", "abd") ? "equal" : "differ", " ",
+     hash_equals("abc", "ab") ? "equal" : "differ", "\n";
+
+$t = random_token(16);
+echo strlen($t), " ", $t != random_token(16) ? "tokens differ" : "SAME TOKEN", "\n";
+map<int,int> $seen = [];
+$inside = true;
+for ($i = 0; $i < 2000; $i++) {
+    $r = random_int(1, 6);
+    if ($r < 1 || $r > 6) { $inside = false; }
+    $seen[$r] = 1;
+}
+echo $inside ? "1..6 only" : "OUT OF RANGE", ", all six seen: ", count($seen) == 6 ? "yes" : "no", "\n";
+echo random_int(5, 5), " ", random_int(-3, -3), "\n";
+$w = random_int(-9223372036854775807 - 1, 9223372036854775807);
+echo "full range ok\n";

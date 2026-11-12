@@ -1,0 +1,5 @@
+function f(db $db, string $sort): string {
+    $sql = "SELECT id FROM t ORDER BY ";
+    $sql .= $sort;
+    return db_json($db, $sql, []);
+}

@@ -47,7 +47,7 @@ static Str *form_lookup(const char *p, const char *e, Str *key) {
                 v->data[v->len++] = ch;
             }
             v->data[v->len] = 0;
-            return v;
+            return str_make_valid(v);           // %C8 alone decodes to a byte that is not UTF-8: U+FFFD
         }
         p = amp ? amp + 1 : e;
     }
@@ -165,7 +165,8 @@ static int hex4(const char *p, const char *e, uint32_t *out) {
     return 1;
 }
 
-// decode the JSON string starting at p (opening quote) up to q (just after the closing quote)
+// decode the JSON string starting at p (opening quote) up to q (just after the closing quote); the text is
+// UTF-8 already and \u escapes are written as UTF-8 (lone surrogates as U+FFFD), so the result is too
 static Str *jstr_decode(const char *p, const char *q) {
     Str *d = str_alloc(q - p);
     const char *e = q - 1;                  // closing quote
@@ -322,10 +323,52 @@ Str *pn_jget_at(Str *json, int64_t i) {
 
 // ============================================================================ printing
 
-void pn_print_int(int64_t v) { printf("%lld", (long long)v); }
-void pn_print_str(Str *s) { fwrite(s->data, 1, (size_t)s->len, stdout); }
+void pn_print_int(int64_t v) { stack_headroom(); printf("%lld", (long long)v); }
+void pn_print_str(Str *s) { stack_headroom(); fwrite(s->data, 1, (size_t)s->len, stdout); }
 void pn_print_float(double v) {
+    stack_headroom();
     char buf[48];
     fmt_float(buf, sizeof buf, v);
     fputs(buf, stdout);
+}
+
+// env("NAME"): an environment variable, "" when unset — for secrets like DATABASE_URL that must not be in source.
+Str *pn_env(Str *name) {
+    const char *v = memchr(name->data, 0, (size_t)name->len) ? NULL : getenv(name->data);
+    return v ? str_from_lossy(v, (int64_t)strlen(v)) : str_alloc(0);
+}
+
+// time(): seconds since 1970-01-01 UTC, like PHP (the wall clock: it can jump when the system clock is set).
+int64_t pn_time(void) { return (int64_t)time(NULL); }
+
+// ord("A") = 65: the first byte (0 for ""), like PHP.  chr(65) = "A": one byte, n taken modulo 256 like PHP.
+int64_t pn_ord(Str *s) { return s->len ? (unsigned char)s->data[0] : 0; }
+
+Str *pn_chr(int64_t n) {
+    char c = (char)(((n % 256) + 256) % 256);
+    if ((unsigned char)c >= 0x80) {             // one byte above 127 is not UTF-8 on its own (strings.md ST1)
+        fflush(stdout);
+        fprintf(stderr, "panic: chr(%lld) would make a byte that is not UTF-8 text on its own. Use mb_chr(%lld) for "
+                "the character U+%04llX\n", (long long)n, (long long)n, (unsigned long long)(n % 256 + 256) % 256);
+        die();
+    }
+    return str_from(&c, 1);
+}
+
+// rawurlencode: %XX for every byte but A-Z a-z 0-9 - _ . ~ (RFC 3986), like PHP's rawurlencode.
+Str *pn_rawurlencode(Str *s) {
+    static const char hex[] = "0123456789ABCDEF";
+    Str *out = str_alloc(checked_size(s->len, 3, 0));
+    int64_t n = 0;
+    for (int64_t i = 0; i < s->len; i++) {
+        unsigned char c = (unsigned char)s->data[i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+            c == '.' || c == '~') {
+            out->data[n++] = (char)c;
+        } else {
+            out->data[n++] = '%'; out->data[n++] = hex[c >> 4]; out->data[n++] = hex[c & 15];
+        }
+    }
+    out->len = n; out->data[n] = 0;
+    return out;
 }

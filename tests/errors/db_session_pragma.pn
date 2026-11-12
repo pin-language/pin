@@ -1,0 +1,2 @@
+$db = db_open("app.db");
+db_exec($db, "PRAGMA foreign_keys = OFF", []);

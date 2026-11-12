@@ -1,0 +1,17 @@
+<?php
+// db_all() / db_one() on PostgreSQL: bigint, numeric, bool and NULL columns into properties
+class Item {
+    public function __construct(public int $id, public string $name, public float $price, public bool $ok,
+                                public ?string $note = null) {}
+}
+$db = db_open(env("DATABASE_URL"));
+db_exec($db, "DROP TABLE IF EXISTS pin_classes", []);
+db_exec($db, "CREATE TABLE pin_classes (id bigserial PRIMARY KEY, name text NOT NULL, price numeric(10, 2) NOT NULL, ok bool NOT NULL, note text)", []);
+db_exec($db, "INSERT INTO pin_classes (name, price, ok, note) VALUES ('tea', 45.5, true, NULL), ('cake', 120, false, 'ไทย')", []);
+list<Item> $items = db_all($db, "SELECT id, name, price, ok, note FROM pin_classes ORDER BY id", []);
+foreach ($items as $i) { echo $i->id, " ", $i->name, " ", $i->price, " ", $i->ok ? "ok" : "not ok", " ", $i->note ?? "-", "\n"; }
+?Item $c = db_one($db, "SELECT id, name, price, ok, note FROM pin_classes WHERE name = ?", ["cake"]);
+echo $c?->note ?? "none", "\n";
+?Item $n = db_one($db, "SELECT id, name, price, ok, note FROM pin_classes WHERE name = ?", ["nope"]);
+echo $n === null ? "no row" : "row", "\n";
+db_exec($db, "DROP TABLE pin_classes", []);

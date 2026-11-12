@@ -1,0 +1,77 @@
+// ?T items in properties, json_decode into them, & parameters, nesting, isset() vs array_key_exists()
+class Tag {
+    public function __construct(public string $name) {}
+}
+
+class Survey {
+    public string $title;
+    public list<?int> $scores;
+    public map<string,?string> $notes;
+    public list<?Tag> $tags;
+    public function __construct(string $title, list<?int> $scores, map<string,?string> $notes, list<?Tag> $tags) {
+        $this->title = $title;
+        $this->scores = copy($scores);
+        $this->notes = copy($notes);
+        $this->tags = copy($tags);
+    }
+}
+
+function first_missing(list<?int> $xs): int {
+    foreach ($xs as $i => $x) {
+        if ($x === null) { return $i; }
+    }
+    return -1;
+}
+
+function names(list<?Tag> $ts): list<?string> {
+    list<?string> $out = [];
+    foreach ($ts as $t) {
+        $out[] = $t?->name;
+    }
+    return $out;
+}
+
+function fill_gaps(list<?int> &$xs, int $v): void {
+    for ($i = 0; $i < count($xs); $i++) {
+        if ($xs[$i] === null) { $xs[$i] = $v; }
+    }
+}
+
+$s = new Survey("q1", [5, null, 3], ["ann" => "late", "bob" => null], [new Tag("a"), null, new Tag("c")]);
+echo json_encode($s), "\n";
+echo first_missing($s->scores), "\n";
+echo json_encode(names($s->tags)), "\n";
+$c = copy($s);
+$c->tags[0] = null;
+$c->scores[] = null;
+echo json_encode($c), "\n";
+echo json_encode($s), "\n";
+
+$j = "{\"title\":\"q2\",\"scores\":[1,null,2],\"notes\":{\"x\":null,\"y\":\"yes\"},\"tags\":[null,{\"name\":\"z\"}]}";
+Survey $d = try json_decode($j) catch ($e) { echo $e->message, "\n"; return; };
+echo json_encode($d), "\n";
+Survey $bad = try json_decode("{\"title\":\"q\",\"scores\":[1,\"x\"],\"notes\":{},\"tags\":[]}") catch ($e) { echo $e->code, " ", $e->message, "\n"; new Survey("", [], [], []); };
+
+list<?int> $g = [null, 4, null];
+fill_gaps(&$g, 0);
+echo json_encode($g), "\n";
+
+map<string,?int> $m = ["a" => null, "b" => 2];
+echo isset($m["a"]) ? "set" : "not set", " ", array_key_exists("a", $m) ? "key" : "no key", " ",
+     isset($m["b"]) ? "set" : "not set", " ", isset($m["zz"]) ? "set" : "not set", "\n";
+$v = $m["a"];
+echo $v === null ? "null" : "value", "\n";
+echo $m["b"] === null ? "null" : "value", " ", $g[0] === null ? "null" : "value", "\n";
+
+list<list<?int>> $grid = [[1, null], [null, 2]];
+$grid[1][0] = 9;
+echo json_encode($grid), "\n";
+list<?string> $ss = ["a", null];
+$k = $ss[0];
+$ss[0] = "changed";
+echo $k ?? "", " ", $ss[0] ?? "", "\n";
+?string $maybe = null;
+$ss[] = $maybe;
+$maybe = "m";
+$ss[] = $maybe;
+echo json_encode($ss), " ", json_encode([$maybe, "x"]), "\n";

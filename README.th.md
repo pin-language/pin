@@ -10,7 +10,7 @@ production มาจับตอน compile ทุก error บอกวิธ�
 คนที่เขียน PHP อ่าน Pin ได้ทันที แต่ตัวแปรแต่ละตัวมี type เดียว หน่วยความจำจัดการด้วย ownership ที่เช็คตอน
 compile (คล้าย Rust แต่ย่อให้ง่าย) และ compile ผ่าน LLVM ออกมาเป็น binary ไฟล์เดียว รวมถึง HTTP server แบบหลาย thread
 
-> **สถานะ: preview (0.8) สำหรับให้คนเริ่มทดลอง** ภาษายังเล็กและยังเปลี่ยนได้ ห้ามใช้ใน production · HTTP server มี
+> **สถานะ: preview (0.9) สำหรับให้คนเริ่มทดลอง** ภาษายังเล็กและยังเปลี่ยนได้ ห้ามใช้ใน production · HTTP server มี
 > timeout และ limit แล้ว · TLS (https) ให้ proxy ทำทั้งขาเข้าและขาออก ตามที่ออกแบบไว้ · English: [README.md](README.md)
 
 หลักการออกแบบ: **memory safety > ความเร็ว > อ่านง่าย > เหมือน PHP**
@@ -127,7 +127,9 @@ request นั้นถูกคืนทั้งหมด แล้ว server 
 - **ตอน compile:** type, ownership (ใช้หลัง move, move ใน loop, แก้ของที่ยืมมา, แก้ list ระหว่าง foreach)
   และตัวแปรต้องมีค่าในทุก path
 - **ตอนรัน (เปิดตลอด ปิดไม่ได้):** index เกิน, key ไม่มี, หารศูนย์, `intdiv(PHP_INT_MIN, -1)`, `(int)` ของ
-  float ที่ใช้ไม่ได้ และขนาดหน่วยความจำทุกครั้งที่จอง
+  float ที่ใช้ไม่ได้, ขนาดหน่วยความจำทุกครั้งที่จอง และ recursion ที่ลึกเกิน (ได้ panic ไม่ใช่ server ล่ม)
+- **ข้อความเป็น UTF-8 เสมอ:** request ที่ path หรือ body ไม่ใช่ UTF-8 ได้ 400 · `substr()` ที่ตัดกลางตัวอักษรจะ panic ·
+  ตัดข้อความไทยให้คนอ่านใช้ `grapheme_substr()` (สระและวรรณยุกต์ไม่หลุด) · `mb_*` นับเป็น code point
 - **ยังไม่เช็ค:** `+ - *` ของ int ที่ล้นจะวนรอบ เพราะเช็คแล้วช้าลงสูงสุด 23% จะใส่กลับเมื่อ compiler ตัด check
   ที่ไม่จำเป็นได้
 
@@ -149,7 +151,14 @@ macOS ล็อก CPU core ไม่ได้ ส่วนต่างต่ำ
 
 ## ยังไม่มี
 
-inheritance/interface, `null`, `finally`, ค่า default ของ parameter, closure, `json_decode` เต็มรูปแบบ (ตอนนี้อ่าน key ชั้นบนสุดได้ด้วย `json_string` / `json_int` / …), PostgreSQL (SQLite มีแล้ว), `go`/`await` · ส่วนใหญ่ออกแบบไว้แล้วใน [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/)
+inheritance/interface, `finally`, type `bytes` สำหรับข้อมูล binary
+
+ฟังก์ชันแบบ PHP ที่มีแล้วกว่า 200 ตัว เช่น `sprintf`, `str_replace`, `number_format`, `round`, `date`, `in_array`, `usort($xs, "ชื่อฟังก์ชัน")`,
+`array_map`, `filter_var`, `ksort` และ operator `**`, `<=>`, `| & ^ << >>`
+
+ที่มีแล้ว: `null` (`?User`, `?int`, `list<?int>` ต้องเช็คก่อนใช้), ค่า default ของ parameter, `json_decode()` เข้า class,
+`go`/`await`, SQLite และ PostgreSQL (มี connection pool, อ่านแถวเข้า class ด้วย `db_all` / `db_one`) และข้อความ Unicode
+(`mb_*`, `grapheme_*`, `normalizer_normalize`) · การออกแบบอยู่ใน [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/)
 
 ## อยากได้ feedback
 

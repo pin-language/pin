@@ -1,0 +1,38 @@
+<?php
+class Row { public string $name = ""; public ?int $score; public ?bool $ok; public ?float $avg; }
+
+function parse_score(string $s): ?int throws {
+    if ($s == "") { return null; }
+    if ($s == "bad") { throw error(400, "not a number"); }
+    return intval($s);
+}
+function set_flag(?bool &$b): void { $b = true; }
+
+foreach (["7", "", "bad", "12"] as $s) {
+    $n = try parse_score($s) catch ($e) { echo "error: ", $e->message, "\n"; null; };
+    if ($n !== null && $n > 10) {
+        echo "big ", $n, "\n";
+    } elseif ($n === null) {
+        echo "none\n";
+    } else {
+        echo "small ", $n, "\n";
+    }
+}
+
+?int $last = null;
+$i = 0;
+while ($last === null) {
+    $i++;
+    if ($i == 3) { $last = $i * 100; }
+}
+echo "last ", $last, "\n";              // narrowed after the loop
+
+function pick(bool $c, ?int $a): ?int { return $c ? $a : 0; }
+echo json_encode(pick(true, null)), " ", json_encode(pick(false, null)), " ", json_encode(pick(true, 4)), "\n";
+
+Row $r = try json_decode("{\"name\":\"a\",\"score\":5,\"ok\":false,\"avg\":2.5}") catch ($e) { echo $e->message, "\n"; new Row(); };
+echo json_encode($r), "\n";
+Row $r2 = try json_decode("{\"name\":\"b\",\"avg\":3}") catch ($e) { echo $e->message, "\n"; new Row(); };
+echo json_encode($r2), "\n";
+set_flag(&$r2->ok);
+echo json_encode($r2->ok), " ", ($r2->score ?? 0) + 1, " ", $r2->avg ?? 0.0, "\n";

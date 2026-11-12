@@ -1,0 +1,29 @@
+<?php
+// ?-> statements, ?list / ?map, copies of ?string
+class User { public string $name; public ?list<string> $tags;
+  function __construct(string $n) { $this->name = $n; }
+  function rename(string $n): void { $this->name = $n; }
+  function hi(): void { echo "hi ", $this->name, "\n"; } }
+function find(int $id): ?User { if ($id == 1) { return new User("a"); } return null; }
+function first(?list<string> $xs): string { if ($xs === null) { return "-"; } if (count($xs) == 0) { return "empty"; } return $xs[0]; }
+$u = find(1);
+$u?->rename("b");
+$u?->hi();
+find(2)?->hi();
+$u2 = find(1);
+if ($u2 !== null) { $u2->tags = ["x", "y"]; $u2->tags = ["x", "y", "z"]; }
+echo first($u2?->tags), " ", first(null), " ", first([]), "\n";
+$t = $u2?->tags;
+if ($t !== null) { foreach ($t as $s) { echo $s; } echo "\n"; }
+?map<string,int> $m = null;
+if ($m === null) { $m = ["a" => 1]; }
+$m["b"] = 2;
+echo json_encode($m), "\n";
+$nm = $u?->name;
+$s2 = $nm;
+echo $s2 ?? "", " ", $nm ?? "", "\n";
+function pick(bool $b): ?string { return $b ? "yes" : null; }
+echo pick(true) ?? "no", pick(false) ?? "no", "\n";
+$k = find(1);
+$moved = $k;
+echo $moved?->name ?? "-", "\n";

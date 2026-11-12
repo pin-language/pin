@@ -1,0 +1,10 @@
+<?php
+// the closure from one round would read the string the next round frees (C4 in a loop)
+$f = fn(): string => "none";
+$s = "start";
+for ($i = 0; $i < 3; $i++) {
+    $s = "str" . strval($i) . "-long-enough-to-be-heap";
+    echo $f(), "\n";
+    $f = fn(): string => $s;
+}
+echo $f(), "\n";

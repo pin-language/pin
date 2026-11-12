@@ -1,0 +1,9 @@
+// sprintf / printf (literal formats, types checked) and date() in UTC
+echo sprintf("%s costs %.2f baht (%d%%)", "ชา", 45.5, 7), "\n";
+echo sprintf("[%5d] [%-5d] [%05d] [%+d] [%x] [%X] [%o] [%b] [%c]", 42, 42, -42, 3, 255, 255, 8, 5, 3652), "\n";
+echo sprintf("[%8.3f] [%-8.1f] [%e] [%.2e] [%010.4f]", 3.14159, 2.5, 1234.5678, 0.000123, -3.5), "\n";
+echo sprintf("[%5s] [%-5s] [%.2s] [%.1s] [%s] [%s]", "ab", "ab", "abc", "ไทย", 12, true), "\n";
+$n = printf("%s=%d\n", "x", 5);
+echo $n, "\n";
+echo date("Y-m-d H:i:s", 0), " | ", date("D, d M Y", 1762646400), " | ", date("c", 1762646400), " | ", date("N jS l \\o\\f F", 1762646400), "\n";
+echo strlen(date("Y-m-d")), "\n";

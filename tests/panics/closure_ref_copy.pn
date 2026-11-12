@@ -1,0 +1,10 @@
+<?php
+// keep() copies the closure it is given; this one has use (&$n) and points at $n of main: copying it panics (C5)
+class Box {
+    public list<fn(): void> $fs = [];
+    public function keep(fn(): void $f): void { $this->fs[] = copy($f); }
+}
+$n = 0;
+$b = new Box();
+$b->keep(function () use (&$n): void { $n++; });
+echo "not reached\n";

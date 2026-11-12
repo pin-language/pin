@@ -1,0 +1,1 @@
+argument $u of f(): this value may be null (?User) but User cannot be. Check it first with !== null, or give a default with ??

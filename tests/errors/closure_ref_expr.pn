@@ -1,0 +1,4 @@
+<?php
+// the closure changes $xs: nothing else in the same call may read it (C5)
+list<int> $xs = [1, 2];
+$ys = array_map(function (int $x) use (&$xs): int { $xs[] = $x; return $x; }, $xs);

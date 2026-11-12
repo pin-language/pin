@@ -1,0 +1,5 @@
+<?php
+// $f reads $k as a loan, so it can only be called or passed on here; copy($f) gives one with its own values
+$k = 2;
+$f = fn(int $x): int => $x * $k;
+$g = $f;

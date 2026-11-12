@@ -1,0 +1,58 @@
+class Item {
+    public ?int $stock;
+    public ?bool $active = null;
+    public ?float $price = 9.5;
+    public function __construct(public string $name, public ?int $qty = null) {}
+    public function stock_or(int $d): int { return $this->stock ?? $d; }
+    public function maybe_qty(): ?int { return $this->qty; }
+}
+class Box { public ?Item $item; public int $n = 1; }
+
+function bump(?int &$n): void {
+    if ($n === null) { $n = 1; return; }
+    $n = $n + 1;
+}
+function need(?int $n): int throws {
+    $v = $n ?? throw error(400, "missing n");
+    return $v * 10;
+}
+function opt_or(?int $n = null): string { return $n === null ? "none" : strval($n); }
+
+$i = new Item("pen");
+echo json_encode($i), "\n";
+$i->stock = 4;
+$i->active = true;
+$i->price = null;
+echo json_encode($i), " ", $i->stock_or(0), "\n";
+$c = copy($i);
+$c->stock = null;
+echo json_encode($c), " ", $c->stock_or(-5), " ", json_encode($i->maybe_qty()), "\n";
+
+?Item $none = null;
+$q = $none?->qty;
+$some = pick($i);
+$s = $some?->stock;
+echo json_encode($q), " ", json_encode($s), " ", json_encode($none?->maybe_qty()), " ", json_encode($some?->active), "\n";
+
+?int $k = null;
+bump(&$k);
+bump(&$k);
+echo $k ?? 0, "\n";
+bump(&$i->stock);
+echo json_encode($i->stock), "\n";
+
+echo try need(4) catch ($e) { -1; }, " ";
+echo try need(null) catch ($e) { echo $e->message, " "; -1; }, "\n";
+echo opt_or(), " ", opt_or(3), "\n";
+
+Item $d = try json_decode("{\"name\":\"cup\",\"qty\":3}") catch ($e) { echo $e->message, "\n"; new Item("x"); };
+echo json_encode($d), "\n";
+Item $d2 = try json_decode("{\"name\":\"cup\",\"qty\":null}") catch ($e) { echo $e->message, "\n"; new Item("x"); };
+echo json_encode($d2), "\n";
+Item $d3 = try json_decode("{\"name\":\"cup\",\"qty\":\"x\"}") catch ($e) { echo $e->message, "\n"; new Item("x"); };
+Box $bx = try json_decode("{\"n\":2}") catch ($e) { echo $e->message, "\n"; new Box(); };
+echo json_encode($bx), "\n";
+
+$e2 = $i->stock;
+if ($e2 !== null) { echo "stock ", $e2 * 2, "\n"; }
+function pick(Item $i): ?Item { return copy($i); }

@@ -1,0 +1,2 @@
+// A route-style file name ([id]): imported with as (used by the Tack framework).
+export function title(int $id): string { return "item " . $id; }

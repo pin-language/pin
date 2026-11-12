@@ -53,7 +53,7 @@ static void h_take(HConn *h, size_t n) { memmove(h->buf, h->buf + n, h->len - n)
 static PinError *h_error(int r, const char *what) {
     char msg[200];
     if (r == -2) { snprintf(msg, sizeof msg, "%s: no answer in time", what); return make_error(504, msg); }
-    if (r == -3) { snprintf(msg, sizeof msg, "%s: cancelled", what); return make_error(499, msg); }
+    if (r == -3) return cancel_error(what);
     snprintf(msg, sizeof msg, "%s: the connection failed or closed early", what);
     return make_error(502, msg);
 }
@@ -229,7 +229,7 @@ static StrOrError http_call(const char *method, Str *url, Map *headers, Str *bod
         r.err = make_error(status, m);
         return r;
     }
-    r.value = out;
+    r.value = str_make_valid(out);              // another program's bytes: U+FFFD where they are not UTF-8
     return r;
 }
 
@@ -310,7 +310,7 @@ StrOrError pn_stream_next(HStream *st, int64_t ms) {
             size_t used = (size_t)(end - p->data) + sep;
             memmove(p->data, p->data + used, (size_t)p->len - used);
             p->len -= (int64_t)used;
-            if (data) { r.value = data; return r; }   // only comments: look for the next one
+            if (data) { r.value = str_make_valid(data); return r; }   // only comments: look for the next one
             continue;
         }
         char chunk[8192];
@@ -340,7 +340,7 @@ StrOrError pn_read_line(void) {
             size_t n = nl ? (size_t)(nl - stdin_buf) : stdin_len;
             size_t take = nl ? n + 1 : n;
             if (n && stdin_buf[n - 1] == '\r') n--;
-            r.value = str_from(stdin_buf, (int64_t)n);
+            r.value = str_from_lossy(stdin_buf, (int64_t)n);
             memmove(stdin_buf, stdin_buf + take, stdin_len - take);
             stdin_len -= take;
             pthread_mutex_unlock(&stdin_mu);
@@ -358,7 +358,7 @@ StrOrError pn_read_line(void) {
         pthread_mutex_unlock(&stdin_mu);
         int w = wait_fds(&fd, 1, 0, INT64_MAX / 4);      // until there is input (stdin stays blocking)
         pthread_mutex_lock(&stdin_mu);
-        if (w < 0) { pthread_mutex_unlock(&stdin_mu); r.err = make_error(499, "read_line(): cancelled"); return r; }
+        if (w < 0) { pthread_mutex_unlock(&stdin_mu); r.err = cancel_error("read_line()"); return r; }
         ssize_t n = read(0, stdin_buf + stdin_len, stdin_cap - stdin_len);
         if (n > 0) stdin_len += (size_t)n;
         else if (n == 0 || (errno != EINTR && errno != EAGAIN)) stdin_eof = 1;
@@ -442,6 +442,6 @@ StrOrError pn_run(Str *cmd, List *args, int64_t ms) {
         return r;
     }
     pn_str_free(err);
-    r.value = out;
+    r.value = str_make_valid(out);              // another program's bytes: U+FFFD where they are not UTF-8
     return r;
 }

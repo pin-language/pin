@@ -1,0 +1,4 @@
+<?php
+$db = db_open(env("DATABASE_URL"));
+db_exec($db, "INSERT INTO pin_items (name, qty) VALUES (?, 1)", ["last id"]);
+echo db_last_id($db);

@@ -1,0 +1,1 @@
+$xs[$i] may be null (?int). Put it in a variable and check that

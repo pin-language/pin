@@ -1,0 +1,5 @@
+// time(): Unix seconds, moving forward with the wall clock
+$a = time();
+echo $a > 1735689600 ? "after 2025\n" : "wrong clock\n";
+$b = time();
+echo $b >= $a ? "not backwards\n" : "backwards\n";

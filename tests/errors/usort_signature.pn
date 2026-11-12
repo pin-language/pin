@@ -1,0 +1,4 @@
+<?php
+function cmp(int $a, int $b): bool { return $a < $b; }
+list<int> $xs = [2, 1];
+usort($xs, "cmp");

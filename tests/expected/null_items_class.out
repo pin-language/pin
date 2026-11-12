@@ -1,0 +1,14 @@
+{"title":"q1","scores":[5,null,3],"notes":{"ann":"late","bob":null},"tags":[{"name":"a"},null,{"name":"c"}]}
+1
+["a",null,"c"]
+{"title":"q1","scores":[5,null,3,null],"notes":{"ann":"late","bob":null},"tags":[null,null,{"name":"c"}]}
+{"title":"q1","scores":[5,null,3],"notes":{"ann":"late","bob":null},"tags":[{"name":"a"},null,{"name":"c"}]}
+{"title":"q2","scores":[1,null,2],"notes":{"x":null,"y":"yes"},"tags":[null,{"name":"z"}]}
+400 $.scores[1]: want an integer, got a string
+[0,4,0]
+not set key set not set
+null
+value value
+[[1,null],[9,2]]
+a changed
+["changed",null,null,"m"] ["m","x"]

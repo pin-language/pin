@@ -1,0 +1,20 @@
+// closures (closures.md steps 1-2): fn types and parameters, fn() => with inferred types, function () use (), name(...)
+class Item { public function __construct(public string $name, public int $price, public int $qty) {} }
+function total(list<Item> $items, fn(Item): int $price): int {
+    $t = 0;
+    foreach ($items as $i) { $t += $price($i); }
+    return $t;
+}
+function by_price(Item $a, Item $b): int { return $a->price <=> $b->price; }
+function twice(fn(int): int $f, int $x): int { return $f($f($x)); }
+list<Item> $items = [new Item("tea", 45, 2), new Item("cake", 120, 1)];
+echo total($items, fn($i) => $i->price * $i->qty), "\n";
+$limit = 100;
+$f = fn(int $x): bool => $x < $limit;
+echo $f(50) ? "y" : "n", $f(150) ? "y" : "n", "\n";
+$add = 7;
+echo twice(fn($x) => $x + $add, 1), "\n";
+$cmp = by_price(...);
+echo $cmp($items[0], $items[1]), "\n";
+$label = function (Item $i) use ($add): string { return $i->name . "+" . $add; };
+echo $label($items[1]), "\n";

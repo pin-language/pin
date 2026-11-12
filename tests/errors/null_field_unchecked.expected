@@ -1,0 +1,1 @@
+$p->note may be null (?string). Check it first with if ($p->note !== null) { ... } (the check holds until $p is changed)

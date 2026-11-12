@@ -1,0 +1,42 @@
+// request_deadline(ms): when the time is up every wait of the request ends with 504, tasks included, and the
+// answer is 504 whatever the handler returns afterwards (tack.md T6). Computing loops are not interrupted.
+function slow(int $ms): string throws {
+    sleep_ms($ms);
+    $s = hub_subscribe("never");
+    return try hub_next($s, $ms);
+}
+
+function handle(string $method, string $path, string $body): string throws {
+    $route = url_path($path);
+    if ($route == "/wait") {                    // a wait that would take 3 s: cut at 150 ms
+        request_deadline(150);
+        $s = hub_subscribe("nobody");
+        return try hub_next($s, 3000);
+    }
+    if ($route == "/sleep") {                   // sleep_ms ends early; the answer is 504 anyway
+        request_deadline(150);
+        sleep_ms(3000);
+        return "{\"late\":true}";
+    }
+    if ($route == "/tasks") {                   // two tasks waiting: both end, the await fails with 504
+        request_deadline(150);
+        $a = go slow(3000);
+        $b = go slow(3000);
+        $x = try await $a catch ($e) { "a:" . $e->code; };
+        $y = try await $b catch ($e) { "b:" . $e->code; };
+        return json_encode([$x, $y]);
+    }
+    if ($route == "/caught") {                  // a handler that catches the 504 still answers 504
+        request_deadline(100);
+        $s = hub_subscribe("nobody");
+        $m = try hub_next($s, 3000) catch ($e) { "caught " . $e->code; };
+        return "{\"m\":" . json_encode($m) . "}";
+    }
+    if ($route == "/fast") {                    // done in time: the deadline changes nothing
+        request_deadline(1000);
+        return "{\"fast\":true}";
+    }
+    return "{\"ok\":true}";
+}
+
+serve(8097, "handle");

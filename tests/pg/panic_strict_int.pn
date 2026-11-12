@@ -1,0 +1,4 @@
+<?php
+$db = db_open(env("DATABASE_URL"));
+$r = db_query($db, "SELECT name FROM pin_items ORDER BY name", []);
+while (db_next($r)) { echo db_int($r, "name"); }

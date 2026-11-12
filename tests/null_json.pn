@@ -1,0 +1,26 @@
+<?php
+// json_decode(): JSON null or a missing field gives null for a ?T property
+class Address { public string $city; function __construct(string $city) { $this->city = $city; } }
+class Signup {
+    public string $name;
+    public ?string $email;
+    public ?Address $address;
+    public ?list<string> $tags;
+    function __construct(string $name, ?string $email, ?Address $address, ?list<string> $tags = null) {
+        $this->name = $name; $this->email = $email; $this->address = copy($address); $this->tags = copy($tags);
+    }
+}
+class Plain { public int $id = 0; public ?string $note; }
+function show(string $j): void {
+    Signup $s = try json_decode($j) catch ($e) { echo "ERR ", $e->message, "\n"; return; };
+    echo json_encode($s), "\n";
+}
+show('{"name":"a"}');
+show('{"name":"b","email":null,"address":null}');
+show('{"name":"c","email":"c@x.test","address":{"city":"Bangkok"},"tags":["x"]}');
+show('{"name":"d","email":5}');
+show('{"name":"e","address":{"town":"x"}}');
+Plain $p = try json_decode('{"id":1}');
+echo json_encode($p), "\n";
+Plain $p2 = try json_decode('{"id":2,"note":"hi"}');
+echo json_encode($p2), "\n";

@@ -1,0 +1,10 @@
+small 7
+none
+error: not a number
+none
+big 12
+last 300
+null 0 4
+{"name":"a","score":5,"ok":false,"avg":2.5}
+{"name":"b","score":null,"ok":null,"avg":3.0}
+true 1 3

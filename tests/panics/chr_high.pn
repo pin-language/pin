@@ -1,0 +1,2 @@
+// chr() above 127 would make a byte that is not UTF-8 on its own
+echo chr(200);

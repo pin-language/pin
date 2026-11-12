@@ -1,0 +1,71 @@
+<?php
+// null (null.md N1-N3, N8): ?T values, checks that narrow, ?->, ??, ?? throw, JSON
+class User {
+    public int $id;
+    public string $name;
+    public ?string $email;
+    public ?list<string> $tags;
+    function __construct(int $id, string $name) { $this->id = $id; $this->name = $name; }
+    function label(): string { return "#" . $this->id . " " . $this->name; }
+}
+
+function findUser(int $id): ?User {
+    if ($id == 1) {
+        $u = new User(1, "Ann");
+        $u->email = "ann@example.com";
+        return $u;
+    }
+    if ($id == 2) { return new User(2, "Bob"); }
+    return null;
+}
+
+function header(map<string,string> $h, string $k): ?string {
+    if (isset($h[$k])) { return $h[$k]; }
+    return null;
+}
+
+function greet(?string $name = null): string {
+    if ($name === null) { return "hello, guest"; }
+    return "hello, " . $name;
+}
+
+function need(int $id): User throws {
+    $u = findUser($id) ?? throw error(404, "user $id not found");
+    return $u;
+}
+
+$u = findUser(1);
+if ($u !== null) { echo $u->name, " ", $u->label(), "\n"; }
+$v = findUser(3);
+if ($v === null) { echo "3: none\n"; }
+echo findUser(2)?->name ?? "none", "\n";
+echo findUser(9)?->name ?? "none", "\n";
+echo findUser(1)?->email ?? "no email", "\n";
+echo findUser(2)?->email ?? "no email", "\n";
+echo findUser(2)?->label() ?? "-", "\n";
+echo greet(), " / ", greet("Cy"), "\n";
+$h = ["host" => "x.test"];
+echo header($h, "host") ?? "?", " ", header($h, "accept") ?? "*/*", "\n";
+echo json_encode(findUser(1)), "\n";
+echo json_encode(findUser(2)), "\n";
+echo json_encode(findUser(5)), "\n";
+$w = findUser(7);
+if ($w === null) { $w = new User(7, "New"); }
+echo $w->name, "\n";
+$n = try need(1);
+echo $n->name, "\n";
+$r = try need(4) catch ($e) { new User(0, $e->message); };
+echo $r->name, "\n";
+?string $s = null;
+for ($i = 0; $i < 3; $i++) {
+    if ($s === null) { $s = "x"; } else { $s = $s . "y"; }
+}
+echo $s ?? "", "\n";
+$ok = true;
+$x = $ok ? findUser(2) : null;
+echo $x?->name ?? "nobody", "\n";
+$c = copy(findUser(1));
+echo $c?->email ?? "-", "\n";
+$t = findUser(1);
+if ($t !== null && $t->email !== null) { echo "both\n"; }
+if ($t === null || $t->id > 0) { echo "or ok\n"; }

@@ -1,0 +1,32 @@
+<?php
+// who owns the result of ?? and ?-> (borrowed or owned left side and default); ASAN + leaks clean
+class User { public string $name; public ?User $boss; public ?list<int> $ids;
+  function __construct(string $n) { $this->name = $n; }
+  function title(): string { return "Mx " . $this->name; }
+  function tags(): list<string> { return ["a", $this->name]; } }
+function find(int $id): ?User { if ($id < 2) { $u = new User("u$id"); $u->boss = new User("b$id"); return $u; } return null; }
+function name_or(?string $s): string { return $s ?? "dflt"; }
+$guest = new User("guest");
+for ($i = 0; $i < 4; $i++) {
+    $a = find($i) ?? $guest;                    // owned left, borrowed default: copied
+    echo $a->name, " ";
+    $m = find($i);
+    $b = ($m ?? new User("fresh"))->name;       // borrowed left, owned default freed at statement end
+    echo $b, " ";
+    echo $m?->title() ?? "-", " ";              // owned string through ?->
+    echo json_encode($m?->tags() ?? ["none"]), " ";
+    echo $m?->boss?->name ?? "noboss", " ";
+    echo name_or($m?->name), " ";
+    $ids = copy($m?->ids ?? [7]);
+    echo count($ids), "\n";
+}
+?string $acc = null;
+foreach (["x", "y"] as $w) { $acc = ($acc ?? "") . $w; }
+echo $acc ?? "", "\n";
+function maybe_list(bool $b): ?list<string> { if ($b) { return ["p", "q"]; } return null; }
+$l = maybe_list(true) ?? ["r"];
+$l[] = "s";
+echo json_encode($l), json_encode(maybe_list(false)), "\n";
+$mm = ["k" => "v"];
+?map<string,string> $om = $mm;
+echo json_encode($om), "\n";

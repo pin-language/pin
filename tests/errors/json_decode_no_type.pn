@@ -1,0 +1,2 @@
+class Line { public int $qty = 0; }
+$l = try json_decode("{\"qty\":1}");

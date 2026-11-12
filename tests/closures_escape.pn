@@ -1,0 +1,103 @@
+<?php
+// closures that are returned, stored in lists, maps and properties, copied, and given to go (closures.md C6, C7)
+class Item {
+    public function __construct(public string $name, public int $price) {}
+}
+
+function discounter(int $percent): fn(int): int {
+    return fn($price) => intdiv($price * (100 - $percent), 100);
+}
+
+function greeter(string $hello): fn(string): string {
+    $f = fn(string $n): string => $hello . ", " . $n;
+    return $f;
+}
+
+function by_name(list<Item> $items): fn(string): int {
+    $own = copy($items);
+    return function (string $n) use ($own): int {
+        foreach ($own as $i) {
+            if ($i->name == $n) { return $i->price; }
+        }
+        return -1;
+    };
+}
+
+function adder(int $a): fn(int): fn(int): int {
+    return fn(int $b): fn(int): int => fn(int $c): int => $a + $b + $c;
+}
+
+class Router {
+    public map<string, fn(string): string> $routes = [];
+    public function get(string $path, fn(string): string $h): void {
+        $this->routes[$path] = copy($h);
+    }
+    public function run(string $path, string $arg): string {
+        if (!array_key_exists($path, $this->routes)) { return "404"; }
+        $h = $this->routes[$path];
+        return $h($arg);
+    }
+}
+
+class Button {
+    public fn(int): string $onClick;
+    public function __construct(public string $label, fn(int): string $onClick) {
+        $this->onClick = copy($onClick);
+    }
+}
+
+$tenOff = discounter(10);
+echo $tenOff(4500), "\n";
+$hi = greeter("Hello");
+echo $hi("Pin"), "\n";
+$find = by_name([new Item("tea", 40), new Item("cake", 95)]);
+echo $find("cake"), " ", $find("nope"), "\n";
+echo adder(1)(2)(3), "\n";
+
+list<fn(int): int> $ops = [];
+$ops[] = fn(int $x): int => $x + 1;
+$ops[] = discounter(50);
+$k = 7;
+$ops[] = fn(int $x): int => $x * $k;
+$ops[] = double(...);
+$v = 10;
+foreach ($ops as $op) { $v = $op($v); }
+echo $v, "\n";
+
+$r = new Router();
+$prefix = "page:";
+$r->get("/a", fn($s) => $prefix . $s);
+$r->get("/b", strtoupper_name(...));
+echo $r->run("/a", "x"), " ", $r->run("/b", "y"), " ", $r->run("/c", "z"), "\n";
+
+$b = new Button("ok", fn(int $n): string => "clicked " . strval($n));
+$f = $b->onClick;
+echo $f(3), "\n";
+$b2 = copy($b);
+$g = $b2->onClick;
+echo $g(4), "\n";
+
+$tags = ["x", "y"];
+$join = fn(string $sep): string => implode($sep, $tags);
+$kept = copy($join);
+echo $kept("-"), " ", $join("+"), "\n";
+
+map<string, fn(int): int> $m = ["inc" => fn(int $x): int => $x + 1, "dbl" => double(...)];
+echo $m["inc"](1), $m["dbl"](4), "\n";
+
+function double(int $x): int { return $x * 2; }
+function strtoupper_name(string $s): string { return strtoupper($s); }
+
+// go: the closure owns what it uses (here a copy of $i each round)
+function call_it(fn(): int $f): int { return $f(); }
+list<Task<int>> $tt = [];
+for ($i = 0; $i < 3; $i++) { $tt[] = go call_it(fn(): int => $i * 10); }
+foreach (await_all($tt) as $res) { echo $res, " "; }
+$words = ["a", "b"];
+$t = go call_it(fn(): int => count($words));
+echo await $t, "\n";
+
+// a closure returned from a closure, called at once
+echo (fn(int $x): int => $x + 1)(4), "\n";
+function mk(): fn(): string { $s = "abc"; $f = fn(): string => $s . "!"; $s = "zzz"; return $f; }
+echo mk()(), "\n";

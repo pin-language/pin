@@ -1,0 +1,1 @@
+array_map() over a list<string> needs an fn(string): T, and this is fn(int):int

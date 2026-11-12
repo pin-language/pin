@@ -1,0 +1,7 @@
+<?php
+// an item of a list<?int> may be null: it has to be checked (or given a default) before it is used
+function total(list<?int> $xs): int {
+    $t = 0;
+    for ($i = 0; $i < count($xs); $i++) { $t += $xs[$i]; }
+    return $t;
+}

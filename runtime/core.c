@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <setjmp.h>
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
@@ -55,12 +56,18 @@ typedef struct Req {
     char *resp_hdr; size_t resp_hdr_len, resp_hdr_cap;   // extra response header lines (plain malloc)
     int resp_has_ctype;
     int panicked;                       // a task of this request panicked: the whole request answers 500
+    int panic_status;                   // the status a panic answers instead of 500 (503: no database connection)
     struct Task *root;                  // the handler's task
     struct Task *tasks;                 // every live task of the request (linked through req_next)
-    int cancelled;                      // the client is gone (a stream's connection closed)
+    int cancelled;                      // the client is gone (a stream's connection closed), or the deadline passed
+    int timed_out;                      // request_deadline() passed: waits fail with 504, the answer is 504
+    int64_t deadline;                   // absolute ms (now_ms), 0 = none
+    struct Req *dl_prev, *dl_next;      // this thread's requests with a deadline (server.c)
+    int dl_linked;
     void *conn;                         // its connection (Conn *), for sse_*
 } Req;
 
+static void (*pool_scan_hook)(int64_t now);   // set by the database pool (sqlite.c) when it is compiled in
 static __thread Req *cur_req;           // the request of the running task (NULL outside requests)
 static __thread jmp_buf *cur_jmp;       // where a panic in the running task goes (NULL: stop the program)
 
@@ -72,7 +79,10 @@ static void blk_link(Blk *b) {
 
 static void blk_unlink(Blk *b) { b->prev->next = b->next; b->next->prev = b->prev; }
 
+static void stack_headroom(void);           // tasks.c: panic before malloc / stdio when the stack is nearly full
+
 static void *xmalloc(size_t n) {
+    stack_headroom();
     Blk *b = malloc(sizeof(Blk) + n);
     if (!b) oom();
     if (cur_req) blk_link(b); else b->prev = b->next = NULL;
@@ -82,6 +92,7 @@ static void *xmalloc(size_t n) {
 static void *xcalloc(size_t n) { return memset(xmalloc(n), 0, n); }
 
 static void *xrealloc(void *p, size_t n) {
+    stack_headroom();
     if (!p) return xmalloc(n);
     Blk *b = (Blk *)p - 1;
     int linked = b->prev != NULL;

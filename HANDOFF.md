@@ -1,4 +1,75 @@
-# HANDOFF — state as of 2026-10-25 (v0.8.0)
+# HANDOFF — state as of 2026-11-10 (0.9.0: release PRs open, next → release/v0.1.0; tags after merge)
+
+## 0. Next session (updated 2026-11-09)
+
+**2026-11-09 in one place** (all on `next`, CI green on Linux and macOS for pin and tack; nothing released):
+null complete (steps 5–6, property narrowing, `?int` through `go`); strings ST1/ST3–ST6 (UTF-8 always, `substr`
+panic, `chr` > 127 panics, `mb_*`, `grapheme_*`, case, `normalizer_normalize`; tables from Python 3.15's
+unicodedata, `tools/check_unicode.py` = 0 differences); `time()`, `request_ip()`, `db_all` / `db_one`; 503 for a
+full pool (B15); use-after-free in list literals (B16, found while testing; `tools/fuzz_ownership.py` added);
+stack overflow = panic, not a server crash (B17); x86 SHA-NI; dead stripping (hello 148 → 54 KB). Tack:
+PostgreSQL, cookie sessions + CSRF, rate limits (+ `Retry-After`), `client_ip()`, `db_all`/`db_one` columns
+checked at build time. K6 measured and **not built** (1.6 µs a query, pool.md). Two fresh-agent tests (Pin
+guide; Tack README): both compiled with 0–1 real errors; their doc gaps are fixed. HTTP throughput unchanged
+throughout (ab: ~205k–220k req/s on /user/42). CHANGELOG "Unreleased" is grouped and ready for 0.9.0. Later the same day: ~70 PHP built-ins (str_replace,
+sprintf/printf with checked formats, date, round/number_format matching PHP, in_array, array_* incl. usort /
+array_map / array_filter with function names, ksort/asort, range, math), bit operators and `**`, hex/binary
+literals; 189 built-ins now. Fuzzers: `tools/fuzz_ownership.py`, `fuzz_json.py`, `fuzz_http.py`; docs CI fixed (it
+had tested docs `next` against released Pin since 2026-10-25).
+Left (not started): ST2 `bytes`, SIMD UTF-8, loop-head cancellation (costs tight loops), transitive packages /
+semver, Linux arm64 SHA path untested (no runner). Owner decisions: release 0.9.0 when, make tack public,
+tack.md Q1–Q4, closures: owner took Q1–Q3 as proposed; all four steps built (1–2 on 2026-11-09, 3–4 `use (&$x)` + escaping closures on 2026-11-10; fn values are now one pointer to a block, see closures.md "As built").
+
+
+**Tack M1–M6 are built** (2026-10-26 / 2026-11-08): github.com/pin-language/tack, branch `next` (its default:
+the first push; the repository is **private**), local clone ../pin-tack. M1 file routing, M2 OpenAPI 3.1 from
+the route types, M3 guards (deny by default) + API keys + sessions, M4 stream routes (SSE) + `deadline()`,
+M5 migrations + SQL prepared against them at build time, M6 the routes as MCP tools (Streamable HTTP; checked
+with the official MCP Python SDK in CI). `tests/run.py` 37 checks, CI on Linux and macOS against pin's `next`.
+Fresh-agent test (Sonnet, README + AI guide only, 2026-11-08): a notes API with sessions, guards, SSE, a deadline,
+OpenAPI and MCP — all worked, 2 `tack check` rounds; its gaps were fixed (fresh test database via
+`tack::database()`, `tack new` writes tack.json + migrations/, a Reference section).
+The generator is the `tack` command (Python, pinac's parser); compiler changes it needed: `[name]` import
+paths, `Error` in modules, `ord`/`chr`/`rawurlencode`, `request_deadline()`. PostgreSQL in Tack built 2026-11-09
+(`"database": {"env": "DATABASE_URL"}`: check prepares the SQL on the server in a rolled-back transaction,
+tests in a fresh schema, migrations under an advisory lock; sessions use Pin's new `time()`). Cookie sessions + CSRF
+check + rate limits built 2026-11-09. `db_all`/`db_one` into classes built 2026-11-09 (columns checked by `tack check`). Design and decisions: docs `design/tack.md`.
+
+| P | what | state |
+|---|---|---|
+| P1 | connection pool (`design/pool.md`) | **built** for SQLite: same programs, 181k–189k req/s vs 24.6k–26.0k (one-query handler, M2). `db_pool()`, K3/K4 compile errors. Not built: K6 statement cache |
+| P2 | `json_decode()` into a class | **built**: strict, paths in errors (`$.lines[1].qty: ...`), constructors run, nested classes / lists / `map<string,T>` |
+| P3 | parameter defaults + `null` | **built.** Defaults 2026-10-26; `null` steps 1–4 of `design/null.md` 2026-11-08: `?string`/`?list`/`?map`/`?Class`, narrowing of variables in `class Flow` (`nonnull`), `?->`, `??`, `?? throw`, JSON. Step 5 `?int`/`?float`/`?bool` and step 6 `list<?T>`/`map<K,?T>` built 2026-11-09, through `go` tasks too. Property narrowing built 2026-11-09 (paths in `Flow.nonnull`, forgotten in `mutating()`). Tests `tests/null_*.pn`, `tests/errors/null_*.pn` |
+| P4 | PostgreSQL (`design/postgres.md`) | **built** (2026-11-08): G1–G7, libpq loaded with dlopen, non-blocking, pooled, K4 rules for PostgreSQL. Tests `tests/pg/` + `tests/server/pg.pn` run when `PIN_TEST_POSTGRES` is set (CI: Linux + macOS). Local: `PIN_TEST_POSTGRES=postgres://$USER@localhost/pin_test` (Homebrew postgresql@16) |
+| P5 | security built-ins | **built**: `hash`/`hash_hmac`("sha256"), `hash_equals`, `random_token`, `random_int`, `password_hash`/`password_verify` (PBKDF2-SHA256 600k) |
+
+Fresh-agent test (Sonnet, AI guide only, 2026-10-26): sign-up/login/me API with password_hash, sessions and
+json_decode; product search with optional filters (G6) and a POST with an optional field — **both compiled on the
+first try, zero compile errors**, every curl case right. Its guide gaps were fixed (json_decode error forms,
+storing a token's hash for database lookups).
+
+Owner questions waiting: tack.md Q1–Q4. (postgres.md Q1–Q3: the owner chose "PostgreSQL" with the proposed
+answers, 2026-11-08 — TLS through libpq yes, `db_open` of a down server panics for now, G6 yes.)
+
+Releases (decided 2026-10-25, owner: "you decide"): **no 0.8.1**. The use-after-free fix (B12) is on
+`release/v0.1.0` (new installs get it, install.sh takes HEAD) and on `next`; it ships in **0.9.0** with
+P1–P5. Old tags v0.1.0–v0.8.0 stay (docs refer to those numbers). Release less often: one per set.
+`release/v0.1.0` is protected now: `test (ubuntu-latest)` and `test (macos-latest)` must pass (admins may
+bypass); auto-merge is allowed on the repo. Releasing 0.9.0 = PR `next` → `release/v0.1.0` (pin and docs),
+VERSION, CHANGELOG heading, tags — the owner's call when.
+
+State at the end of 2026-10-25: released **0.8.0** (pin, docs tags). On `next`, not released: `<?pin` / `?>`
+ignored by the lexer, a clearer message for a missing `;` after `try ... catch { }`, the README's github.com
+guide link. pin-mcp **v0.1.0** published (github.com/pin-language/mcp), checked with the official MCP Python
+SDK and by Google Antigravity (`agy`), which wrote a working MCP server from the org URL alone with zero
+compile errors.
+
+Lessons from testing outside agents (keep in mind for docs):
+- Chat models without tools (Gemini in the web chat) cannot open raw.githubusercontent.com and then write
+  plain PHP. Agents with tools (agy, Claude) read the guide and compile on the first try.
+- When agents build JSON by hand in strings they break it (missing `}`, unescaped text): docs push classes +
+  `json_encode`; packages that do the protocol (pin-mcp) avoid it entirely.
+- A "JSON literal inside json_encode([...]) may mix types and null" relaxation was proposed and not decided.
 
 **Main users are AI coding agents** (owner, 2026-10-24: "nobody writes code by hand any more"). Keep
 `ai-guide.md` (pin-language/docs) complete and correct for every release: it is what agents read. Error messages should
@@ -99,20 +170,27 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | # | problem | where | severity |
 |---|---|---|---|
 | B5 | ~~headers, timeouts, connection limit~~ done in 0.6.0. No TLS / HTTP/2 by design (design/tls.md: a proxy does it) | server | security |
-| B6 | `maplit` key type comes from a heuristic `expr_type_probe` | `pinac.py` | low |
+| B6 | `maplit` key type comes from a heuristic `expr_type_probe`; since 2026-11-09 properties, items and method results use their static type (`tests/map_keys.pn`); other expressions still default to int (a clear compile error, never wrong code) | `pinac.py` | low |
 | B8 | `.ll` files are written next to sources | `pinac.py main()` | cosmetic |
 | B9 | `+ - *` wrap silently (overflow panics removed for speed until check elision exists, int-overflow.md O3) | codegen | correctness |
 | B10 | ~~per-thread request blocks~~ done: `struct Req` per request, `cur_req` follows the running task | `runtime.c` | done |
 | B11 | Panic outside a request still `exit(1)` (correct for CLI programs) | runtime | by design |
 | B12 | ~~use-after-free on every HTTP request (`request_done` / `cur_req`), crashed under load~~ fixed 2026-10-25; found by the pool measurement (pin-language/docs design/pool.md step 0). CI had not sanitized any server since 0.7.0: now `run_tests.py --sanitize` | runtime | memory safety |
-| B13 | HTTP/1.0 keep-alive: the server keeps the connection open but does not answer `Connection: keep-alive`, so `ab -k` hangs | server | low |
+| B13 | ~~HTTP/1.0 keep-alive: no `Connection: keep-alive` in the answer, so `ab -k` hung~~ fixed 2026-10-26 (test in limits) | server | low |
+| B14 | ~~`password_hash` ~0.5 s~~ arm64 uses the SHA-256 instructions since 2026-11-08 (~0.04 s on M2). x86 SHA-NI built 2026-11-09 (CPUID check; `PIN_SHA_SOFTWARE=1` forces the portable code; CI step prints whether the runner has `sha_ni` and checks both; the ubuntu-latest runner has it: tests/crypto.pn 0.28 s with it, 1.22 s without, outputs equal). Untested: Linux arm64's getauxval path, no CI runner | runtime | speed |
+| — | `tools/fuzz_http.py`: 1,500 mutated requests (CR/LF, NUL, non-UTF-8, broken %XX, bad Content-Length, chunked, 70 KB headers, pipelining) to the API server under ASAN + UBSAN: every one answered (200/400/404/413/431/501) or closed, server still serving, 0 reports (2026-11-09) | `runtime/server.c` | checked |
+| — | `tools/fuzz_json.py`: 60,000 mutated JSON inputs through json_decode (nested classes, `?T`, `list<?int>`) and every `json_*` reader under ASAN + UBSAN: 0 reports (2026-11-09) | `runtime/jdecode.c`, `request.c` | checked |
+| B16 | ~~a list literal kept a borrowed heap item (`[$maybe ?? [7]]`) or freed an owned one it had pushed (`[try f(), ...]` of lists) — use-after-free~~ fixed 2026-11-09 (`tests/literal_items.pn`). `tools/fuzz_ownership.py` (407 programs: value kinds × places incl. ?T items, ASAN + UBSAN) finds nothing else | `pinac.py listlit` | done |
+| B17 | ~~a recursion too deep crashed the whole server (any request could take it down)~~ fixed 2026-11-09: guard-page fault → panic via a sigaltstack handler; xmalloc / xrealloc / printing check a per-thread `stack_limit` first so the overflow never happens inside malloc or stdio with their lock held (that variant trapped). `tests/panics/stack_overflow.pn`, `/deep` in tests/server/panics.pn | `runtime/tasks.c` | done |
+| B15 | ~~a full pool makes `db_open()` panic (500)~~ fixed 2026-11-09: still a panic, but it answers 503 (also for a PostgreSQL server that is down): `Req.panic_status` | runtime | done |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int
 overflow), B7 (Mac bench units), and the maybe-unassigned null-list crash.
 
 ## 4. Task queue (in order)
 
-**Next set (owner, 2026-10-25), before the web framework Tack** (pin-language/docs design/tack.md, on hold):
+**Next set (owner, 2026-10-25), before the web framework Tack** (status 2026-10-26 in §0: P1, P2, P5, defaults
+and G6 built; null and the PostgreSQL driver not):
 P1 a database connection pool that outlives requests (design/pool.md; per worker thread; decide this first, it shapes
 PostgreSQL) → P2 `json_decode` into a class → P3 `null` + parameter defaults → P4 PostgreSQL on the pool with
 a safe way to build filter/sort queries → P5 crypto built-ins. Then Tack M1 only, used for one real app. The
@@ -120,19 +198,27 @@ numbered list below is the older order; items 3, 4 and 7 are folded into P1–P5
 
 1. ~~Shared control-flow analysis~~ — **done** as `class Flow` (per-path assigned/moved/live, merged at
    joins; loops require the back-edge state to be no worse than the loop head, which avoids a fixpoint).
-   Still to add on top of it when the features arrive: null-narrowed vars (null.md N2), live borrows
+   Still to add on top of it when the features arrive: ~~null-narrowed vars (null.md N2)~~ (built 2026-11-08 as
+   `Flow.nonnull`), live borrows
    (ownership-v2 R2 — needs "last use" liveness, a backward pass over the function body), pending tasks
    (concurrency.md C1). Each is one more field in `Flow` plus its merge rule.
 2. ~~Error handling~~ done in 0.6.0: `throws`, `try`, `catch`, `error(code, msg)`, handler `throws`.
    How: `fn_llret` returns `{T, ptr}`; `failing_call` / `error_branch` / `route_error` send the error to the
    innermost `Catch` (freeing temporaries past its marks) or out of the function. Catch blocks inside an
-   expression set the statement's temporaries aside (`temp_stack`). Known gap: owned items already moved into
-   a list literal under construction leak if a later item fails (error path only).
+   expression set the statement's temporaries aside (`temp_stack`). The gap where owned items of a list / map literal
+   leaked when a later item failed is closed (2026-11-09, with the use-after-free below).
    Owner, 2026-10-25: release cadence was too fast — batch features; work happens on branch `next`, release
    when a set is done. Next set: async (concurrency.md C1–C11).
-3. **Strings** (strings.md): UTF-8 validation at the edges (invalid request → 400), `substr` boundary
-   panic, `mb_*`, `grapheme_*`.
-4. **Null** (null.md). Classes (ownership-v2 R1–R7) done in 0.5.0 — null needs `?T` properties now.
+3. ~~**Strings**~~ (strings.md) ST1/ST3/ST4 built 2026-11-09: UTF-8 at the edges (request path/body → 400,
+   the rest U+FFFD), `substr` boundary panic, `chr()` > 127 panics, `mb_*`, `grapheme_*` (table from Python
+   3.15's unicodedata: `tools/gen_unicode.py`, checked by `tools/check_unicode.py`). HTTP `ab -k -c 50`
+   /user/42: 215k–218k req/s vs 202k–219k before. ST5 `mb_strtolower/upper` and ST6 `normalizer_normalize`
+   built the same day (every code point alone + 200,000 strings equal to Python's). Binaries are linked with
+   dead stripping since then (hello: 148 KB → 54 KB), so the Unicode tables cost only programs that use them.
+   Left: ST2 `bytes`, SIMD validation.
+4. ~~**Null**~~ (null.md) steps 1–4 built on `next` 2026-11-08. Step 5 built 2026-11-09 (`{i64, i1}`; IR of all
+   51 programs unchanged). Step 6 (`list<?T>`, `map<K,?T>`) and property narrowing built 2026-11-09. Null is complete (null.md: all of N1–N8 and steps 1–6). Fresh-agent test of null done 2026-11-09
+   (Sonnet, guide only: clean on the first `pin check`, all curl cases right; the guide gap on optional JSON fields fixed).
 5. ~~`list<string>`~~ done in 0.2.0 (plus explode/implode/sort, query/form/JSON request helpers).
    Nested containers done in 0.5.0.
 6. ~~Request headers + timeouts~~ done in 0.6.0 (`tests/server/limits.pn`: slowloris, smuggling, injection,
@@ -143,7 +229,7 @@ numbered list below is the older order; items 3, 4 and 7 are folded into P1–P5
 8. ~~Concurrency~~ done in 0.7.0 (C1–C11; see concurrency.md status for what differs). Runtime: tasks +
    scheduler + timer heap + wait_fds in runtime.c ("tasks"), Hub ("hub"), client ("HTTP client and run()").
    Compiler: go_expr / await_expr / tasks_done / task_borrows in pinac.py. TLS: decided no (owner, 2026-10-25, design/tls.md). Next ideas: loop-head
-   cancellation checks, stack-overflow → panic message, durable await (research first).
+   cancellation checks, ~~stack-overflow → panic message~~ (B17), durable await (research first).
 9. ~~Modules/imports~~ done in 0.4.0: `import`/`export`/`mod::fn()`, packages via `pin get` + `pin.lock`
    (commit + sha256, checked every build). Not yet: transitive package resolution (a package's own package
    imports must be `pin get`-ed by the project), package versions by semver ranges, a package index.

@@ -1,0 +1,1 @@
+function f(db $db, string $sql): string { return db_json($db, $sql, []); }

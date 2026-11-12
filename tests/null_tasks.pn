@@ -1,0 +1,26 @@
+// ?int / ?float / ?bool through go tasks: arguments, results, await_all, await_timeout, throws
+function half(?int $n): ?int {
+    sleep_ms(5);
+    if ($n === null) { return null; }
+    return intdiv($n, 2);
+}
+function score(?float $f, ?bool $b, string $s): ?float {
+    if ($f === null || $b === null) { return null; }
+    return $b ? $f * 2 : $f;
+}
+function risky(?int $n): ?int throws {
+    if ($n === null) { throw error(400, "no value"); }
+    return $n + 1;
+}
+$a = go half(10);
+$b = go half(null);
+echo json_encode(await $a), " ", json_encode(await $b), "\n";
+$c = await go score(1.5, true, "x");
+echo json_encode($c), " ", json_encode(await go score(null, true, "y")), "\n";
+list<Task<?int>> $ts = [];
+for ($i = 0; $i < 4; $i++) { $ts[] = go half($i == 2 ? null : $i * 10); }
+echo json_encode(await_all($ts)), "\n";
+echo json_encode(try await go risky(4)), " ", try await go risky(null) catch ($e) { echo $e->message, " "; null; } ?? -1, "\n";
+$t = go half(7);
+$r = try await_timeout($t, 1000);
+echo $r ?? -1, "\n";

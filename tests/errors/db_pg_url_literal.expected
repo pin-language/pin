@@ -1,0 +1,1 @@
+db_open(): read a PostgreSQL URL from the environment, e.g. db_open(env("DATABASE_URL")), so the password does not end up in the source and in git (design/postgres.md G7)

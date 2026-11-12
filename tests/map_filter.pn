@@ -1,0 +1,11 @@
+// array_map / array_filter with function names (inline loops)
+class P { public function __construct(public string $name, public int $price) {} }
+function double_it(int $x): int { return $x * 2; }
+function label(P $p): string { return $p->name . "=" . $p->price; }
+function cheap(P $p): bool { return $p->price < 100; }
+function is_even(int $x): bool { return $x % 2 == 0; }
+function half(int $x): ?int { return $x % 2 == 0 ? intdiv($x, 2) : null; }
+list<P> $ps = [new P("tea", 45), new P("cake", 120), new P("rice", 30)];
+echo json_encode(array_map("double_it", [1, 2, 3])), json_encode(array_map("label", $ps)), "\n";
+echo json_encode(array_filter($ps, "cheap")), json_encode(array_filter([1, 2, 3, 4], "is_even")), json_encode(array_map("half", [1, 2, 4])), "\n";
+echo count($ps), " ", json_encode(array_filter(array_map("double_it", [1, 2, 3]), "is_even")), "\n";

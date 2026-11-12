@@ -2,27 +2,31 @@
 
 > Pin is a small statically typed language with PHP 8 syntax, compiled to native code through LLVM, with
 > compile-time ownership instead of a garbage collector. It is meant to be written by AI coding agents.
-> Version 0.8 (preview, not for production). Not everything from PHP exists: read the AI guide before writing Pin.
+> Version 0.9 (preview, not for production). Not everything from PHP exists: read the AI guide before writing Pin.
 
 Has: functions; go/await tasks, a Hub for messages between requests, Server-Sent Events, an http://
 client and run(); nested JSON reading (json_raw) and read_line() for stdin (MCP servers: package
-github.com/pin-language/mcp); throws/try/catch errors; classes (no inheritance) with methods and & parameters; int, float, bool, string; list<T> and
+github.com/pin-language/mcp); throws/try/catch errors; null as ?int / ?string / ?list / ?map / ?Class, checked before use; classes (no inheritance) with methods and & parameters; int, float, bool, string; list<T> and
 ordered map<K,V>, nested freely; ownership checks; a multi-threaded
-JSON HTTP server (serve) with query/form/JSON-body helpers; SQLite (db_*) where SQL injection does not compile;
-modules (import/export, module::fn()); Git packages (pin get, pin.lock with sha256).
-Not yet: inheritance/interfaces, null, finally, closures, default parameter values, PostgreSQL.
+JSON HTTP server (serve) with query/form/JSON-body helpers; SQLite and PostgreSQL (db_*) where SQL injection does not compile;
+modules (import/export, module::fn()); Git packages (pin get, pin.lock with sha256); closures (fn($x) => ...,
+function () use ($a, &$b) { }, fn(T): R types: passed, returned, stored); ~210 PHP built-ins (sprintf, date,
+array_map / array_filter / usort / array_reduce, mb_* and grapheme_* for Thai and other UTF-8 text, filter_var).
+Not yet: inheritance/interfaces, finally, switch/match.
 By design: no TLS — a proxy does https in both directions (design/tls.md).
 
 Read the AI guide before writing Pin — https://github.com/pin-language/docs/blob/HEAD/ai-guide.md (raw URL below): it is the complete language on one page. The PHP habits
 that do not compile, most common first:
-- no null / ?T: use -1, "", an empty list or a bool
+- null only in ?T types (?User, ?int, ?string, ?list<int>, list<?int>): check `$u !== null` (or `?->`, `??`) before use
 - a map holds ONE value type: for JSON objects with mixed values declare a class and json_encode(new Obj(...))
 - empty containers need a type: list<int> $xs = []; map<string,int> $m = [];
 - functions that can fail are declared `: T throws`; every call needs `try f()` or `try f() catch ($e) { ...; value; }`
 - lists, maps and objects MOVE on `=` (copy() for two); parameters are read-only (`T &$x` and `f(&$x)` to change)
+- strings are always UTF-8; substr() counts bytes and panics inside a character: shorten text for display with
+  grapheme_substr($s, 0, $n); mb_strlen/mb_substr count code points; chr() > 127 panics (mb_chr)
 - request input: query_param($path, "k"), form_param($body, "k"), json_string/json_int($body, "k"); nested JSON:
   json_raw($json, "k"), json_len($arr), json_at($arr, $i)
-- no closures, array_map, sprintf, switch: write the loop, join strings with . or "$var", use if/elseif
+- no switch/match: use if/elseif. A closure kept or returned owns what it uses (lists are moved into it: copy())
 - sleep_ms(1000), not sleep(1); parallel work: $t = go f(); ... try await $t;
 - loop: pin check --json file.pn -> fix the reported line -> repeat
 

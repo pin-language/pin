@@ -1,0 +1,13 @@
+// PHP helpers: str_replace, trims, ucfirst, htmlspecialchars, base64, url decoding, number_format, round, abs, max/min, in_array, array_keys/values/sum
+echo str_replace("a", "ไ", "banana"), " ", str_replace("", "x", "ab"), "|", ltrim("  x "), "|", rtrim("  x "), "|\n";
+echo ucfirst("hello"), " ", lcfirst("World"), " ", htmlspecialchars("<a href=\"x\">Tom & 'Jerry'</a>"), "\n";
+echo base64_encode("ไทย ok"), " ", try base64_decode("4LmE4LiX4LiiIG9r"), " ", try base64_decode("@@") catch ($e) { strval($e->code); }, "\n";
+echo rawurldecode("a%20b+c%E0%B9%84"), " ", urldecode("a%20b+c"), "\n";
+echo number_format(1234567.891), " ", number_format(1234567.891, 2), " ", number_format(1234.5, 2, ",", "."), " ", number_format(-0.4), "\n";
+echo round(2.5), " ", round(-2.5), " ", round(1.955, 2), " ", round(1234.5678, -2), " ", floor(-1.5), " ", ceil(1.2), "\n";
+echo abs(-5), " ", abs(-2.5), " ", max(3, 7), " ", min(3, 7.5), " ", max([4, 9, 2]), " ", min([1.5, -2.0]), "\n";
+echo in_array(3, [1, 2, 3]) ? "y" : "n", in_array("b", ["a"]) ? "y" : "n", in_array(2, [1.0, 2.0]) ? "y" : "n", "\n";
+map<string,int> $m = ["a" => 1, "b" => 2];
+echo json_encode(array_keys($m)), json_encode(array_values($m)), " ", array_sum([1, 2, 3]), " ", array_sum([0.5, 0.25]), "\n";
+map<int,string> $n = [5 => "x", 7 => "y"];
+echo json_encode(array_keys($n)), json_encode(array_values($n)), json_encode(array_values(["t" => true, "f" => false])), "\n";

@@ -1,0 +1,3 @@
+// an int base with a negative int exponent would be a fraction
+$e = -1;
+echo 2 ** $e;

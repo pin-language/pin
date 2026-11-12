@@ -1,0 +1,9 @@
+<?php
+// a loop that sets the property to null: the next round may see null, so the check before the loop is not enough
+class Box { public ?string $label; public function __construct() {} }
+$b = new Box();
+$b->label = "x";
+for ($i = 0; $i < 3; $i++) {
+    echo strlen($b->label);
+    $b->label = null;
+}

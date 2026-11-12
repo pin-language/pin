@@ -1,0 +1,22 @@
+<?php
+// a class may hold ?Itself: linked lists; free, copy and JSON follow the chain
+class Node {
+    public int $value;
+    public ?Node $next;
+    function __construct(int $v) { $this->value = $v; }
+}
+function push(?Node $head, int $v): Node {
+    $n = new Node($v);
+    if ($head !== null) { $n->next = copy($head); }
+    return $n;
+}
+function sum(?Node $n): int {
+    if ($n === null) { return 0; }
+    return $n->value + sum($n->next);
+}
+?Node $list = null;
+for ($i = 1; $i <= 4; $i++) { $list = push($list, $i); }
+echo sum($list), "\n";
+echo json_encode($list), "\n";
+$c = copy($list);
+echo sum($c), "\n";

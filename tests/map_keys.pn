@@ -1,0 +1,8 @@
+// map literal keys from properties, items and method results take their real type (B6)
+class U { public function __construct(public string $name) {} public function key(): string { return "k" . $this->name; } }
+$u = new U("a");
+$m = [$u->key() => 1, $u->name => 2];
+echo json_encode($m), "\n";
+list<string> $ks = ["x", "y"];
+$n = [$ks[0] => 1.5];
+echo json_encode($n), "\n";

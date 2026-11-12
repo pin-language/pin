@@ -1,0 +1,3 @@
+// a recursion that never ends: a clear panic (exit 1), not a crash
+function deep(int $n, string $acc): string { $s = deep($n + 1, $acc); return $s . ""; }
+echo strlen(deep(0, "x"));

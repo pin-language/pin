@@ -1,0 +1,3 @@
+<?php
+$db = db_open(":memory:");
+$rows = db_all($db, "SELECT 1 AS x", []);

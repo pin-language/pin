@@ -1,0 +1,5 @@
+<?php
+// use (&$names): calling $add changes $names, so it cannot be called while a foreach walks $names (C5)
+list<string> $names = ["a"];
+$add = function (string $n) use (&$names): void { $names[] = $n; };
+foreach ($names as $n) { $add($n . "!"); }

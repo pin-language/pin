@@ -1,0 +1,36 @@
+function find_age(string $name): ?int {
+    if ($name == "ann") { return 31; }
+    if ($name == "bob") { return 0; }
+    return null;
+}
+function half(?int $n): ?float {
+    if ($n === null) { return null; }
+    return $n / 2;
+}
+function flag(int $n): ?bool {
+    if ($n < 0) { return null; }
+    return $n > 10;
+}
+foreach (["ann", "bob", "cat"] as $who) {
+    $a = find_age($who);
+    if ($a !== null) {
+        echo "$who is ", $a + 1 - 1, "\n";
+    } else {
+        echo "$who: unknown\n";
+    }
+    echo "  or ", $a ?? -1, ", json ", json_encode($a), ", half ", json_encode(half($a)), "\n";
+}
+?int $x = null;
+echo isset($x) ? "set\n" : "not set\n";
+$x = 5;
+$x += 2;
+echo $x, "\n";
+?float $f = 3;
+echo json_encode($f), " ", json_encode(flag(-1)), json_encode(flag(3)), json_encode(flag(30)), "\n";
+$b = flag(30) ?? false;
+echo $b ? "yes\n" : "no\n";
+$t = true;
+$y = $t ? 7 : null;
+echo json_encode($y), "\n";
+$z = !$t ? 7 : null;
+echo json_encode($z), " ", $z ?? 99, "\n";
