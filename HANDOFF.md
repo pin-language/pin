@@ -1,8 +1,35 @@
-# HANDOFF — state as of 2026-11-10 (0.9.0: release PRs open, next → release/v0.1.0; tags after merge)
+# HANDOFF — state as of 2026-11-13 (0.9.0 released 2026-11-12)
 
-## 0. Next session (updated 2026-11-09)
+## 0. Next session (updated 2026-11-13)
 
-**2026-11-09 in one place** (all on `next`, CI green on Linux and macOS for pin and tack; nothing released):
+**0.9.0 is released** (2026-11-12): pin PR #2 and docs PR #1 merged `next` → `release/v0.1.0`, tag `v0.9.0` on
+both merge commits (pin `ecbe1b2`, docs `1803fb0`; annotated tags, the older ones are lightweight), CI green on
+the branch and the tag in both repos. Suite at release: 310 passed, `--sanitize` 318 passed. Not done, the
+owner's steps: a GitHub Release page (there has never been one: 10 tags, 0 releases) and the announcement.
+
+Review after the release (2026-11-12, asked for by the owner; nothing below is fixed yet unless it says so):
+- **No outside users yet**: pin has 0 stars, 0 issues, 0 forks. Every "fresh-agent test" was our own agent.
+- **Memory safety record**: three use-after-frees so far (B12, B16, closures in loops), each found late or by
+  chance. `tools/fuzz_ownership.py` has no closures in it, so 0.9.0 shipped closures on hand-written tests only.
+  Closed 2026-11-13 with `tools/fuzz_closures.py` (6 kinds of captured value × 8 ways to make a closure × 4
+  things that happen to the value meanwhile × 23 places a closure goes): 8,064 programs under ASAN + UBSAN on
+  macOS: 3,556 ran clean, 4,420 refused by the compiler, 88 panicked as designed (copy() of a `use (&...)`
+  closure through a parameter), **0 sanitizer reports**. Not covered: leaks (LeakSanitizer is Linux only; the
+  tool takes ~20 min, so it is not in CI), and whether it would have caught the loop use-after-free found in
+  review (no commit has that bug to test against). B12 was never bisected.
+- **B9** (ints wrap silently) deserves a louder warning in the README for money / quantities.
+- `mcp` and `benchmarks` have no CI: 0.9's breaking string changes went out with no automatic check of the
+  package. Checked by hand 2026-11-12: `example.pn` of pin-mcp builds with 0.9.0 and answers `initialize` and
+  `tools/list`. The README's comparison table (Rust / Go / PHP / Python) was not re-measured for 0.9, only Pin.
+- Repository hygiene: the default branch is still named `release/v0.1.0`; a stray remote branch
+  `claude/framework-brainstorm-20c9a5`; no SECURITY.md or CONTRIBUTING; Windows and Linux arm64 untested.
+- Fixed 2026-11-13: this file's header, CLAUDE.md (compiler size, types, runtime files), the CHANGELOG date,
+  and the organisation page (it still said "no null yet", "closures: not in Pin", Preview 0.8).
+
+The paragraphs below are the history of how 0.9.0 was built, oldest decisions last; where they say "on `next`,
+not released" they mean before 2026-11-12.
+
+**2026-11-09 in one place** (all on `next`, CI green on Linux and macOS for pin and tack; nothing released at that time):
 null complete (steps 5–6, property narrowing, `?int` through `go`); strings ST1/ST3–ST6 (UTF-8 always, `substr`
 panic, `chr` > 127 panics, `mb_*`, `grapheme_*`, case, `normalizer_normalize`; tables from Python 3.15's
 unicodedata, `tools/check_unicode.py` = 0 differences); `time()`, `request_ip()`, `db_all` / `db_one`; 503 for a
@@ -95,7 +122,7 @@ int-overflow, null, strings, concurrency.
 
 ## 1. What works (verified)
 
-`python3 tests/run_tests.py` → **150 passed, 0 failed** (0.6.0) on macOS arm64 (owner's MacBook) **and** on
+`python3 tests/run_tests.py` → **310 passed, 0 failed** (0.9.0; 150 at 0.6.0) on macOS arm64 (owner's MacBook) **and** on
 Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang python3`).
 
 - Everything from the first prototype (functions, int/float/bool/string, `list<T>`, ordered `map<K,V>`,
