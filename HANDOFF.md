@@ -10,8 +10,13 @@ owner's steps: a GitHub Release page (there has never been one: 10 tags, 0 relea
 Review after the release (2026-11-12, asked for by the owner; nothing below is fixed yet unless it says so):
 - **No outside users yet**: pin has 0 stars, 0 issues, 0 forks. Every "fresh-agent test" was our own agent.
 - **Memory safety record**: three use-after-frees so far (B12, B16, closures in loops), each found late or by
-  chance. Not verified: whether `tools/fuzz_ownership.py` generates programs with closures (if not, steps 3–4
-  of closures.md have hand-written tests only). B12 was never bisected. Do these before more features.
+  chance. `tools/fuzz_ownership.py` has no closures in it, so 0.9.0 shipped closures on hand-written tests only.
+  Closed 2026-11-13 with `tools/fuzz_closures.py` (6 kinds of captured value × 8 ways to make a closure × 4
+  things that happen to the value meanwhile × 23 places a closure goes): 8,064 programs under ASAN + UBSAN on
+  macOS: 3,556 ran clean, 4,420 refused by the compiler, 88 panicked as designed (copy() of a `use (&...)`
+  closure through a parameter), **0 sanitizer reports**. Not covered: leaks (LeakSanitizer is Linux only; the
+  tool takes ~20 min, so it is not in CI), and whether it would have caught the loop use-after-free found in
+  review (no commit has that bug to test against). B12 was never bisected.
 - **B9** (ints wrap silently) deserves a louder warning in the README for money / quantities.
 - `mcp` and `benchmarks` have no CI: 0.9's breaking string changes went out with no automatic check of the
   package. Checked by hand 2026-11-12: `example.pn` of pin-mcp builds with 0.9.0 and answers `initialize` and
