@@ -18,6 +18,9 @@ Review after the release (2026-11-12, asked for by the owner; nothing below is f
   tool takes ~20 min, so it is not in CI), and whether it would have caught the loop use-after-free found in
   review (no commit has that bug to test against). B12 was never bisected.
 - **B9** (ints wrap silently) deserves a louder warning in the README for money / quantities.
+- String literals have no `\x1e`, `\u{e44}` or octal escapes (PHP has them): `"\x1e"` is the four characters as
+  written, with no error. Found 2026-11-24 while writing the fuzzers (they use `chr(30)`). Either support them
+  or make an unknown escape a compile error.
 - `mcp` and `benchmarks` have no CI: 0.9's breaking string changes went out with no automatic check of the
   package. Checked by hand 2026-11-12: `example.pn` of pin-mcp builds with 0.9.0 and answers `initialize` and
   `tools/list`. The README's comparison table (Rust / Go / PHP / Python) was not re-measured for 0.9, only Pin.
@@ -209,6 +212,10 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | — | `tools/fuzz_json.py`: 60,000 mutated JSON inputs through json_decode (nested classes, `?T`, `list<?int>`) and every `json_*` reader under ASAN + UBSAN: 0 reports (2026-11-09) | `runtime/jdecode.c`, `request.c` | checked |
 | B16 | ~~a list literal kept a borrowed heap item (`[$maybe ?? [7]]`) or freed an owned one it had pushed (`[try f(), ...]` of lists) — use-after-free~~ fixed 2026-11-09 (`tests/literal_items.pn`). `tools/fuzz_ownership.py` (407 programs: value kinds × places incl. ?T items, ASAN + UBSAN) finds nothing else | `pinac.py listlit` | done |
 | B17 | ~~a recursion too deep crashed the whole server (any request could take it down)~~ fixed 2026-11-09: guard-page fault → panic via a sigaltstack handler; xmalloc / xrealloc / printing check a per-thread `stack_limit` first so the overflow never happens inside malloc or stdio with their lock held (that variant trapped). `tests/panics/stack_overflow.pn`, `/deep` in tests/server/panics.pn | `runtime/tasks.c` | done |
+| B18 | ~~`date($f, $ts)` with a year that does not fit in an int: `gmtime_r` failed, its unset fields indexed `days[]` / `months[]` out of bounds (read and printed other memory, or SEGV: the whole server, not a 500)~~ fixed 2026-11-24: panics (`tests/panics/date_range.pn`). Found by `tools/fuzz_strings.py` | `runtime/text.c` | memory safety |
+| B19 | ~~HTTP client: `strtoll` / `atoi` on the response (status, Content-Length, chunk size, SSE `id:`) skip newlines and read past the end of the buffer, which is not NUL-terminated: heap-buffer-overflow read on a response that ends where the buffer ends~~ fixed 2026-11-24: `h_num()` reads only up to the line's end; a status that is not 3 digits and a chunk size with no digits are now 502. Found by `tools/fuzz_client.py`. Any server Pin calls could trigger it | `runtime/client.c` | memory safety |
+| B20 | ~~`str_pad` / `mb_str_pad` with a length near INT64_MIN: `len - strlen` overflowed (UB) into a huge pad length~~ fixed 2026-11-24 (`tests/pad_extremes.pn`). Found by `tools/fuzz_strings.py`. Also `sqlite3_bind_text` took an int length (a string over 2 GB would wrap): now `bind_text64` | `runtime/text.c`, `sqlite.c` | memory safety |
+| — | `tools/fuzz_strings.py` (30,000 inputs: 31 groups of string / Unicode / URL / number / date / hash built-ins, invalid UTF-8 through read_line, edge ints), `fuzz_client.py` (3,000 calls of http_get / post / stream against a fake server with mutated responses; only 127.0.0.1), `fuzz_sqlite.py` (20,000 inputs, blobs cut mid-character, JSON functions, wrong-type reads), all ASAN + UBSAN: 0 reports after B18–B20 (2026-11-24). Not in CI yet (none of the fuzzers are). PostgreSQL, `crypto.c` beyond `hash` / `password_verify`, `hub.c` and `run()` have no fuzzer | runtime | checked |
 | B15 | ~~a full pool makes `db_open()` panic (500)~~ fixed 2026-11-09: still a panic, but it answers 503 (also for a PostgreSQL server that is down): `Req.panic_status` | runtime | done |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int

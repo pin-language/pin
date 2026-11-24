@@ -1,0 +1,6 @@
+// str_pad / mb_str_pad with lengths at the ends of int: no signed overflow, the string comes back as it is
+// (found by tools/fuzz_strings.py: len - strlen wrapped around to a huge pad length)
+$min = -9223372036854775807 - 1;
+echo "[", str_pad("ab", $min), "] [", str_pad("ab", $min, "-", STR_PAD_LEFT), "] [", str_pad("ไทย", -1, "x", STR_PAD_BOTH), "]\n";
+echo "[", mb_str_pad("ab", $min), "] [", mb_str_pad("ไทย", $min + 1, "ก", STR_PAD_BOTH), "] [", mb_str_pad("ไทย", 5, "ก"), "]\n";
+echo "[", str_pad("ab", 2, "-"), "] [", str_pad("ab", 3, "-"), "] [", mb_str_pad("ab", 3, ""), "]\n";

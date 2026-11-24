@@ -50,6 +50,25 @@ static int h_more(HConn *h, int64_t deadline) {
 
 static void h_take(HConn *h, size_t n) { memmove(h->buf, h->buf + n, h->len - n); h->len -= n; }
 
+// A number in [p, e): spaces and tabs, an optional sign (when sign_ok), then base-10 or base-16 digits, saturating
+// at INT64_MAX. Not strtoll/atoi: they skip newlines too and then read on past `e`, and a response can end exactly
+// at the end of h->buf, which is not NUL-terminated (found by tools/fuzz_client.py). *ok = 0 when there is no digit.
+static int64_t h_num(const char *p, const char *e, int base, int sign_ok, int *ok) {
+    while (p < e && (*p == ' ' || *p == '\t')) p++;
+    int neg = 0, any = 0;
+    if (sign_ok && p < e && (*p == '-' || *p == '+')) neg = *p++ == '-';
+    uint64_t v = 0;
+    for (; p < e; p++) {
+        int c = (unsigned char)*p, d = c >= '0' && c <= '9' ? c - '0'
+                                     : base == 16 && (c | 32) >= 'a' && (c | 32) <= 'f' ? (c | 32) - 'a' + 10 : -1;
+        if (d < 0) break;
+        any = 1;
+        v = v > ((uint64_t)INT64_MAX - (uint64_t)d) / (uint64_t)base ? (uint64_t)INT64_MAX : v * (uint64_t)base + (uint64_t)d;
+    }
+    if (ok) *ok = any;
+    return neg ? -(int64_t)v : (int64_t)v;
+}
+
 static PinError *h_error(int r, const char *what) {
     char msg[200];
     if (r == -2) { snprintf(msg, sizeof msg, "%s: no answer in time", what); return make_error(504, msg); }
@@ -152,10 +171,16 @@ static HConn *h_open(const char *method, Str *url, Map *headers, Str *body, cons
         if (r <= 0 || h->len > 65536) { h_free(h); *err = h_error(r == 1 ? -1 : r == 0 ? -1 : r, what); return NULL; }
     }
     if (h->len < 12 || strncmp(h->buf, "HTTP/1.", 7) != 0) { h_free(h); *err = make_error(502, "not an HTTP response"); return NULL; }
-    *status = atoi(h->buf + 9);
+    int ok;
+    int64_t code = h_num(h->buf + 9, hend, 10, 0, &ok);
+    if (!ok || code < 100 || code > 999) { h_free(h); *err = make_error(502, "not an HTTP response"); return NULL; }
+    *status = (int)code;
     for (char *p = memmem(h->buf, (size_t)(hend - h->buf) + 2, "\r\n", 2) + 2; p < hend;) {
         char *e = memmem(p, (size_t)(hend + 2 - p), "\r\n", 2);
-        if (ieq_prefix(p, e, "content-length:")) h->body_left = strtoll(p + 15, NULL, 10);
+        if (ieq_prefix(p, e, "content-length:")) {              // no digits (or a sign): read until close
+            int64_t cl = h_num(p + 15, e, 10, 0, &ok);
+            h->body_left = ok ? cl : -1;
+        }
         else if (ieq_prefix(p, e, "transfer-encoding:")) {
             for (char *q = p + 18; q + 7 <= e; q++) if (strncasecmp(q, "chunked", 7) == 0) h->chunked = 1;
         }
@@ -173,9 +198,11 @@ static int64_t h_body(HConn *h, char *out, int64_t max, int64_t deadline) {
             if (h->chunk_left == 0) {               // next chunk size line
                 char *nl;
                 while (!(nl = memmem(h->buf, h->len, "\r\n", 2))) { int r = h_more(h, deadline); if (r <= 0) return r == 0 ? -1 : r; }
-                int64_t sz = strtoll(h->buf, NULL, 16);
+                int ok;
+                int64_t sz = h_num(h->buf, nl, 16, 0, &ok);
                 h_take(h, (size_t)(nl - h->buf) + 2);
-                if (sz <= 0) return 0;
+                if (!ok) return -1;                     // not a chunk size: a broken response
+                if (sz == 0) return 0;
                 h->chunk_left = sz;
             }
             if (h->len == 0) { int r = h_more(h, deadline); if (r <= 0) return r == 0 ? -1 : r; }
@@ -303,7 +330,7 @@ StrOrError pn_stream_next(HStream *st, int64_t ms) {
                     data = str_add_bytes(data, v, lend - v);
                 } else if (lend - q >= 3 && memcmp(q, "id:", 3) == 0) {
                     char *v = q + 3; if (v < lend && *v == ' ') v++;
-                    st->last_id = strtoll(v, NULL, 10);
+                    st->last_id = h_num(v, lend, 10, 1, NULL);
                 }
                 q = nl ? nl + 1 : end;
             }

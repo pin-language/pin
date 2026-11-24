@@ -153,8 +153,11 @@ f("date", N, "date(string $format, int $timestamp = time()): string", "A time as
   ["Letters: `d D j l N S w z F m M n t L Y y a A g G h H i s v u e T P p O Z U c r`; `\\` before a letter keeps it "
    "as it is. Anything else is copied.",
    "Always UTC: Pin has no time zones yet (`T` is `UTC`, `P` is `+00:00`). For an API, `date(\"c\")` (ISO 8601) "
-   "or plain `time()` numbers are the usual choice."],
-  php="Like `date()` with `date.timezone=UTC`.")
+   "or plain `time()` numbers are the usual choice.",
+   "A timestamp whose year does not fit in 32 bits (beyond about the year 2,147,483,647 either way) **panics**; "
+   "a value from a request can reach it, so check the range first if it comes from outside."],
+  php="Like `date()` with `date.timezone=UTC`, except for those huge timestamps: PHP prints their year "
+      "(`date(\"Y\", PHP_INT_MAX)` is 292277026596), Pin panics.")
 f("str_pad", S, "str_pad(string $s, int $length, string $pad = \" \", int $type = STR_PAD_RIGHT): string",
   "Pad a string to `$length` bytes.",
   r'''echo "[", str_pad("7", 3, "0", STR_PAD_LEFT), "] [", str_pad("ab", 6), "] [", str_pad("ab", 6, "-", STR_PAD_BOTH), "]\n";''',
