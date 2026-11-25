@@ -1,53 +1,75 @@
 # Pin
 
-> **🤖 AI coding agents: before writing any Pin code, read the complete guide —
-> https://github.com/pin-language/docs/blob/HEAD/ai-guide.md** (one page; plain text:
-> https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md). Pin looks like PHP but
-> many PHP habits do not compile: `null` only in `?T` types and checked before use, a map holds one value type (use a class for mixed JSON), empty
-> containers need a type, calls that can fail need `try`. Loop on `pin check --json file.pn`. See also
-> [AGENTS.md](AGENTS.md) and [llms.txt](llms.txt).
+**A memory-safe programming language for web backends, with PHP-like syntax, compiled to native code.**
 
 [![test](https://github.com/pin-language/pin/actions/workflows/test.yml/badge.svg)](https://github.com/pin-language/pin/actions/workflows/test.yml)
+[![version](https://img.shields.io/badge/version-0.9.0_preview-orange)](CHANGELOG.md)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-**A language for AI coding agents to write fast, memory-safe web backends.**
-PHP-like syntax, compiled to native code, no garbage collector.
+English · [ภาษาไทย](README.th.md)
 
-Most code is now written by AI agents, and they already know PHP. Pin keeps that syntax but moves the
-mistakes from production to compile time: every variable has one type, memory is managed by
-compile-time ownership (like Rust, simplified), every path through a function is checked, and each
-error says how to fix it — in plain text or as JSON for the agent's loop. The result compiles through
-LLVM into a single native binary, including a multi-threaded HTTP server.
+Pin is a new programming language. Its source files end in `.pn`. A PHP developer can read Pin code
+straight away, but Pin is compiled ahead of time through LLVM into a single native binary. It has no
+garbage collector: memory is managed by ownership rules that the compiler checks, similar to Rust but
+simpler. Pin is built for JSON APIs and other web backends, and it is designed to be written by people
+and by AI coding agents.
 
+> **Status: public preview (0.9.0).** Pin is intended for evaluation and feedback. The language is still
+> changing between versions. **Do not use it in production yet.**
 
+> **Why GitHub lists Python and C for this repository.** The Pin compiler (`pinac.py`) is a prototype
+> written in Python, and the runtime library is written in C. Programs written in Pin do not run on
+> Python: they are compiled to native machine code. GitHub does not recognise the Pin language yet, so
+> `.pn` files are highlighted as PHP, which has nearly the same syntax.
 
-> **Status: preview (0.9) for early testers.** The language is small and still changing. Do not use it
-> in production. TLS (https) is left to a proxy by design, in both directions: see
-> [design/tls.md](https://github.com/pin-language/docs/blob/HEAD/design/tls.md).
-> 🇹🇭 ภาษาไทย: [README.th.md](README.th.md)
+## Contents
 
-## Install
+1. [Design principles](#design-principles)
+2. [Getting started](#getting-started)
+3. [The language at a glance](#the-language-at-a-glance)
+4. [Building a web backend](#building-a-web-backend)
+5. [Safety and security](#safety-and-security)
+6. [Performance](#performance)
+7. [How Pin works](#how-pin-works)
+8. [Project status](#project-status)
+9. [Documentation](#documentation)
+10. [Using Pin with AI coding agents](#using-pin-with-ai-coding-agents)
+11. [Contributing and feedback](#contributing-and-feedback)
+12. [License](#license)
 
-macOS or Linux, one command (no sudo; it checks for Python 3.10+ and clang, puts Pin in `~/.pin`, links
-the `pin` command into `~/.local/bin`, and runs a hello-world to prove it works):
+## Design principles
+
+Every design decision in Pin follows one order of priorities:
+
+1. **Memory safety.** A Pin program cannot read or write memory it does not own. Bounds checks and size
+   checks are always on, and no flag or `unsafe` block turns them off.
+2. **Speed.** Programs compile to native code with no garbage collector and no interpreter.
+3. **Clarity.** Each variable has one type, and conditions must be `bool`. Compiler errors explain how to
+   fix the problem.
+4. **Familiarity.** The syntax stays as close to PHP 8 as the first three rules allow.
+
+## Getting started
+
+### Requirements
+
+- macOS or Linux (Windows through WSL with Ubuntu, untested)
+- Python 3.10 or newer, used to run the compiler
+- clang, used to produce the native binary
+
+### Install
+
+The installer needs no `sudo`. It checks the requirements, installs Pin into `~/.pin`, links the `pin`
+command into `~/.local/bin` and runs a test program:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pin-language/pin/HEAD/install.sh | sh
 ```
 
-If it says clang is missing: macOS `xcode-select --install`, Ubuntu/Debian `sudo apt install clang`.
-If `pin` is then "command not found", the installer prints the one line to add to your shell config.
-Windows: use WSL with Ubuntu (untested).
+If clang is missing, install it with `xcode-select --install` on macOS or `sudo apt install clang` on
+Ubuntu/Debian. If the shell then reports `pin: command not found`, the installer has printed the line to
+add to your shell configuration.
 
-Check it, and run your first program:
-
-```bash
-pin -v
-printf '%s\n' 'echo "Hello from Pin\n";' > hello.pn && pin hello.pn
-```
-
-Update later by running the same `curl … | sh` again. To uninstall: `rm -rf ~/.pin ~/.local/bin/pin`.
-
-<details><summary>Install by hand instead</summary>
+<details><summary>Manual installation</summary>
 
 ```bash
 git clone https://github.com/pin-language/pin.git ~/.pin
@@ -57,14 +79,40 @@ pin ~/.pin/examples/hello.pn
 
 </details>
 
+To update, run the installer again. To uninstall, run `rm -rf ~/.pin ~/.local/bin/pin`.
+
+### Your first program
+
+```bash
+pin -v
+printf '%s\n' 'echo "Hello from Pin\n";' > hello.pn
+pin hello.pn
+```
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `pin file.pn` | Compile and run (same as `pin run file.pn`) |
+| `pin build file.pn [-o out]` | Compile to a native binary |
+| `pin check file.pn` | Check types and ownership without building |
+| `pin check --json file.pn` | The same, with one JSON object per error |
+| `pin get github.com/user/repo@v1.0.0` | Add a package, pinned in `pin.lock` |
+| `pin version` | Print the version |
+
+The [`examples/`](examples/) folder has short programs to start from: `hello`, `fizzbuzz`, `wordcount`,
+`ownership`, `primes`, `api` (a JSON server) and `notes_api` (a server backed by SQLite).
+
+## The language at a glance
+
 ```php
-function squares(int $n): list<int> {   // returns a list the caller will own
+function squares(int $n): list<int> {   // returns a new list; the caller owns it
     list<int> $out = [];
     for ($i = 1; $i <= $n; $i++) { $out[] = $i * $i; }
     return $out;
 }
 
-function total(list<int> $xs): int {    // borrows the list read-only: no copy
+function total(list<int> $xs): int {    // borrows the list read-only: nothing is copied
     $sum = 0;
     foreach ($xs as $x) { $sum += $x; }
     return $sum;
@@ -75,92 +123,79 @@ echo "Hello, $name!\n";
 echo total(squares(10)), "\n";          // 385
 ```
 
-## Using Pin with an AI coding agent
+### Types
 
-1. Point the agent at the [AI guide](https://github.com/pin-language/docs/blob/HEAD/ai-guide.md) — the whole language on one page, with
-   idioms, a PHP → Pin table and an error → fix table. For example, add this line to your project's
-   `AGENTS.md` / `CLAUDE.md`: *"This project is written in Pin. Read
-   https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md before writing code, and run `pin check --json` after every change."*
-2. Let it loop on `pin check --json file.pn`: one JSON object per error
-   (`{"file","line","severity","message"}`), `{"file","ok":true}` when clean, exit code 1 on error.
-3. Run with `pin run file.pn`. Run-time errors print `panic: ...` with the line and exit 1 (inside an
-   HTTP handler they answer 500 and the server keeps going).
-
-Messages are written for agents trained on PHP: reaching for `extends`, `finally`, `switch`,
-`array()` or `include` gets "not in Pin yet — write this instead", not a parse error.
-
-## Commands
-
-| command | what it does |
+| Kind | Examples |
 |---|---|
-| `pin file.pn` | compile and run (same as `pin run file.pn`) |
-| `pin run file.pn` | compile and run (the binary is thrown away) |
-| `pin build file.pn [-o out]` | compile to a native binary |
-| `pin check file.pn` | type- and ownership-check only |
-| `pin version` | print the version |
+| Scalars | `int`, `float`, `bool`, `string` (always valid UTF-8) |
+| Containers | `list<int>`, `map<string, User>` (ordered like PHP arrays), nested freely |
+| Classes | `class User { ... }`, without inheritance |
+| Values that may be null | `?User`, `?int`: they must be checked before use |
+| Functions | `fn(int): string`, for closures and named functions |
 
-**Editor:** VS Code syntax highlighting is in [`editors/vscode`](editors/vscode/) — after installing,
-`cd ~/.pin/editors/vscode && npx @vscode/vsce package && code --install-extension pin-0.5.0.vsix`.
+A variable's type comes from its first value and does not change. Parameters and return values are
+always typed.
 
-Start with [`examples/`](examples/) (installed in `~/.pin/examples`): `hello`, `fizzbuzz`, `wordcount`, `ownership`, `primes`, and
-`api` (a small JSON server). New to Pin? [Learn Pin](https://github.com/pin-language/docs/blob/HEAD/learn/README.md) — fourteen short chapters.
-Every built-in function with examples: the [reference](https://github.com/pin-language/docs/blob/HEAD/reference/README.md).
-The full guide is the [language guide](https://github.com/pin-language/docs/blob/HEAD/language.md);
-all documentation lives in [pin-language/docs](https://github.com/pin-language/docs).
-
-## How Pin differs from PHP
-
-| | PHP | Pin |
-|---|---|---|
-| variable types | can change at any time | one type per variable, inferred from the first value |
-| parameters / return | types optional | types required |
-| arrays | one `array` for lists and maps | `list<int>` and `map<string,int>` (maps keep insertion order like PHP) |
-| strings | `.`, `.=`, `"Hello $name"` | the same |
-| missing map key | warning, then `null` | panic — check with `isset()` or use `$m[$k] ?? 0` |
-| index out of range | warning, then `null` | panic |
-| `if ($n)` | truthy/falsy | the condition must be a `bool`: write `$n != 0` |
-| changing an array you were passed | changes a copy (copy-on-write) | compile error — `copy()` it first |
-| using a variable that may not be set | warning | compile error |
-| memory | reference counting + GC at run time | ownership checked at compile time, no GC |
-| int overflow | becomes a float | wraps around (64-bit) |
-| `json_encode` of Thai text | `ไ...` | UTF-8 as is (like `JSON_UNESCAPED_UNICODE`) |
-| strings | any bytes | always valid UTF-8: `substr()` inside a character panics, `chr()` > 127 panics (`mb_chr()`); `mb_*` and `grapheme_*` built in |
-
-## Ownership in one minute
+### Ownership
 
 ```php
 $a = [1, 2, 3];
-echo total($a);      // passing to a function lends it read-only; $a is still yours
-$b = $a;             // lists and maps MOVE: $b owns it now
+echo total($a);      // a function call lends the list read-only; $a still owns it
+$b = $a;             // lists and maps MOVE: $b owns the list now
 echo count($a);      // compile error: $a was moved on line 3. Use copy($a) ...
 $c = copy($b);       // an explicit copy
 $s = "text";
-$t = $s;             // strings COPY, like PHP
+$t = $s;             // strings are copied, as in PHP
 ```
 
-Each list, map and string has exactly one owner and is freed when the owner goes away — no garbage
-collector, no reference counting. The compiler checks every path through your code separately, so a
-value moved in one `if` branch can still be used in the other branch. Errors explain the fix:
+Each list, map and string has exactly one owner and is freed when its owner goes out of scope. The
+compiler checks each path through a function separately, and its errors say how to fix the code:
 
 ```
 ownership.pn:20: error: $a was moved on line 18 and can no longer be used here. Use copy($a) if you need two separate values
-loop.pn:2: error: $last may be used before it is assigned: on some paths to this line it never gets a value (an if without else, or a loop that can run zero times). Give $last a value before the if/loop
 ```
 
-## Modules and packages
+### Errors
+
+A function that can fail is declared with `throws`, and every call to it must handle the failure with
+`try`, either passing it on or catching it:
+
+```php
+$body = try http_get("http://127.0.0.1:8080/health", [], 2000) catch ($e) { "down: " . $e->code; };
+```
+
+Errors are compiled to ordinary return values, so they cost nothing when nothing fails.
+
+### Main differences from PHP
+
+| | PHP | Pin |
+|---|---|---|
+| Variable types | Can change at any time | Fixed, inferred from the first value |
+| Parameter and return types | Optional | Required |
+| Arrays | One `array` type for lists and maps | `list<T>` and `map<K, V>` |
+| Missing map key / index out of range | Warning, then `null` | Run-time error (`panic`); use `isset()` or `??` |
+| `if ($n)` | Truthy / falsy | The condition must be a `bool` |
+| Changing an array passed to a function | Changes a copy | Compile error; call `copy()` first |
+| Memory management | Reference counting and garbage collection | Ownership checked at compile time |
+| Integer overflow | Becomes a float | Wraps around (64-bit) |
+| Strings | Any bytes | Always valid UTF-8; `mb_*` and `grapheme_*` built in |
+
+Messages are written for people who know PHP. Writing `extends`, `finally`, `switch`, `array()` or
+`include` gives an explanation of what to write in Pin instead, not a bare syntax error.
+
+### Modules and packages
 
 ```php
 import prices;                                   // prices.pn in the project folder
-import github.com/someone/strutil/words;         // a package, after: pin get github.com/someone/strutil@v1.0.0
+import github.com/someone/strutil/words;         // a package added with: pin get github.com/someone/strutil@v1.0.0
 echo prices::price("tea"), " ", words::greet("pin"), "\n";
 ```
 
-Only functions marked `export` can be called from other files; imported files contain only functions. A
-package is any Git repository: `pin get` pins its commit and a SHA-256 of its code in `pin.lock`, checked on
-every build, so code that changes after you locked it does not compile. Everything still builds into one
-binary. ([Learn chapter 12](https://github.com/pin-language/docs/blob/HEAD/learn/12-modules-and-packages.md))
+Only functions marked `export` can be called from other files. A package is any Git repository:
+`pin get` records its commit and a SHA-256 of its code in `pin.lock`, and every build checks them. The
+result is still one binary.
 
-## A web server in one file
+## Building a web backend
 
 ```php
 function handle(string $method, string $path, string $body): string {
@@ -171,68 +206,151 @@ function handle(string $method, string $path, string $body): string {
 serve(8080, "handle");
 ```
 
-Store data in SQLite with `db_open`, `db_exec`, `db_query` and `db_json` — the SQL must be a string literal with
-`?` placeholders, so SQL injection does not compile ([example](examples/notes_api.pn)). Read requests with `url_path($path)`, `query_param($path, "k")`, `form_param($body, "k")` and
-`json_string($body, "k")` / `json_int` / `json_float` / `json_bool` / `json_has`. `pin run` it and you get an HTTP/1.1 server with keep-alive and pipelining, one thread per CPU core
-(`PN_THREADS=4` to change), on Linux (epoll) and macOS (kqueue). There are no global variables, so
-handlers share nothing and need no locks. If a handler panics, that client gets
-`500 {"error":"Internal Server Error"}`, everything the request allocated is freed, and the server keeps
-serving.
+| Area | What Pin provides |
+|---|---|
+| HTTP server | HTTP/1.1 with keep-alive and pipelining, one thread per CPU core (`PN_THREADS` to change), epoll on Linux and kqueue on macOS, timeouts and connection limits, server-sent events |
+| Requests | `url_path`, `query_param`, `form_param`, `request_header`, `json_decode` into classes, `json_string` / `json_int` and similar |
+| Databases | SQLite and PostgreSQL through the same `db_*` functions, with a connection pool; rows can be read into classes |
+| Concurrency | Structured `go` / `await` tasks, a publish/subscribe Hub |
+| HTTP client | `http_get`, `http_post`, `http_stream` for `http://` URLs |
+| Security helpers | `password_hash`, `hash_hmac`, `hash_equals`, `random_token`, `random_int` |
 
-## What is checked for you
+Pin has no global variables, so request handlers share nothing and need no locks. If a handler fails at
+run time, only that client receives `500 Internal Server Error`: everything the request allocated is
+freed and the server continues. TLS (https) is handled by a reverse proxy such as Caddy or nginx, by
+design ([design/tls.md](https://github.com/pin-language/docs/blob/HEAD/design/tls.md)).
 
-- **At compile time:** types, ownership (use after move, moving inside a loop, changing a borrowed
-  value, changing a list while `foreach` walks it), and that every variable has a value on every path.
-- **At run time (always on, no flag to turn them off):** list bounds, missing map keys, division by zero,
-  `intdiv(PHP_INT_MIN, -1)`, `(int)` of NAN/INF/huge floats, and
-  every allocation size (a huge `fill()` panics instead of producing a too-small buffer).
-- **Not checked yet:** `+ - *` on ints wrap around on overflow. Checking them cost up to 23% on integer
-  loops, so it is postponed until the compiler can skip the checks it can prove unnecessary.
+## Safety and security
 
-## Benchmarks
+**Checked at compile time:** types, ownership (use after move, changing a borrowed value, changing a list
+while `foreach` walks it), and that every variable has a value on every path.
 
-Same algorithm in every language, same output checked for all of them. Apple M2 (8 cores), macOS 14,
-best of 3 runs. No CPU pinning on macOS, so treat differences under ~20% as noise; memory numbers
-and the full method are in the benchmarks repository.
+**Checked at run time, always:** list bounds, missing map keys, division by zero,
+`intdiv(PHP_INT_MIN, -1)`, invalid float-to-int conversions, and the size of every allocation.
 
-| benchmark | Pin | Rust 1.95 | Go 1.26 | PHP 8.5 + JIT | PHP 8.5 | Python 3.15 |
+**Built into the server and libraries:**
+
+- SQL must be a string literal with `?` placeholders, so SQL injection does not compile.
+- Response headers that contain CR or LF are rejected, which prevents header injection.
+- Requests whose headers do not follow RFC 9112 exactly are refused with `400`, which prevents request
+  smuggling behind a proxy.
+- Request paths and bodies must be valid UTF-8.
+- Map hashing uses a random key chosen at start-up, so attackers cannot send keys that all collide.
+- The HTTP client accepts only plain IPv4 addresses (`a.b.c.d`) as numeric hosts.
+
+**How it is tested:** a test suite of more than 300 checks runs on every change, on Linux and macOS,
+both normally and under AddressSanitizer and UndefinedBehaviorSanitizer. Fuzzers in [`tools/`](tools/)
+feed the compiler and runtime with generated programs, mutated JSON, HTTP requests and responses, text
+and SQL.
+
+**Known limitation:** integer `+ - *` wrap around on overflow instead of failing. Checking them cost up
+to 23% on integer loops, so the check is postponed until the compiler can remove checks it can prove
+unnecessary ([design/int-overflow.md](https://github.com/pin-language/docs/blob/HEAD/design/int-overflow.md)).
+There is no per-request memory limit yet.
+
+**Reporting a vulnerability:** please do not open a public issue. Use
+[GitHub private vulnerability reporting](https://github.com/pin-language/pin/security/advisories/new)
+(the *Security* tab, then *Report a vulnerability*).
+
+## Performance
+
+The same algorithm was run in every language, and all outputs were checked to be identical. Apple M2
+(8 cores), macOS 14, best of 3 runs.
+
+| Benchmark | Pin | Rust 1.95 | Go 1.26 | PHP 8.5 + JIT | PHP 8.5 | Python 3.15 |
 |---|---|---|---|---|---|---|
-| sieve (20M) | 0.042s | 0.043s | 0.041s | 0.652s | 1.337s | 4.283s |
-| collatz (1M) | 0.165s | 0.131s | 0.175s | 0.714s | 3.204s | 6.302s |
-| pi (100M terms) | 0.090s | 0.090s | 0.091s | 0.930s | 2.235s | 13.239s |
-| list build + sum | 0.114s | 0.131s | 0.183s | 0.440s | 1.192s | 4.754s |
+| sieve (20M) | 0.042 s | 0.043 s | 0.041 s | 0.652 s | 1.337 s | 4.283 s |
+| collatz (1M) | 0.165 s | 0.131 s | 0.175 s | 0.714 s | 3.204 s | 6.302 s |
+| pi (100M terms) | 0.090 s | 0.090 s | 0.091 s | 0.930 s | 2.235 s | 13.239 s |
+| list build + sum | 0.114 s | 0.131 s | 0.183 s | 0.440 s | 1.192 s | 4.754 s |
 
-Caveats: these are small CPU loops, not real applications. `fib` is left out because clang optimises
-that recursion in ways that say little about the language. Pin's ints are not overflow-checked, while
-Rust's release build is not either and Go also wraps. Programs, the runner and raw numbers:
-[pin-language/benchmarks](https://github.com/pin-language/benchmarks).
+**Caveats.**
 
-An earlier HTTP load test on a 2-core Linux container (each server pinned to one core, wrk with 64
-connections) gave Pin 132k req/s for a hello endpoint vs 42k for Go `net/http` and 10k for FrankenPHP.
-Pin's server does far less (no TLS or HTTP/2), so that gap is not a language
-comparison; the CPU-bound endpoint (`/primes`) was 1.2× Go and 4.8× FrankenPHP. Details:
-[pin-language/benchmarks](https://github.com/pin-language/benchmarks) (`http/`).
+- These are small CPU loops, not real applications. macOS does not allow CPU pinning, so differences
+  below about 20% should be treated as noise.
+- `fib` is excluded, because clang optimises that recursion in ways that say little about the language.
+- An earlier HTTP test on a 2-core Linux container measured 132k requests/s for Pin, 42k for Go
+  `net/http` and 10k for FrankenPHP on a "hello" endpoint. Pin's server does much less (no TLS, no
+  HTTP/2), so this is not a fair comparison of the languages. On a CPU-bound endpoint Pin was 1.2× Go.
 
-## Not there yet
+Programs, method and raw results: [pin-language/benchmarks](https://github.com/pin-language/benchmarks).
 
-Inheritance and interfaces, `finally`, a `bytes` type for binary data.
-`null` (`?User`, `?int`, `list<?int>`, checked before use), `json_decode()` into a class, `go`/`await`, SQLite and
-PostgreSQL (with a connection pool, rows into classes with `db_all` / `db_one`), and Unicode text (always UTF-8,
-`mb_*`, `grapheme_*`, normalisation) are built.
-Most of these are already designed in [pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/); see
-[CHANGELOG.md](CHANGELOG.md) for what changed.
+## How Pin works
 
-## Feedback wanted
+```
+file.pn ──► pinac.py ───────────────────────────────────► LLVM IR ──► clang -O2 ──► native binary
+            lexer → parser → type and ownership checker              + runtime (C)
+```
 
-This preview exists to learn what AI agents and PHP developers find natural or confusing. Please
-[open an issue](https://github.com/pin-language/pin/issues) with:
+| Path | Contents |
+|---|---|
+| [`pinac.py`](pinac.py) | The compiler (prototype, written in Python) |
+| [`runtime/`](runtime/) | The runtime library in C: memory, strings, maps, JSON, tasks, HTTP server and client, SQLite, PostgreSQL, Unicode, cryptography |
+| [`pin`](pin) | The `pin` command-line tool |
+| [`spec/`](spec/) | The description of every built-in function, from which the reference documentation is generated |
+| [`tests/`](tests/) | The test suite |
+| [`tools/`](tools/) | Fuzzers, the sanitizer script and the documentation generator |
+| [`examples/`](examples/) | Example programs |
+| [`editors/vscode/`](editors/vscode/) | Syntax highlighting for Visual Studio Code |
 
-- code that you expected to work but got a compile error for (and whether the message helped),
-- anything that crashed instead of printing `panic:` — that is a bug we want to see,
-- what you would need before trying Pin for a real API.
+## Project status
 
-Run the test suite with `python3 tests/run_tests.py` (≈1 minute).
+**Available in 0.9.0:** classes, closures, `?T` null safety, `throws` / `try` / `catch`, `go` / `await`,
+modules and Git packages, `json_decode` into classes, SQLite and PostgreSQL, server-sent events, an HTTP
+client, Unicode text (`mb_*`, `grapheme_*`, normalisation), and 210 built-in functions and constants.
+
+**Not available yet:** inheritance and interfaces, `finally`, a `bytes` type for binary data,
+overflow-checked integers, a per-request memory limit, HTTP/2.
+
+Planned features are designed in
+[pin-language/docs/design](https://github.com/pin-language/docs/blob/HEAD/design/), and every change is
+listed in [CHANGELOG.md](CHANGELOG.md).
+
+## Documentation
+
+| Document | For |
+|---|---|
+| [Learn Pin](https://github.com/pin-language/docs/blob/HEAD/learn/README.md) | Fourteen short chapters for newcomers |
+| [Language guide](https://github.com/pin-language/docs/blob/HEAD/language.md) | The complete language |
+| [Built-in reference](https://github.com/pin-language/docs/blob/HEAD/reference/README.md) | Every built-in function, with examples |
+| [Design documents](https://github.com/pin-language/docs/blob/HEAD/design/) | Why the language works the way it does |
+| [AI guide](https://github.com/pin-language/docs/blob/HEAD/ai-guide.md) | The whole language on one page, for AI coding agents |
+
+All documentation lives in [pin-language/docs](https://github.com/pin-language/docs).
+
+## Using Pin with AI coding agents
+
+AI coding agents are trained mostly on PHP, so many PHP habits do not compile in Pin. Before an agent
+writes Pin code, it should read the [AI guide](https://github.com/pin-language/docs/blob/HEAD/ai-guide.md),
+which covers the whole language on one page, with a PHP-to-Pin table and an error-to-fix table.
+
+1. Add a line such as this to your project's `AGENTS.md` or `CLAUDE.md`: *"This project is written in
+   Pin. Read https://raw.githubusercontent.com/pin-language/docs/HEAD/ai-guide.md before writing code,
+   and run `pin check --json` after every change."*
+2. Let the agent loop on `pin check --json file.pn`. It prints one object per error
+   (`{"file", "line", "severity", "message"}`), or `{"file", "ok": true}` when the file is clean, and exits
+   with code 1 on error.
+3. Run the program with `pin file.pn`. A run-time error prints `panic: ...` with the line number and
+   exits with code 1.
+
+See also [AGENTS.md](AGENTS.md) and [llms.txt](llms.txt).
+
+## Contributing and feedback
+
+This preview exists to learn what people and AI agents find natural or confusing. Please
+[open an issue](https://github.com/pin-language/pin/issues) for:
+
+- code you expected to compile that did not, and whether the error message helped,
+- anything that crashed instead of printing `panic:`, which is always a bug,
+- what Pin would need before you would try it for a real API.
+
+Before sending a change to the compiler or runtime, read [CLAUDE.md](CLAUDE.md) for the conventions and
+the rules the language must keep, then run the test suite (about one minute):
+
+```bash
+python3 tests/run_tests.py
+```
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Pin is released under the [MIT License](LICENSE).
