@@ -8,7 +8,7 @@ A new programming language for PinaTo Co., Ltd. that **looks like PHP** but comp
 LLVM, with **Rust-style ownership instead of a garbage collector**. Target use: web APIs / backends.
 Name **Pin** (was "pina"), file extension `.pn`. It is a prototype, not production.
 Owner's rule for every design decision: **memory safety > speed > clarity > looking like PHP**.
-Agreed design specs live in `design/` in the pin-language/docs repo (local clone: ../pin-docs) (most not implemented yet — see HANDOFF.md §4).
+Agreed design specs live in `design/` in the pin-language/docs repo (local clone: ../pin-docs) (most are built now — HANDOFF.md §0 and §4 say which parts are not).
 
 ```
 .pn source → pinac.py (lexer → parser → type+ownership checker → LLVM IR) → clang -O2 + runtime.c → one native binary
@@ -39,8 +39,8 @@ gcc -g -fsanitize=address,undefined runtime.c X.o -lm -pthread -o X_asan && ./X_
 
 | path | what |
 |---|---|
-| `pinac.py` | whole compiler, one file (~1850 lines). `Parser` → AST `Node`s; `FuncGen` does type checking, ownership checking and IR emission in one pass |
-| `runtime.c` + `runtime/*.c` | one translation unit: `runtime.c` only `#include`s `runtime/core.c` (allocator, per-request tracking, panics), `tasks.c` (green threads, scheduler), `values.c` (lists, strings, maps, JSON, objects, UTF-8 checks), `request.c`, `unicode.c` (`mb_*`, `grapheme_*`; table generated into `unicode_data.h`), `hub.c`, `server.c` (HTTP/1.1, epoll/kqueue, SSE), `client.c` (http client, run), `sqlite.c`. Build stays `clang ... runtime.c` |
+| `pinac.py` | whole compiler, one file (~7,700 lines at 0.9.0). `Parser` → AST `Node`s; `FuncGen` does type checking, ownership checking and IR emission in one pass |
+| `runtime.c` + `runtime/*.c` | one translation unit: `runtime.c` only `#include`s `runtime/core.c` (allocator, per-request tracking, panics), `tasks.c` (green threads, scheduler), `values.c` (lists, strings, maps, JSON, objects, UTF-8 checks), `request.c`, `unicode.c` (`mb_*`, `grapheme_*`; table generated into `unicode_data.h`), `text.c` (the small PHP string / list helpers), `jdecode.c` (json_decode into classes), `crypto.c` (SHA-256, HMAC, PBKDF2, random), `hub.c`, `server.c` (HTTP/1.1, epoll/kqueue, SSE), `client.c` (http client, run), `sqlite.c`, `postgres.c` (libpq through dlopen). Build stays `clang ... runtime.c` |
 | `tests/` | `*.pn` + `expected/*.out`; `errors/*.pn` must fail to compile; `panics/*.pn` must exit 1; `server/panics.pn` = handler panics give 500 |
 | `tests/bench/`, `tests/server/api.pn` | the benchmark programs and the JSON API, kept as tests |
 | — | comparisons with Rust/Go/PHP/Python and the HTTP load test: github.com/pin-language/benchmarks (local clone ../pin-benchmarks); docs: github.com/pin-language/docs (../pin-docs) |
@@ -48,7 +48,8 @@ gcc -g -fsanitize=address,undefined runtime.c X.o -lm -pthread -o X_asan && ./X_
 ## Language invariants — do not break these without the owner's OK
 
 1. Every variable has one fixed type, inferred from its first assignment. Parameters and returns are typed.
-2. Types: `int float bool string list<int|float|bool> map<int|string, int|float|bool|string> void`.
+2. Types: `int float bool string void`, `list<T>` and ordered `map<int|string, V>` nested freely, classes (no
+   inheritance), `?T` for a value that may be null (checked before use), `fn(T): R` for closures and function names.
 3. **Ownership**: each list/map/string has exactly one owner; freed when the owner's function returns or
    the variable is overwritten. Lists/maps **move** on `$b = $a`; strings **copy** (literals never copied).
    Function arguments are **read-only borrows**. Borrowed values (params, foreach vars) cannot be changed,

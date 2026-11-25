@@ -227,7 +227,8 @@ static sqlite3_stmt *db_prepare(Db *d, Str *sql, List *params, int64_t kind, con
         int rc;
         if (kind == 3) {
             Str *s = ((Str **)params->data)[i];
-            rc = sqlite3_bind_text(st, (int)i + 1, s->data, (int)s->len, SQLITE_TRANSIENT);
+            // the 64-bit length: with an int one, a string over 2 GB would wrap to a wrong or negative length
+            rc = sqlite3_bind_text64(st, (int)i + 1, s->data, (sqlite3_uint64)s->len, SQLITE_TRANSIENT, SQLITE_UTF8);
         } else if (kind == 1) {
             rc = sqlite3_bind_double(st, (int)i + 1, ((double *)params->data)[i]);
         } else {

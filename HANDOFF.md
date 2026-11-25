@@ -1,8 +1,38 @@
-# HANDOFF — state as of 2026-11-10 (0.9.0: release PRs open, next → release/v0.1.0; tags after merge)
+# HANDOFF — state as of 2026-11-13 (0.9.0 released 2026-11-12)
 
-## 0. Next session (updated 2026-11-09)
+## 0. Next session (updated 2026-11-13)
 
-**2026-11-09 in one place** (all on `next`, CI green on Linux and macOS for pin and tack; nothing released):
+**0.9.0 is released** (2026-11-12): pin PR #2 and docs PR #1 merged `next` → `release/v0.1.0`, tag `v0.9.0` on
+both merge commits (pin `ecbe1b2`, docs `1803fb0`; annotated tags, the older ones are lightweight), CI green on
+the branch and the tag in both repos. Suite at release: 310 passed, `--sanitize` 318 passed. Not done, the
+owner's steps: a GitHub Release page (there has never been one: 10 tags, 0 releases) and the announcement.
+
+Review after the release (2026-11-12, asked for by the owner; nothing below is fixed yet unless it says so):
+- **No outside users yet**: pin has 0 stars, 0 issues, 0 forks. Every "fresh-agent test" was our own agent.
+- **Memory safety record**: three use-after-frees so far (B12, B16, closures in loops), each found late or by
+  chance. `tools/fuzz_ownership.py` has no closures in it, so 0.9.0 shipped closures on hand-written tests only.
+  Closed 2026-11-13 with `tools/fuzz_closures.py` (6 kinds of captured value × 8 ways to make a closure × 4
+  things that happen to the value meanwhile × 23 places a closure goes): 8,064 programs under ASAN + UBSAN on
+  macOS: 3,556 ran clean, 4,420 refused by the compiler, 88 panicked as designed (copy() of a `use (&...)`
+  closure through a parameter), **0 sanitizer reports**. Not covered: leaks (LeakSanitizer is Linux only; the
+  tool takes ~20 min, so it is not in CI), and whether it would have caught the loop use-after-free found in
+  review (no commit has that bug to test against). B12 was never bisected.
+- **B9** (ints wrap silently) deserves a louder warning in the README for money / quantities.
+- String literals have no `\x1e`, `\u{e44}` or octal escapes (PHP has them): `"\x1e"` is the four characters as
+  written, with no error. Found 2026-11-24 while writing the fuzzers (they use `chr(30)`). Either support them
+  or make an unknown escape a compile error.
+- `mcp` and `benchmarks` have no CI: 0.9's breaking string changes went out with no automatic check of the
+  package. Checked by hand 2026-11-12: `example.pn` of pin-mcp builds with 0.9.0 and answers `initialize` and
+  `tools/list`. The README's comparison table (Rust / Go / PHP / Python) was not re-measured for 0.9, only Pin.
+- Repository hygiene: the default branch is still named `release/v0.1.0`; a stray remote branch
+  `claude/framework-brainstorm-20c9a5`; no SECURITY.md or CONTRIBUTING; Windows and Linux arm64 untested.
+- Fixed 2026-11-13: this file's header, CLAUDE.md (compiler size, types, runtime files), the CHANGELOG date,
+  and the organisation page (it still said "no null yet", "closures: not in Pin", Preview 0.8).
+
+The paragraphs below are the history of how 0.9.0 was built, oldest decisions last; where they say "on `next`,
+not released" they mean before 2026-11-12.
+
+**2026-11-09 in one place** (all on `next`, CI green on Linux and macOS for pin and tack; nothing released at that time):
 null complete (steps 5–6, property narrowing, `?int` through `go`); strings ST1/ST3–ST6 (UTF-8 always, `substr`
 panic, `chr` > 127 panics, `mb_*`, `grapheme_*`, case, `normalizer_normalize`; tables from Python 3.15's
 unicodedata, `tools/check_unicode.py` = 0 differences); `time()`, `request_ip()`, `db_all` / `db_one`; 503 for a
@@ -95,7 +125,7 @@ int-overflow, null, strings, concurrency.
 
 ## 1. What works (verified)
 
-`python3 tests/run_tests.py` → **150 passed, 0 failed** (0.6.0) on macOS arm64 (owner's MacBook) **and** on
+`python3 tests/run_tests.py` → **310 passed, 0 failed** (0.9.0; 150 at 0.6.0) on macOS arm64 (owner's MacBook) **and** on
 Linux (Debian, clang 19, in Docker: `php:8.3-fpm` image + `apt-get install clang python3`).
 
 - Everything from the first prototype (functions, int/float/bool/string, `list<T>`, ordered `map<K,V>`,
@@ -182,6 +212,15 @@ not re-measured (no `wrk` on the Mac: `brew install wrk`).
 | — | `tools/fuzz_json.py`: 60,000 mutated JSON inputs through json_decode (nested classes, `?T`, `list<?int>`) and every `json_*` reader under ASAN + UBSAN: 0 reports (2026-11-09) | `runtime/jdecode.c`, `request.c` | checked |
 | B16 | ~~a list literal kept a borrowed heap item (`[$maybe ?? [7]]`) or freed an owned one it had pushed (`[try f(), ...]` of lists) — use-after-free~~ fixed 2026-11-09 (`tests/literal_items.pn`). `tools/fuzz_ownership.py` (407 programs: value kinds × places incl. ?T items, ASAN + UBSAN) finds nothing else | `pinac.py listlit` | done |
 | B17 | ~~a recursion too deep crashed the whole server (any request could take it down)~~ fixed 2026-11-09: guard-page fault → panic via a sigaltstack handler; xmalloc / xrealloc / printing check a per-thread `stack_limit` first so the overflow never happens inside malloc or stdio with their lock held (that variant trapped). `tests/panics/stack_overflow.pn`, `/deep` in tests/server/panics.pn | `runtime/tasks.c` | done |
+| B18 | ~~`date($f, $ts)` with a year that does not fit in an int: `gmtime_r` failed, its unset fields indexed `days[]` / `months[]` out of bounds (read and printed other memory, or SEGV: the whole server, not a 500)~~ fixed 2026-11-24: panics (`tests/panics/date_range.pn`). Found by `tools/fuzz_strings.py` | `runtime/text.c` | memory safety |
+| B19 | ~~HTTP client: `strtoll` / `atoi` on the response (status, Content-Length, chunk size, SSE `id:`) skip newlines and read past the end of the buffer, which is not NUL-terminated: heap-buffer-overflow read on a response that ends where the buffer ends~~ fixed 2026-11-24: `h_num()` reads only up to the line's end; a status that is not 3 digits and a chunk size with no digits are now 502. Found by `tools/fuzz_client.py`. Any server Pin calls could trigger it | `runtime/client.c` | memory safety |
+| B20 | ~~`str_pad` / `mb_str_pad` with a length near INT64_MIN: `len - strlen` overflowed (UB) into a huge pad length~~ fixed 2026-11-24 (`tests/pad_extremes.pn`). Found by `tools/fuzz_strings.py`. Also `sqlite3_bind_text` took an int length (a string over 2 GB would wrap): now `bind_text64` | `runtime/text.c`, `sqlite.c` | memory safety |
+| — | `tools/fuzz_strings.py` (30,000 inputs: 31 groups of string / Unicode / URL / number / date / hash built-ins, invalid UTF-8 through read_line, edge ints), `fuzz_client.py` (3,000 calls of http_get / post / stream against a fake server with mutated responses; only 127.0.0.1), `fuzz_sqlite.py` (20,000 inputs, blobs cut mid-character, JSON functions, wrong-type reads), all ASAN + UBSAN: 0 reports after B18–B20 (2026-11-24). Not in CI yet (none of the fuzzers are). PostgreSQL, `crypto.c` beyond `hash` / `password_verify`, `hub.c` and `run()` have no fuzzer | runtime | checked |
+| B21 | ~~the server took header lines RFC 9112 forbids (a space before `:`, a bare LF or CR, NUL, folded lines, no colon, two `Host`, control bytes in the request line, any HTTP version): behind a proxy that reads them differently that is request smuggling (the bug class Go net/http, Rust hyper and Node each had)~~ fixed 2026-11-25: `head_bad()` refuses them with 400 (505 for HTTP/2.0) before the handler; 12 cases in run_tests. Also `is_token_char()` took NUL (strchr finds the terminator) | `runtime/server.c` | security |
+| B22 | ~~map hashes were fixed (FNV + mix, no key): keys that all land in one slot can be computed offline; 20,000 of them made inserts 10x slower and it grows with n² (hash flooding, PHP CVE-2011-4885)~~ fixed 2026-11-25: random key per process, SipHash-1-3 for strings (as Rust; checked against the SipHash-2-4 reference vectors with the rounds changed), a keyed mix for ints (cheaper, as Go; not proven like SipHash). Map microbench: string keys same speed, int keys ~10% slower; no official benchmark uses maps. Iteration order unchanged | `runtime/values.c` | security |
+| B23 | ~~http_get & co. connected to numeric hosts the resolver reads in surprising ways (`0x7f.1`, `2130706433`, `127.1`; `0177.0.0.1` is 177.0.0.1 on macOS, 127.0.0.1 on Linux) and took service names as ports (Go CVE-2021-29923, Rust CVE-2021-29922)~~ fixed 2026-11-25: a host ending in a digit must be a plain a.b.c.d without leading zeros, port digits 1-65535, else 400 (`tests/client_urls.pn`) | `runtime/client.c` | security |
+| B24 | ~~malloc failing inside a handler called exit(2): one big request (e.g. a `str_replace` that grows to 10 GB) ended the whole server~~ fixed 2026-11-25: inside a request it panics (500) and the block is re-linked so cleanup frees it (`/oom` in tests/server/panics.pn). **Open:** there is no per-request memory limit (PHP `memory_limit`); on Linux overcommit a big request can still push the machine into the OOM killer | `runtime/core.c` | open (limit) |
+| — | Checked 2026-11-25 against other Go/Rust bug classes, nothing found: size overflow in repeat/range/fill/pad/sprintf/substr (Rust CVE-2018-1000810 shape, ~90 cases under ASAN), JSON nesting (depth 64, iterative check), UTF-8 overlong / surrogate / > U+10FFFF (refused), `run()` (posix_spawnp, no shell; BatBadBut is Windows only), `filter_var` IP (strict) | runtime | checked |
 | B15 | ~~a full pool makes `db_open()` panic (500)~~ fixed 2026-11-09: still a panic, but it answers 503 (also for a PostgreSQL server that is down): `Req.panic_status` | runtime | done |
 
 Fixed today: B1 (Linux-only server), B2 (panic kills server), B3 (branch-blind moves), B4 (silent int

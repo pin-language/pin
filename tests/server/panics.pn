@@ -37,6 +37,7 @@ function handle(string $method, string $path, string $body): string throws {
     if ($path == "/deep") { return deep(0, "x"); }      // a recursion with no end: stack overflow
     if ($path == "/boom") { return boom(); }
     if ($path == "/oob") { return oob(); }
+    if ($path == "/oom") { return str_repeat("x", 140737488355000); }   // ~128 TB, more than the address space: malloc says no -> 500, not exit(2)
     if ($path == "/objects") { return objects(); }
     if ($path == "/notfound" || $path == "/odd") { return try lookup($path); }
     if ($path == "/caught") { return try lookup("/notfound") catch ($e) { json_encode($e); }; }

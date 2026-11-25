@@ -4057,6 +4057,12 @@ class FuncGen:
         if op in ("<", "<=", ">", ">=", "==", "!="):
             if t == "int":
                 cc = {"<": "slt", "<=": "sle", ">": "sgt", ">=": "sge", "==": "eq", "!=": "ne"}[op]
+                if op in (">", ">="):
+                    # a > b is emitted as b < a: same meaning, and clang keeps the operand order. Measured
+                    # on an Apple M2 (2026-11-19) a trial-division loop `if ($p * $p > $x) break;` runs 11%
+                    # faster this way (it is the order Go's compiler picks); 7 other loops did not change.
+                    # The reason inside the CPU is not known and x86 was not measured.
+                    cc, lv, rv = {"sgt": "slt", "sge": "sle"}[cc], rv, lv
                 self.emit(f"{r} = icmp {cc} i64 {lv}, {rv}")
             else:
                 cc = {"<": "olt", "<=": "ole", ">": "ogt", ">=": "oge", "==": "oeq", "!=": "une"}[op]

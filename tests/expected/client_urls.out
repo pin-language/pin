@@ -1,0 +1,12 @@
+http://0x7f.1:1/ -> 400 the URL's host is not a name or a plain IPv4 address (a.b.c.d, no leading zeros)
+http://2130706433:1/ -> 400 the URL's host is not a name or a plain IPv4 address (a.b.c.d, no leading zeros)
+http://127.1:1/ -> 400 the URL's host is not a name or a plain IPv4 address (a.b.c.d, no leading zeros)
+http://0177.0.0.1:1/ -> 400 the URL's host is not a name or a plain IPv4 address (a.b.c.d, no leading zeros)
+http://127.0.0.01:1/ -> 400 the URL's host is not a name or a plain IPv4 address (a.b.c.d, no leading zeros)
+http://017700000001:1/ -> 400 the URL's host is not a name or a plain IPv4 address (a.b.c.d, no leading zeros)
+http://1.2.3.4.5:1/ -> 400 the URL's host is not a name or a plain IPv4 address (a.b.c.d, no leading zeros)
+http://256.0.0.1:1/ -> 400 the URL's host is not a name or a plain IPv4 address (a.b.c.d, no leading zeros)
+http://127.0.0.1:ssh/ -> 400 the URL's port is not valid
+http://127.0.0.1:0/ -> 400 the URL's port is not valid
+http://127.0.0.1:65536/ -> 400 the URL's port is not valid
+http://127.0.0.1:+80/ -> 400 the URL's port is not valid

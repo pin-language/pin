@@ -50,12 +50,54 @@ static int h_more(HConn *h, int64_t deadline) {
 
 static void h_take(HConn *h, size_t n) { memmove(h->buf, h->buf + n, h->len - n); h->len -= n; }
 
+// A number in [p, e): spaces and tabs, an optional sign (when sign_ok), then base-10 or base-16 digits, saturating
+// at INT64_MAX. Not strtoll/atoi: they skip newlines too and then read on past `e`, and a response can end exactly
+// at the end of h->buf, which is not NUL-terminated (found by tools/fuzz_client.py). *ok = 0 when there is no digit.
+static int64_t h_num(const char *p, const char *e, int base, int sign_ok, int *ok) {
+    while (p < e && (*p == ' ' || *p == '\t')) p++;
+    int neg = 0, any = 0;
+    if (sign_ok && p < e && (*p == '-' || *p == '+')) neg = *p++ == '-';
+    uint64_t v = 0;
+    for (; p < e; p++) {
+        int c = (unsigned char)*p, d = c >= '0' && c <= '9' ? c - '0'
+                                     : base == 16 && (c | 32) >= 'a' && (c | 32) <= 'f' ? (c | 32) - 'a' + 10 : -1;
+        if (d < 0) break;
+        any = 1;
+        v = v > ((uint64_t)INT64_MAX - (uint64_t)d) / (uint64_t)base ? (uint64_t)INT64_MAX : v * (uint64_t)base + (uint64_t)d;
+    }
+    if (ok) *ok = any;
+    return neg ? -(int64_t)v : (int64_t)v;
+}
+
 static PinError *h_error(int r, const char *what) {
     char msg[200];
     if (r == -2) { snprintf(msg, sizeof msg, "%s: no answer in time", what); return make_error(504, msg); }
     if (r == -3) return cancel_error(what);
     snprintf(msg, sizeof msg, "%s: the connection failed or closed early", what);
     return make_error(502, msg);
+}
+
+// A host that ends in a number must be a plain IPv4 address: four parts 0-255 without leading zeros. The C
+// resolver also takes "0x7f.1", "2130706433", "127.1" and "017700000001" (all 127.0.0.1) and reads "0177.0.0.1"
+// as 177.0.0.1 on macOS but 127.0.0.1 on Linux, so a check the program did on the text would not be what is
+// contacted (Go CVE-2021-29923, Rust CVE-2021-29922). Domain names never end in a number.
+static int host_ok(const char *h) {
+    const char *last = strrchr(h, '.');
+    last = last ? last + 1 : h;
+    if (!(*last >= '0' && *last <= '9')) return 1;                   // a name (top-level domains never start with a digit)
+    int parts = 0;
+    for (const char *c = h;;) {
+        if (*c < '0' || *c > '9') return 0;
+        if (*c == '0' && c[1] >= '0' && c[1] <= '9') return 0;     // leading zero
+        int v = 0, d = 0;
+        while (*c >= '0' && *c <= '9') { v = v * 10 + (*c - '0'); c++; if (++d > 3) return 0; }
+        if (v > 255) return 0;
+        parts++;
+        if (*c == 0) break;
+        if (*c != '.') return 0;
+        c++;
+    }
+    return parts == 4;
 }
 
 // http://host[:port]/path -> connected socket, request sent, response headers read. NULL + *err on failure.
@@ -86,6 +128,10 @@ static HConn *h_open(const char *method, Str *url, Map *headers, Str *body, cons
     size_t plen = slash ? (size_t)(ue - slash) : 1;
     for (const char *c = u; c < ue; c++)
         if ((unsigned char)*c <= 0x20 || *c == 0x7f) { *err = make_error(400, "the URL contains a space or control character"); return NULL; }
+    for (const char *c = port; *c; c++)          // digits only: getaddrinfo would also take a service name ("ssh")
+        if (*c < '0' || *c > '9') { *err = make_error(400, "the URL's port is not valid"); return NULL; }
+    if (atoi(port) < 1 || atoi(port) > 65535) { *err = make_error(400, "the URL's port is not valid"); return NULL; }
+    if (!host_ok(host)) { *err = make_error(400, "the URL's host is not a name or a plain IPv4 address (a.b.c.d, no leading zeros)"); return NULL; }
 
     struct addrinfo hints = {0}, *ai = NULL;
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
@@ -152,10 +198,16 @@ static HConn *h_open(const char *method, Str *url, Map *headers, Str *body, cons
         if (r <= 0 || h->len > 65536) { h_free(h); *err = h_error(r == 1 ? -1 : r == 0 ? -1 : r, what); return NULL; }
     }
     if (h->len < 12 || strncmp(h->buf, "HTTP/1.", 7) != 0) { h_free(h); *err = make_error(502, "not an HTTP response"); return NULL; }
-    *status = atoi(h->buf + 9);
+    int ok;
+    int64_t code = h_num(h->buf + 9, hend, 10, 0, &ok);
+    if (!ok || code < 100 || code > 999) { h_free(h); *err = make_error(502, "not an HTTP response"); return NULL; }
+    *status = (int)code;
     for (char *p = memmem(h->buf, (size_t)(hend - h->buf) + 2, "\r\n", 2) + 2; p < hend;) {
         char *e = memmem(p, (size_t)(hend + 2 - p), "\r\n", 2);
-        if (ieq_prefix(p, e, "content-length:")) h->body_left = strtoll(p + 15, NULL, 10);
+        if (ieq_prefix(p, e, "content-length:")) {              // no digits (or a sign): read until close
+            int64_t cl = h_num(p + 15, e, 10, 0, &ok);
+            h->body_left = ok ? cl : -1;
+        }
         else if (ieq_prefix(p, e, "transfer-encoding:")) {
             for (char *q = p + 18; q + 7 <= e; q++) if (strncasecmp(q, "chunked", 7) == 0) h->chunked = 1;
         }
@@ -173,9 +225,11 @@ static int64_t h_body(HConn *h, char *out, int64_t max, int64_t deadline) {
             if (h->chunk_left == 0) {               // next chunk size line
                 char *nl;
                 while (!(nl = memmem(h->buf, h->len, "\r\n", 2))) { int r = h_more(h, deadline); if (r <= 0) return r == 0 ? -1 : r; }
-                int64_t sz = strtoll(h->buf, NULL, 16);
+                int ok;
+                int64_t sz = h_num(h->buf, nl, 16, 0, &ok);
                 h_take(h, (size_t)(nl - h->buf) + 2);
-                if (sz <= 0) return 0;
+                if (!ok) return -1;                     // not a chunk size: a broken response
+                if (sz == 0) return 0;
                 h->chunk_left = sz;
             }
             if (h->len == 0) { int r = h_more(h, deadline); if (r <= 0) return r == 0 ? -1 : r; }
@@ -303,7 +357,7 @@ StrOrError pn_stream_next(HStream *st, int64_t ms) {
                     data = str_add_bytes(data, v, lend - v);
                 } else if (lend - q >= 3 && memcmp(q, "id:", 3) == 0) {
                     char *v = q + 3; if (v < lend && *v == ' ') v++;
-                    st->last_id = strtoll(v, NULL, 10);
+                    st->last_id = h_num(v, lend, 10, 1, NULL);
                 }
                 q = nl ? nl + 1 : end;
             }

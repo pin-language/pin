@@ -300,7 +300,10 @@ Str *pn_date(Str *fmt, int64_t ts) {
                                    "September", "October", "November", "December"};
     time_t t = (time_t)ts;
     struct tm tm;
-    gmtime_r(&t, &tm);
+    // gmtime_r fails for a year that does not fit in an int and then leaves tm unset: its fields would index
+    // days[] and months[] out of bounds. The year is also kept small enough for tm_year + 1900 below.
+    if (gmtime_r(&t, &tm) == NULL || tm.tm_year > 2147483647 - 1900)
+        panic_msg("date(): the timestamp is out of range");
     Str *d = str_alloc(32);
     char b[64];
     for (int64_t i = 0; i < fmt->len; i++) {
@@ -444,8 +447,8 @@ int64_t pn_is_numeric(Str *s) {
 // characters of $pad are added
 Str *pn_str_pad(Str *s, int64_t len, Str *pad, int64_t type) {
     if (len > ((int64_t)1 << 30)) panic_msg("str_pad(): length too large");
+    if (len <= s->len || pad->len == 0) return str_from(s->data, s->len);   // before subtracting: len can be INT64_MIN
     int64_t need = len - s->len;
-    if (need <= 0 || pad->len == 0) return str_from(s->data, s->len);
     int64_t left = type == 0 ? need : type == 2 ? need / 2 : 0, right = need - left;
     Str *d = str_alloc(len);
     for (int side = 0; side < 2; side++) {
@@ -828,8 +831,9 @@ int64_t pn_map_end_pos(Map *m, int64_t last) {
 // mb_str_pad (PHP 8.3): like str_pad, counting characters (code points) instead of bytes
 Str *pn_mb_str_pad(Str *s, int64_t len, Str *pad, int64_t type) {
     if (len > ((int64_t)1 << 28)) panic_msg("mb_str_pad(): length too large");
-    int64_t have = pn_mb_strlen(s), need = len - have, plen = pn_mb_strlen(pad);
-    if (need <= 0 || plen == 0) return str_from(s->data, s->len);
+    int64_t have = pn_mb_strlen(s), plen = pn_mb_strlen(pad);
+    if (len <= have || plen == 0) return str_from(s->data, s->len);         // before subtracting: len can be INT64_MIN
+    int64_t need = len - have;
     int64_t left = type == 0 ? need : type == 2 ? need / 2 : 0, right = need - left;
     Str *d = str_alloc(s->len + need * 4);
     for (int side = 0; side < 2; side++) {

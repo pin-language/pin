@@ -392,16 +392,50 @@ typedef struct {
     int32_t kk, vk;
 } Map;
 
+// Map hashes are keyed with a random key chosen when the program starts. With a fixed hash anyone who knows it
+// can pick request keys that all land in one slot, and every insert then walks all of them: a 1.5 MB JSON body
+// costs seconds of CPU ("hash flooding": PHP CVE-2011-4885; Rust and Go use a random key for this reason).
+// SipHash-1-3 is the hash Rust's HashMap uses. Iteration order is insertion order, so output never changes.
+static uint64_t sip_k0, sip_k1;
+
+__attribute__((constructor)) static void sip_seed(void) {
+    uint64_t k[2];
+    if (getentropy(k, sizeof k) != 0) { fprintf(stderr, "panic: the system gave no random bytes\n"); exit(1); }
+    sip_k0 = k[0]; sip_k1 = k[1];
+}
+
+#define SIP_ROT(x, b) (((x) << (b)) | ((x) >> (64 - (b))))
+#define SIP_ROUND do { v0 += v1; v1 = SIP_ROT(v1, 13); v1 ^= v0; v0 = SIP_ROT(v0, 32); v2 += v3; v3 = SIP_ROT(v3, 16); \
+    v3 ^= v2; v0 += v3; v3 = SIP_ROT(v3, 21); v3 ^= v0; v2 += v1; v1 = SIP_ROT(v1, 17); v1 ^= v2; v2 = SIP_ROT(v2, 32); } while (0)
+
+static uint64_t siphash13(const unsigned char *p, int64_t n) {
+    uint64_t v0 = sip_k0 ^ 0x736f6d6570736575ULL, v1 = sip_k1 ^ 0x646f72616e646f6dULL;
+    uint64_t v2 = sip_k0 ^ 0x6c7967656e657261ULL, v3 = sip_k1 ^ 0x7465646279746573ULL;
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t m;
+        memcpy(&m, p + i, 8);                                   // little-endian (arm64, x86-64)
+        v3 ^= m; SIP_ROUND; v0 ^= m;
+    }
+    uint64_t b = (uint64_t)n << 56;
+    for (int64_t j = 0; i + j < n; j++) b |= (uint64_t)p[i + j] << (8 * j);
+    v3 ^= b; SIP_ROUND; v0 ^= b;
+    v2 ^= 0xff;
+    SIP_ROUND; SIP_ROUND; SIP_ROUND;
+    return v0 ^ v1 ^ v2 ^ v3;
+}
+
+// Int keys: a keyed mix (cheaper than SipHash; Go also hashes integers this way). Without the key, which slot
+// a number lands in cannot be worked out, so colliding numbers cannot be chosen.
 static uint64_t hash_int(uint64_t x) {
+    x ^= sip_k0;
     x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; x ^= x >> 33;
+    x ^= sip_k1;
+    x ^= x >> 29; x *= 0xbf58476d1ce4e5b9ULL; x ^= x >> 32;
     return x;
 }
 
-static uint64_t hash_bytes(const char *p, int64_t n) {
-    uint64_t h = 0xcbf29ce484222325ULL;
-    for (int64_t i = 0; i < n; i++) { h ^= (unsigned char)p[i]; h *= 0x100000001b3ULL; }
-    return hash_int(h);
-}
+static uint64_t hash_bytes(const char *p, int64_t n) { return siphash13((const unsigned char *)p, n); }
 
 static uint64_t map_hash(Map *m, uint64_t key) {
     if (m->kk == 3) { Str *s = (Str *)key; return hash_bytes(s->data, s->len); }
