@@ -1,0 +1,8 @@
+// URLs the HTTP client refuses before it connects (nothing here reaches the network).
+// Numeric hosts that the C resolver reads in surprising ways: all of these are 127.0.0.1 (or 177.0.0.1 on
+// macOS for the leading-zero one), so a check the program does on the text would not match what is contacted.
+foreach (["http://0x7f.1:1/", "http://2130706433:1/", "http://127.1:1/", "http://0177.0.0.1:1/", "http://127.0.0.01:1/",
+          "http://017700000001:1/", "http://1.2.3.4.5:1/", "http://256.0.0.1:1/",
+          "http://127.0.0.1:ssh/", "http://127.0.0.1:0/", "http://127.0.0.1:65536/", "http://127.0.0.1:+80/"] as $u) {
+    echo $u, " -> ", try http_get($u, [], 300) catch ($e) { strval($e->code) . " " . $e->message; }, "\n";
+}

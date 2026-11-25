@@ -93,7 +93,7 @@ int64_t pn_request_has_header(Str *name) {
 }
 
 static int is_token_char(unsigned char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strchr("!#$%&'*+-.^_`|~", c);
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || (c && strchr("!#$%&'*+-.^_`|~", c));   // c != 0: strchr finds the NUL
 }
 
 // Add a response header. A name or value that could break the header block (CR, LF and other control bytes:
@@ -146,6 +146,7 @@ static const char *reason(int64_t s) {
     case 451: return "Unavailable For Legal Reasons";
     case 500: return "Internal Server Error"; case 501: return "Not Implemented"; case 502: return "Bad Gateway";
     case 503: return "Service Unavailable"; case 504: return "Gateway Timeout";
+    case 505: return "HTTP Version Not Supported";
     default: return "Status";              // unusual codes: the number is what clients read
     }
 }
@@ -345,6 +346,35 @@ static void refuse(Conn *c, int status) {
     c->in_len = 0;
 }
 
+// The request line and header lines must be exactly what RFC 9112 allows, or the request is refused before
+// anything reads it: a proxy in front of Pin that parses a sloppy request differently (a space before the
+// colon, a bare LF or CR, a folded line, a NUL) is how request smuggling works (Go net/http, Rust hyper and
+// Node have all had such bugs). 0 = fine, else the status to answer with.
+static int head_bad(const char *buf, const char *line_end, const char *sp1, const char *sp2, const char *hend) {
+    if (sp1 == buf) return 400;
+    for (const char *q = buf; q < sp1; q++) if (!is_token_char((unsigned char)*q)) return 400;
+    if (sp2 == sp1 + 1) return 400;
+    for (const char *q = sp1 + 1; q < sp2; q++) if ((unsigned char)*q <= 0x20 || *q == 0x7f) return 400;
+    const char *v = sp2 + 1;
+    if (line_end - v != 8 || memcmp(v, "HTTP/", 5) != 0 || v[6] != '.' || v[5] < '0' || v[5] > '9'
+        || v[7] < '0' || v[7] > '9') return 400;
+    if (v[5] != '1' || (v[7] != '0' && v[7] != '1')) return 505;
+    int hosts = 0;
+    for (const char *p = line_end + 2; p < hend;) {
+        const char *e = memmem(p, (size_t)(hend + 2 - p), "\r\n", 2);
+        const char *colon = p;
+        while (colon < e && is_token_char((unsigned char)*colon)) colon++;
+        if (colon == p || colon == e || *colon != ':') return 400;     // no name, a space before ':', a fold
+        for (const char *q = colon + 1; q < e; q++) {
+            unsigned char ch = (unsigned char)*q;
+            if ((ch < 0x20 && ch != '\t') || ch == 0x7f) return 400;  // bare CR or LF, NUL, other controls
+        }
+        if (colon - p == 4 && strncasecmp(p, "host", 4) == 0 && ++hosts > 1) return 400;
+        p = e + 2;
+    }
+    return 0;
+}
+
 // Parse and answer the complete requests in the input buffer, one at a time. -1 = close the connection.
 static int handle_input(Conn *c) {
     size_t off = 0;
@@ -362,6 +392,8 @@ static int handle_input(Conn *c) {
         char *sp1 = memchr(buf, ' ', (size_t)(line_end - buf));
         char *sp2 = sp1 ? memchr(sp1 + 1, ' ', (size_t)(line_end - sp1 - 1)) : NULL;
         if (!sp2) { refuse(c, 400); c->parsing = 0; return 0; }
+        int hb = head_bad(buf, line_end, sp1, sp2, hend);
+        if (hb) { refuse(c, hb); c->parsing = 0; return 0; }
         int http10 = (line_end - sp2 - 1 == 8) && memcmp(sp2 + 1, "HTTP/1.0", 8) == 0;
         int keep = !http10;
         int64_t clen = 0;

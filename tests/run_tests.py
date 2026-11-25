@@ -21,6 +21,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PINAC = [sys.executable, os.path.join(ROOT, "pinac.py")]
 UPDATE = "--update" in sys.argv
 SANITIZE = "--sanitize" in sys.argv
+if SANITIZE:      # /oom in tests/server/panics.pn asks for ~128 TB: malloc must say NULL, not ASAN abort
+    os.environ["ASAN_OPTIONS"] = "allocator_may_return_null=1:" + os.environ.get("ASAN_OPTIONS", "")
 BUILD = os.path.join(ROOT, "build")
 os.makedirs(BUILD, exist_ok=True)
 
@@ -348,6 +350,7 @@ if "--no-server" not in sys.argv:
                                ("/notfound", (404, '{"error":"Not Found"}')), ("/odd", (500, err500)),
                                ("/caught", (200, '{"code":404,"message":"no such thing: /notfound"}')),
                                ("/overflow", (500, err500)), ("/deep", (500, err500)), ("/deep", (500, err500)),
+                               ("/oom", (500, err500)),
                                ("/ok", (200, '{"ok":true}'))]:
                 got = http_get(8085, path)
                 if got == want:
@@ -550,6 +553,23 @@ if "--no-server" not in sys.argv:
             check("setting Content-Length yourself panics (500)", r.startswith("HTTP/1.1 500"), r)
             r = raw(8087, b"POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
             check("Transfer-Encoding is refused (501), never guessed", r.startswith("HTTP/1.1 501"), r)
+            # request smuggling shapes that Go net/http, Rust hyper and Node have each accepted at some point:
+            # a proxy in front could read these differently from Pin, so they are refused before the handler
+            for name, req, want in [
+                    ("a space before the colon", b"POST /x HTTP/1.1\r\nContent-Length : 5\r\n\r\nhello", "400"),
+                    ("Transfer-Encoding with a space before the colon", b"POST /x HTTP/1.1\r\nTransfer-Encoding : chunked\r\n\r\n0\r\n\r\n", "400"),
+                    ("a bare LF inside the headers", b"POST /x HTTP/1.1\r\nX: a\nContent-Length: 5\r\n\r\nhello", "400"),
+                    ("a bare CR in a value", b"GET /x HTTP/1.1\r\nX: a\rb\r\n\r\n", "400"),
+                    ("a NUL in a value", b"GET /x HTTP/1.1\r\nX: a\x00b\r\n\r\n", "400"),
+                    ("a folded line (obs-fold)", b"GET /x HTTP/1.1\r\nX: a\r\n Content-Length: 5\r\n\r\n", "400"),
+                    ("a header line with no colon", b"GET /x HTTP/1.1\r\nnocolon\r\n\r\n", "400"),
+                    ("two Host headers", b"GET /x HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n", "400"),
+                    ("a control byte in the path", b"GET /x\x01y HTTP/1.1\r\n\r\n", "400"),
+                    ("a bare LF ending the request line", b"GET /x HTTP/1.1\nX: y\r\n\r\n", "400"),
+                    ("a method that is not a token", b"G\x01T /x HTTP/1.1\r\n\r\n", "400"),
+                    ("HTTP/2.0 on an HTTP/1 connection", b"GET /x HTTP/2.0\r\n\r\n", "505")]:
+                r = raw(8087, req)
+                check(f"{name}: {want}", r.startswith("HTTP/1.1 " + want), r)
             r = raw(8087, b"POST /x HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello!")
             check("two different Content-Length values: 400", r.startswith("HTTP/1.1 400"), r)
             r = raw(8087, b"POST /x HTTP/1.1\r\nContent-Length: 5x\r\n\r\nhello")

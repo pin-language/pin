@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -81,10 +82,19 @@ static void blk_unlink(Blk *b) { b->prev->next = b->next; b->next->prev = b->pre
 
 static void stack_headroom(void);           // tasks.c: panic before malloc / stdio when the stack is nearly full
 
+// Language memory that the system refuses: inside a request this panics (that request gets a 500 and its
+// blocks are freed) instead of ending every other request on the server with it.
+__attribute__((noreturn)) static void panic_msg(const char *msg);
+
+static void xoom(void) {
+    if (cur_jmp) panic_msg("out of memory");
+    oom();
+}
+
 static void *xmalloc(size_t n) {
     stack_headroom();
-    Blk *b = malloc(sizeof(Blk) + n);
-    if (!b) oom();
+    Blk *b = n > SIZE_MAX - sizeof(Blk) ? NULL : malloc(sizeof(Blk) + n);
+    if (!b) xoom();
     if (cur_req) blk_link(b); else b->prev = b->next = NULL;
     return b + 1;
 }
@@ -99,12 +109,14 @@ static void *xrealloc(void *p, size_t n) {
     if (linked) {                       // keep it in the list it was in (possibly another request's)
         Blk *prev = b->prev, *next = b->next;
         blk_unlink(b);
-        b = realloc(b, sizeof(Blk) + n);
-        if (!b) oom();
+        Blk *nb = n > SIZE_MAX - sizeof(Blk) ? NULL : realloc(b, sizeof(Blk) + n);
+        if (!nb) { prev->next = b; next->prev = b; xoom(); }      // the old block is still valid: link it back
+        b = nb;
         b->prev = prev; b->next = next; prev->next = b; next->prev = b;
     } else {
-        b = realloc(b, sizeof(Blk) + n);
-        if (!b) oom();
+        Blk *nb = n > SIZE_MAX - sizeof(Blk) ? NULL : realloc(b, sizeof(Blk) + n);
+        if (!nb) xoom();
+        b = nb;
     }
     return b + 1;
 }

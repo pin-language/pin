@@ -77,6 +77,29 @@ static PinError *h_error(int r, const char *what) {
     return make_error(502, msg);
 }
 
+// A host that ends in a number must be a plain IPv4 address: four parts 0-255 without leading zeros. The C
+// resolver also takes "0x7f.1", "2130706433", "127.1" and "017700000001" (all 127.0.0.1) and reads "0177.0.0.1"
+// as 177.0.0.1 on macOS but 127.0.0.1 on Linux, so a check the program did on the text would not be what is
+// contacted (Go CVE-2021-29923, Rust CVE-2021-29922). Domain names never end in a number.
+static int host_ok(const char *h) {
+    const char *last = strrchr(h, '.');
+    last = last ? last + 1 : h;
+    if (!(*last >= '0' && *last <= '9')) return 1;                   // a name (top-level domains never start with a digit)
+    int parts = 0;
+    for (const char *c = h;;) {
+        if (*c < '0' || *c > '9') return 0;
+        if (*c == '0' && c[1] >= '0' && c[1] <= '9') return 0;     // leading zero
+        int v = 0, d = 0;
+        while (*c >= '0' && *c <= '9') { v = v * 10 + (*c - '0'); c++; if (++d > 3) return 0; }
+        if (v > 255) return 0;
+        parts++;
+        if (*c == 0) break;
+        if (*c != '.') return 0;
+        c++;
+    }
+    return parts == 4;
+}
+
 // http://host[:port]/path -> connected socket, request sent, response headers read. NULL + *err on failure.
 static HConn *h_open(const char *method, Str *url, Map *headers, Str *body, const char *accept, int64_t deadline,
                      int *status, PinError **err) {
@@ -105,6 +128,10 @@ static HConn *h_open(const char *method, Str *url, Map *headers, Str *body, cons
     size_t plen = slash ? (size_t)(ue - slash) : 1;
     for (const char *c = u; c < ue; c++)
         if ((unsigned char)*c <= 0x20 || *c == 0x7f) { *err = make_error(400, "the URL contains a space or control character"); return NULL; }
+    for (const char *c = port; *c; c++)          // digits only: getaddrinfo would also take a service name ("ssh")
+        if (*c < '0' || *c > '9') { *err = make_error(400, "the URL's port is not valid"); return NULL; }
+    if (atoi(port) < 1 || atoi(port) > 65535) { *err = make_error(400, "the URL's port is not valid"); return NULL; }
+    if (!host_ok(host)) { *err = make_error(400, "the URL's host is not a name or a plain IPv4 address (a.b.c.d, no leading zeros)"); return NULL; }
 
     struct addrinfo hints = {0}, *ai = NULL;
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;

@@ -588,7 +588,10 @@ serve(8080, "handle");''',
    "One thread per CPU core (`PN_THREADS=n` to change), keep-alive and pipelining. A panic in the handler "
    "answers 500 and the server keeps running.",
    "Speaks HTTP/1.1 without TLS, by design: put a reverse proxy (Caddy, nginx, a load balancer) in front for "
-   "https. It has request/response headers, timeouts and connection limits (see the language guide)."], run=False)
+   "https. It has request/response headers, timeouts and connection limits (see the language guide).",
+   "A request whose request line or headers are not exactly what RFC 9112 allows (a space before `:`, a bare CR "
+   "or LF, a folded line, a control byte, two `Host` headers) is refused with 400 before the handler runs, so a "
+   "proxy in front cannot read it differently (request smuggling). `Transfer-Encoding` gets 501, HTTP/2.0 505."], run=False)
 f("http_status", H, "http_status(int $code): void", "Set the status code of the current response (default 200).",
   r'''function handle(string $method, string $path, string $body): string {
     http_status(404);
@@ -961,7 +964,10 @@ echo $health, "\n";''',
    "502 when the connection fails, 504 when there is no answer within `$ms`.",
    "Only `http://`, by design: for an https API, call a local egress proxy (Caddy) on 127.0.0.1 that opens the "
    "https connection — see design/tls.md. An https:// URL fails with 400.",
-   "Header values with CR/LF panic. The name lookup itself still blocks the thread briefly."], run=False,
+   "Header values with CR/LF panic. The name lookup itself still blocks the thread briefly.",
+   "A host that ends in a number must be a plain IPv4 address `a.b.c.d` without leading zeros, and the port "
+   "must be digits 1-65535: `0x7f.1`, `2130706433`, `127.1` or `0177.0.0.1` fail with 400, because the system "
+   "resolver reads them as addresses a check on the text would not expect."], run=False,
   php="Instead of `file_get_contents($url)` or curl.")
 f("http_post", CL, "http_post(string $url, map<string,string> $headers, string $body, int $ms): string throws",
   "POST a body (sent as application/json) and return the response body.",
